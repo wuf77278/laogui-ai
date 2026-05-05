@@ -3325,14 +3325,14 @@ async function analyzeDesignSeriesReferences() {
       referenceImages,
       seriesCount: state.generation.count
     });
-    state.designSeriesAnalysis = data.analysis;
+    state.designSeriesAnalysis = enforceClientDesignSeriesProjectType(data.analysis);
     const fallbackReason = data.analysis?.fallback_reason || "";
     updateActiveTask({
       success: 1,
-      finalPrompt: data.analysis?.image_prompt || data.analysis?.series_strategy || "",
+      finalPrompt: state.designSeriesAnalysis?.image_prompt || state.designSeriesAnalysis?.series_strategy || "",
       event: fallbackReason ? `参考图分析降级，已用预设继续：${fallbackReason}` : "参考图识别完成"
     });
-    applySeriesReferenceRoles(data.analysis);
+    applySeriesReferenceRoles(state.designSeriesAnalysis);
     renderReferenceStrip();
     renderDesignSeriesAnalysisView();
     renderWorkflowCanvas();
@@ -3842,16 +3842,40 @@ function designSeriesContextText(analysis = state.designSeriesAnalysis) {
     analysis?.summary,
     analysis?.series_strategy,
     analysis?.spatial_sequence,
-    ...(Array.isArray(analysis?.suggested_outputs) ? analysis.suggested_outputs : [])
+    ...(Array.isArray(analysis?.suggested_outputs) ? analysis.suggested_outputs : []),
+    ...(Array.isArray(analysis?.reference_read) ? analysis.reference_read.flatMap((item) => [item.observation, item.usable_design_language]) : []),
+    ...(Array.isArray(analysis?.scene_briefs) ? analysis.scene_briefs.flatMap((scene) => [
+      scene.title,
+      scene.field_type,
+      scene.spatial_role,
+      scene.connects_from,
+      scene.connects_to,
+      scene.camera,
+      scene.must_vary,
+      scene.forbidden_repetition,
+      ...(Array.isArray(scene.must_repeat) ? scene.must_repeat : [])
+    ]) : []),
+    ...(Array.isArray(analysis?.recurring_signatures) ? analysis.recurring_signatures : []),
+    ...(Array.isArray(analysis?.materials) ? analysis.materials : []),
+    ...(Array.isArray(analysis?.composition_rules) ? analysis.composition_rules : [])
   ].filter(Boolean).join(" ").toLowerCase();
 }
 
 function detectDesignSeriesProjectType(analysis = state.designSeriesAnalysis) {
   const text = designSeriesContextText(analysis);
+  const hasOfficeProgramCue = [
+    "办公空间", "办公室", "开放办公", "办公大堂", "企业大堂", "企业接待", "企业展厅", "工区", "工位", "办公桌", "会议室", "会议桌", "洽谈室", "董事办公室", "总裁办公室", "专注间", "电话间", "茶水间",
+    "office", "workplace", "workspace", "workstation", "workstations", "desk", "desks", "task chair", "conference room", "meeting room", "boardroom", "pantry"
+  ].some((keyword) => text.includes(keyword.toLowerCase()));
+  const hasHospitalityProgramCue = [
+    "民宿", "酒店", "旅宿", "旅馆", "宾馆", "客房", "套房", "度假村", "泡池",
+    "hotel", "resort", "homestay", "guesthouse", "hospitality", "guestroom", "bedroom suite", "bnb", "b&b"
+  ].some((keyword) => text.includes(keyword.toLowerCase()));
+  if (hasOfficeProgramCue && !hasHospitalityProgramCue) return { key: "office", label: "办公/企业接待", score: 99 };
   const definitions = [
-    { key: "hospitality", label: "民宿/酒店/度假住宿", keywords: ["民宿", "酒店", "旅宿", "旅馆", "宾馆", "客房", "套房", "大堂", "接待大堂", "度假", "度假村", "主卧", "泡池", "hotel", "resort", "homestay", "guesthouse", "hospitality", "lobby", "suite", "bnb", "b&b"] },
+    { key: "office", label: "办公/企业接待", keywords: ["办公", "办公空间", "办公室", "企业", "会议", "会议室", "会议桌", "工区", "工位", "办公桌", "开放办公", "前厅", "前台", "接待区", "企业接待", "董事", "茶水间", "洽谈", "专注间", "电话间", "workplace", "office", "workspace", "workstation", "desk", "conference", "meeting", "reception", "pantry", "focus room"] },
+    { key: "hospitality", label: "民宿/酒店/度假住宿", keywords: ["民宿", "酒店", "旅宿", "旅馆", "宾馆", "客房", "套房", "酒店大堂", "民宿大堂", "接待大堂", "度假", "度假村", "主卧", "泡池", "hotel", "resort", "homestay", "guesthouse", "hospitality", "guestroom", "suite", "bnb", "b&b"] },
     { key: "foodbeverage", label: "餐饮/咖啡/酒吧", keywords: ["咖啡", "餐厅", "餐饮", "酒吧", "茶饮", "茶室", "烘焙", "面包店", "小酒馆", "餐吧", "cafe", "coffee", "restaurant", "bar", "bistro", "bakery", "tearoom"] },
-    { key: "office", label: "办公/企业接待", keywords: ["办公", "办公室", "企业", "会议", "工区", "开放办公", "接待区", "workplace", "office", "workspace", "cowork", "meeting", "reception"] },
     { key: "retail", label: "零售/展厅/品牌空间", keywords: ["零售", "店铺", "商店", "买手店", "展厅", "展示", "陈列", "快闪", "品牌空间", "体验店", "retail", "shop", "store", "showroom", "display", "boutique", "pop-up"] },
     { key: "residential", label: "住宅/居住空间", keywords: ["住宅", "公寓", "别墅", "家装", "居住", "客厅", "餐厨", "厨房", "卧室", "主卧", "书房", "阳台", "residential", "apartment", "villa", "home", "living room", "bedroom", "kitchen"] }
   ];
@@ -3863,10 +3887,72 @@ function detectDesignSeriesProjectType(analysis = state.designSeriesAnalysis) {
   return best;
 }
 
+function designSeriesProjectTypeGuard(projectType = detectDesignSeriesProjectType()) {
+  if (projectType.key === "office") {
+    return [
+      "项目类型锁定：办公/企业接待空间。",
+      "视觉识别优先：如果上传参考图里有办公桌、工位、办公椅、会议桌、玻璃隔断、企业前台、开放工区、协作区、茶水间或办公照明，就按办公项目生成。",
+      "办公项目禁止：卧室、主卧、床、床头柜、客房、套房、酒店房间、民宿房间、浴缸、泡池、spa、度假住宿、住宅厨房或私人家庭客厅。",
+      "办公项目允许：前台/企业接待、开放工区、协作/项目讨论区、会议室、董事/独立办公室、专注间/电话间、茶水/休息区、走廊和材料节点。",
+      "人物/动物硬性要求：所有画面无人物、无动物，禁止员工、客户、路人、剪影、脸、手、身体局部、人群、动物和宠物。"
+    ].join("\n");
+  }
+  return "人物/动物硬性要求：所有设计系列图片必须是无人、无动物的建筑/室内空间图，禁止出现任何人、剪影、脸、手、身体局部、人群、动物或宠物。";
+}
+
+function enforceClientDesignSeriesProjectType(analysis = null) {
+  if (!analysis) return analysis;
+  const detected = detectDesignSeriesProjectType(analysis);
+  if (detected.key !== "office") return analysis;
+  const forbiddenByOffice = /卧室|主卧|客房|套房|酒店房|民宿房|床|床头|卫浴|浴缸|泡池|spa|resort|hotel room|guestroom|suite|bedroom|bathtub|bath|pool/i;
+  const needsOfficeOverride = String(analysis.project_type || "").toLowerCase().includes("hospitality")
+    || String(analysis.project_type || "").includes("酒店")
+    || String(analysis.project_type || "").includes("民宿")
+    || String(analysis.project_type || "").includes("住宅")
+    || (Array.isArray(analysis.scene_briefs) && analysis.scene_briefs.some((scene) => forbiddenByOffice.test([
+      scene.title,
+      scene.field_type,
+      scene.spatial_role,
+      scene.connects_from,
+      scene.connects_to,
+      scene.camera,
+      scene.must_vary,
+      scene.forbidden_repetition
+    ].filter(Boolean).join(" "))));
+  const count = clampImageCount(state.generation.count, "designseries");
+  const plan = designSeriesScenePlan(count, { ...analysis, project_type: detected.label });
+  if (!needsOfficeOverride) {
+    return {
+      ...analysis,
+      project_type: detected.label,
+      scene_allocation_strategy: analysis.scene_allocation_strategy || designSeriesAllocationSummary(count, { ...analysis, project_type: detected.label })
+    };
+  }
+  return {
+    ...analysis,
+    project_type: detected.label,
+    scene_allocation_strategy: designSeriesAllocationSummary(count, { ...analysis, project_type: detected.label }),
+    suggested_outputs: plan.slice(0, count).map((item) => item[0]),
+    spatial_sequence: plan.slice(0, count).map((item) => item[0]).join(" -> "),
+    scene_briefs: plan.slice(0, count).map((item, index) => ({
+      index: index + 1,
+      title: item[0],
+      field_type: "office",
+      spatial_role: item[1],
+      connects_from: index ? plan[index - 1][0] : "企业入口",
+      connects_to: plan[index + 1]?.[0] || "办公项目记忆点",
+      camera: item[2],
+      must_repeat: ["同一办公材料系统", "同一企业照明语言", "同一办公家具年代", "无人物和动物"],
+      must_vary: "只变化办公功能区、镜头位置和焦点，不变化项目风格",
+      forbidden_repetition: "禁止卧室、客房、酒店套房、床、浴缸、泡池、住宅私密房间、人物、动物和宠物。"
+    }))
+  };
+}
+
 function designSeriesPlanCount(count = state.generation.count) {
   const outputCount = clampImageCount(count, "designseries");
-  if (outputCount >= 8) return 8;
-  if (outputCount >= 6) return 6;
+  if (outputCount >= 7) return 8;
+  if (outputCount >= 5) return 6;
   return 4;
 }
 
@@ -3881,14 +3967,14 @@ function designSeriesScenePlan(count = state.generation.count, analysis = state.
     hospitality: {
       4: [
         designSeriesRole("大堂/到达接待主视觉", "建立民宿/酒店第一印象：入口、接待、大堂记忆点和通往公共区的动线", "广角或中广角人视角，必须看到接待/门厅/等候锚点和空间入口关系"),
-        designSeriesRole("公共客厅/共享休闲区", "展示客人公共生活核心：会客、休闲、家具分组、墙顶地系统和完整材质灯光语言", "换一个轴线的人视角宽画幅，显示沙发/休闲座、通道、顶面和墙地面连续性"),
+        designSeriesRole("公共客厅/共享休闲区", "展示客人公共生活核心：会客、休闲、家具分组、墙顶地系统和完整材质灯光语言", "换一个轴线的开阔人视角，显示沙发/休闲座、通道、顶面和墙地面连续性"),
         designSeriesRole("主卧/客房套房", "展示私密住宿空间：主卧、客房或套房，把同一项目DNA转译到更安静的尺度", "安静人视角，包含床、窗景或坐榻/休息角，不能重复大堂和公共客厅机位"),
         designSeriesRole("工区/茶歇/餐吧或材料节点", "补足使用场景：工区、阅读、茶室、早餐餐吧，或一个能串联前面空间的材料/灯光节点", "中景功能视角或近景节点，强调同款灯具、木作、石材、肌理和收口")
       ],
       6: [
         designSeriesRole("室外/到达入口", "从场地、街巷、庭院或门头建立民宿/酒店外部识别度", "室外或半室外广角，显示路径、入口、立面/院落和项目气质"),
         designSeriesRole("大堂/接待", "第一处室内接待空间，承接入口并明确酒店/民宿运营功能", "宽阔人视角，显示接待台、等候区、主灯光层次和进入公共区的动线"),
-        designSeriesRole("公共客厅/休闲会客区", "主要公共生活空间，让客人停留、交流、休闲", "新轴线宽画幅，显示家具分组、通道、墙顶地材料和氛围"),
+        designSeriesRole("公共客厅/休闲会客区", "主要公共生活空间，让客人停留、交流、休闲", "新轴线开阔视角，显示家具分组、通道、墙顶地材料和氛围"),
         designSeriesRole("工区/茶室/餐吧/活动区", "第二公共功能：工作、阅读、茶饮、早餐、餐吧或小型活动，和客厅形成用途差异", "中广角运营视角，桌面/吧台/书架/活动家具清晰可见"),
         designSeriesRole("主卧/客房套房", "安静私密空间，展示住宿舒适度和同一材质灯光系统在客房里的表达", "安静人视角，床、床头灯、窗景或坐榻形成焦点"),
         designSeriesRole("卫浴/泡池/走廊材料节点", "支持空间或记忆节点：卫浴、泡池、走廊、楼梯、门洞或材料收口", "更窄或更近的受控视角，强调水、石材、木作、灯带、肌理和空间连续性")
@@ -3896,7 +3982,7 @@ function designSeriesScenePlan(count = state.generation.count, analysis = state.
       8: [
         designSeriesRole("外观/场地入口", "项目外部第一印象：院落、街巷、景观、门头或入口立面", "室外广角，建立环境、入口路径和项目识别度"),
         designSeriesRole("门厅/大堂接待", "第一处室内阈值和接待功能", "入口人视角，显示接待、等候、灯光和进入公共区的方向"),
-        designSeriesRole("公共客厅/共享休闲区", "主公共区，承载会客、休闲和空间气质", "宽画幅室内视角，显示沙发/休闲座、通道和完整材料系统"),
+        designSeriesRole("公共客厅/共享休闲区", "主公共区，承载会客、休闲和空间气质", "开阔室内视角，显示沙发/休闲座、通道和完整材料系统"),
         designSeriesRole("茶室/餐吧/早餐区", "餐饮或茶歇功能，补足民宿酒店运营场景", "中广角活动视角，桌面、吧台、餐椅、灯光和服务细节清晰"),
         designSeriesRole("工区/阅读/活动区", "工作、阅读、小会客或活动区，形成另一种公共使用方式", "中景功能视角，桌面、书架、工作灯或活动家具成为焦点"),
         designSeriesRole("主卧/客房套房", "住宿核心空间：主卧、客房或套房", "安静人视角，床、坐榻、窗景和床头灯光完整"),
@@ -3906,14 +3992,14 @@ function designSeriesScenePlan(count = state.generation.count, analysis = state.
     },
     residential: {
       4: [
-        designSeriesRole("玄关/客厅主视觉", "建立住宅入户到客厅的整体气质", "宽画幅人视角，显示玄关线索、客厅家具和墙顶地系统"),
+        designSeriesRole("玄关/客厅主视觉", "建立住宅入户到客厅的整体气质", "开阔人视角，显示玄关线索、客厅家具和墙顶地系统"),
         designSeriesRole("餐厨/家庭活动区", "展示餐厅、厨房或家庭活动空间", "中广角，桌面/岛台/柜体和动线清晰"),
         designSeriesRole("主卧/书房安静区", "展示卧室、主卧套房或书房的安静尺度", "安静人视角，床/书桌/窗景/收纳形成焦点"),
         designSeriesRole("卫浴/阳台/收纳材料节点", "补足支持空间或材料节点", "近景或中景，显示灯光、收口、墙地面材质和功能细节")
       ],
       6: [
         designSeriesRole("玄关/入户收纳", "入户、收纳和第一材料线索", "入口视角，柜体、灯光和通向客厅的关系清晰"),
-        designSeriesRole("客厅/家庭核心区", "家庭主要生活空间", "宽画幅客厅视角，显示家具分组和空间尺度"),
+        designSeriesRole("客厅/家庭核心区", "家庭主要生活空间", "开阔客厅视角，显示家具分组和空间尺度"),
         designSeriesRole("餐厨/岛台/家庭活动", "餐厅、厨房、岛台或家庭活动区", "中广角，餐桌/岛台/柜体和操作关系清晰"),
         designSeriesRole("书房/儿童/多功能房", "不同功能房间，拉开空间用途", "中景房间视角，桌面/书架/灵活家具清晰"),
         designSeriesRole("主卧/套房", "私密卧室尺度", "安静人视角，床、床头、窗景和储物逻辑可读"),
@@ -3921,7 +4007,7 @@ function designSeriesScenePlan(count = state.generation.count, analysis = state.
       ],
       8: [
         designSeriesRole("玄关/门厅", "住宅入口和收纳系统", "入口视角"),
-        designSeriesRole("客厅", "主要生活空间", "宽画幅客厅视角"),
+        designSeriesRole("客厅", "主要生活空间", "开阔客厅视角"),
         designSeriesRole("餐厅", "家庭用餐空间", "中广角餐厅视角"),
         designSeriesRole("厨房/岛台", "操作和储物空间", "厨房运营视角"),
         designSeriesRole("书房/多功能房", "工作、学习或弹性功能", "桌面/书架视角"),
@@ -3932,22 +4018,22 @@ function designSeriesScenePlan(count = state.generation.count, analysis = state.
     },
     office: {
       4: [
-        designSeriesRole("前台/企业接待", "企业入口和接待形象", "宽画幅前台视角，避免可读文字和logo"),
-        designSeriesRole("开放工区/协作区", "主要工作空间", "宽画幅工位/协作视角，显示桌面节奏和通道"),
+        designSeriesRole("前台/企业接待", "企业入口和接待形象", "开阔前台视角，避免可读文字和logo"),
+        designSeriesRole("开放工区/协作区", "主要工作空间", "开阔工位/协作视角，显示桌面节奏和通道"),
         designSeriesRole("会议/洽谈/专注空间", "正式或半私密办公功能", "中广角会议/专注视角"),
         designSeriesRole("茶水/走廊/材料节点", "支持空间和材料连续性", "受控支持或节点视角")
       ],
       6: [
-        designSeriesRole("入口/前台接待", "企业到达与接待", "宽画幅接待视角"),
-        designSeriesRole("开放工区", "主要工位空间", "宽画幅工位节奏视角"),
+        designSeriesRole("入口/前台接待", "企业到达与接待", "开阔接待视角"),
+        designSeriesRole("开放工区", "主要工位空间", "开阔工位节奏视角"),
         designSeriesRole("协作/项目讨论区", "团队讨论功能", "中广角协作视角"),
         designSeriesRole("会议室/洽谈室", "正式会议或客户沟通", "受控会议视角"),
         designSeriesRole("独立办公室/专注间/电话间", "私密或专注尺度", "安静小空间视角"),
         designSeriesRole("茶水区/走廊/材料节点", "支持和过渡空间", "线性或近景节点视角")
       ],
       8: [
-        designSeriesRole("前台/品牌入口", "到达与接待", "宽画幅前台视角"),
-        designSeriesRole("开放工区", "工位空间", "宽画幅工区视角"),
+        designSeriesRole("前台/品牌入口", "到达与接待", "开阔前台视角"),
+        designSeriesRole("开放工区", "工位空间", "开阔工区视角"),
         designSeriesRole("协作区", "团队讨论", "中广角协作视角"),
         designSeriesRole("会议室", "正式会议", "会议室视角"),
         designSeriesRole("主管/独立办公室", "私密办公", "安静办公室视角"),
@@ -3960,13 +4046,13 @@ function designSeriesScenePlan(count = state.generation.count, analysis = state.
       4: [
         designSeriesRole("门头/入口主视觉", "店铺到达和第一识别度", "外立面或入口广角"),
         designSeriesRole("点单/吧台/核心运营区", "服务和运营核心", "吧台/点单人视角"),
-        designSeriesRole("堂食/休闲座位区", "主要客座体验", "宽画幅堂食视角"),
+        designSeriesRole("堂食/休闲座位区", "主要客座体验", "开阔堂食视角"),
         designSeriesRole("包间/卡座/材料氛围节点", "次级座位或细节记忆", "中景座位或近景节点")
       ],
       6: [
         designSeriesRole("外立面/入口", "街边或场地到达", "外部广角"),
         designSeriesRole("点单/接待吧台", "服务核心", "吧台运营视角"),
-        designSeriesRole("主堂食区", "主要用餐空间", "宽画幅堂食视角"),
+        designSeriesRole("主堂食区", "主要用餐空间", "开阔堂食视角"),
         designSeriesRole("卡座/包间/多人桌", "第二座位类型", "中广角卡座/包间视角"),
         designSeriesRole("开放厨房/展示/零售陈列", "运营或陈列细节", "运营/展示视角"),
         designSeriesRole("灯光/材料/餐具氛围特写", "餐饮记忆节点", "近景氛围细节")
@@ -3975,7 +4061,7 @@ function designSeriesScenePlan(count = state.generation.count, analysis = state.
         designSeriesRole("外立面/门头", "店铺识别", "外立面视角"),
         designSeriesRole("入口/等候", "到达和等候", "入口视角"),
         designSeriesRole("点单/吧台", "服务核心", "吧台视角"),
-        designSeriesRole("主堂食区", "主要客座", "宽画幅堂食视角"),
+        designSeriesRole("主堂食区", "主要客座", "开阔堂食视角"),
         designSeriesRole("卡座/包间", "第二座位类型", "卡座视角"),
         designSeriesRole("露台/窗边/外摆", "边界座位氛围", "窗边或外摆视角"),
         designSeriesRole("厨房/陈列/运营细节", "运营细节", "运营节点视角"),
@@ -3985,14 +4071,14 @@ function designSeriesScenePlan(count = state.generation.count, analysis = state.
     retail: {
       4: [
         designSeriesRole("门头/入口展示", "品牌入口和第一陈列", "门头或入口广角"),
-        designSeriesRole("主陈列/销售核心区", "主要销售陈列空间", "宽画幅陈列视角"),
+        designSeriesRole("主陈列/销售核心区", "主要销售陈列空间", "开阔陈列视角"),
         designSeriesRole("体验/洽谈/试衣/产品场景", "客户体验功能", "中广角体验视角"),
         designSeriesRole("收银/橱窗/材料节点", "交易、橱窗或展具细节", "支持或近景节点")
       ],
       6: [
         designSeriesRole("外立面/橱窗", "店铺外部识别", "橱窗外观视角"),
         designSeriesRole("入口/迎宾陈列", "第一室内陈列", "入口陈列视角"),
-        designSeriesRole("主陈列区", "主要销售空间", "宽画幅陈列视角"),
+        designSeriesRole("主陈列区", "主要销售空间", "开阔陈列视角"),
         designSeriesRole("体验/试衣/洽谈区", "客户体验空间", "中景体验视角"),
         designSeriesRole("收银/包装/后场支持", "交易和支持功能", "受控支持空间视角"),
         designSeriesRole("展具/材料/灯光节点", "展具和材料记忆", "近景节点视角")
@@ -4000,7 +4086,7 @@ function designSeriesScenePlan(count = state.generation.count, analysis = state.
       8: [
         designSeriesRole("外立面/橱窗", "外部识别", "外观视角"),
         designSeriesRole("入口迎宾", "入口阈值", "入口视角"),
-        designSeriesRole("主陈列区", "主要销售陈列", "宽画幅陈列视角"),
+        designSeriesRole("主陈列区", "主要销售陈列", "开阔陈列视角"),
         designSeriesRole("重点产品岛/艺术装置", "主推产品节点", "重点陈列视角"),
         designSeriesRole("体验/试衣/洽谈", "客户体验", "体验区视角"),
         designSeriesRole("收银/包装", "交易功能", "收银视角"),
@@ -4011,8 +4097,8 @@ function designSeriesScenePlan(count = state.generation.count, analysis = state.
     generic: {
       4: [
         designSeriesRole("到达/入口/项目主视觉", "建立项目第一印象，连接到公共核心空间", "广角主视觉，显示入口、门厅、第一处空间锚点和通往公共区的动线"),
-        designSeriesRole("公共核心/主要功能区", "承接入口，展示主要公共活动区和动线", "人视角宽画幅，显示家具分组、通道、墙顶地系统和主要功能场景"),
-        designSeriesRole("次级功能/安静场域", "从公共区进入另一种功能尺度", "换一个人视角或更安静的镜头，展示套房、办公、餐厨、洽谈、休息、展示或其他不同功能区"),
+        designSeriesRole("公共核心/主要功能区", "承接入口，展示主要公共活动区和动线", "开阔人视角，显示家具分组、通道、墙顶地系统和主要功能场景"),
+        designSeriesRole("次级功能/安静场域", "从公共区进入另一种功能尺度", "换一个人视角或更安静的镜头，展示办公、餐厨、洽谈、休息、展示、学习、康养或其他由项目类型决定的不同功能区"),
         designSeriesRole("过渡空间/材料节点", "把材料节点和前面空间连接起来", "近景或中景，强调走廊、门洞、楼梯、收口、灯光节点或重复材质细节")
       ],
       6: [
@@ -4020,7 +4106,7 @@ function designSeriesScenePlan(count = state.generation.count, analysis = state.
         designSeriesRole("接待/公共主空间", "从入口进入公共核心", "宽阔人视角，显示主空间、动线和第一组材料系统"),
         designSeriesRole("休闲/餐厨/办公/展示等次级功能区", "公共空间的延伸功能区", "中广角，展示第二个功能场景但复用同一材质和灯光"),
         designSeriesRole("安静/私密/套房/会议等不同尺度空间", "从公共区过渡到更安静或更聚焦的功能尺度", "安静人视角，展示同一设计语言在不同尺度中的表达"),
-        designSeriesRole("走廊/楼梯/卫浴/服务等过渡或支持空间", "连接前后空间和细节节点", "更窄或更聚焦的过渡空间视角，证明空间连续性"),
+        designSeriesRole("走廊/楼梯/服务等过渡或支持空间", "连接前后空间和细节节点", "更窄或更聚焦的过渡空间视角，证明空间连续性"),
         designSeriesRole("材料节点/氛围特写", "收束整个项目的记忆点", "近景/中景，重复核心材料、灯具、木作或肌理")
       ],
       8: [
@@ -4028,8 +4114,8 @@ function designSeriesScenePlan(count = state.generation.count, analysis = state.
         designSeriesRole("门厅/接待", "入口到公共区", "显示第一处室内阈值"),
         designSeriesRole("公共休闲区", "公共区主体", "展示主要活动空间"),
         designSeriesRole("餐厨/吧台/办公/展示/活动区", "公共区的功能延伸", "展示运营、办公、陈列或生活场景"),
-        designSeriesRole("安静/私密/客房/会议区", "公共到安静或私密尺度", "展示更克制的空间尺度"),
-        designSeriesRole("卫浴/泡池/更衣/服务空间", "支持空间", "展示湿区、服务区或支持空间的材质和灯光"),
+        designSeriesRole("安静/专注/会议/洽谈区", "公共到安静、专注或私密尺度", "展示由项目类型决定的更克制空间尺度"),
+        designSeriesRole("服务/后勤/支持空间", "支持空间", "展示服务区、后勤区或支持空间的材质和灯光"),
         designSeriesRole("走廊/楼梯/过渡", "串联空间", "展示动线、门洞、楼梯或廊道"),
         designSeriesRole("材料节点/氛围特写", "项目记忆点", "展示收口、家具、灯具或材质细节")
       ]
@@ -4044,6 +4130,7 @@ function designSeriesAllocationSummary(count = state.generation.count, analysis 
   const plan = designSeriesScenePlan(outputCount, analysis).slice(0, outputCount);
   return [
     `项目类型识别：${projectType.label}。`,
+    designSeriesProjectTypeGuard(projectType),
     `本次数量排布：${plan.map((item, index) => `${index + 1}.${item[0]}`).join("；")}。`,
     "如果用户文字明确点名空间，优先覆盖用户点名空间；未点名时按项目类型自动选择最能形成完整设计提案的空间组合。"
   ].join("\n");
@@ -4053,14 +4140,18 @@ function designSeriesCountPrompt(count = state.generation.count) {
   const outputCount = clampImageCount(count, "designseries");
   const scenePlan = designSeriesAllocationSummary(outputCount);
   return [
-    `设计系列数量规划：本次固定生成 ${outputCount} 张，不使用普通单图数量逻辑。`,
-    "功能本意：从参考图生成同一项目的一套设计效果图，重点参考图片中的风格、材质、元素、色彩、灯光氛围、构图、空间关系和设计语言。",
+    `设计系列数量规划：本次按当前生图设置生成 ${outputCount} 张，不使用普通单图数量逻辑。`,
+    "功能本意：站在项目大局观层面，从一张或多张参考图推断完整设计项目，再按用户选择的数量给出这套设计中最有价值的对应空间图片。",
+    "参考图读取：精准分析参考图并提取品牌元素、色彩元素、材料系统、空间组织、灯光氛围、构图节奏、家具/工位/物件语言和细部收口。",
     scenePlan,
     "数量策略：4张时优先覆盖最能说明项目的入口/公共核心/关键私密或重点功能/节点；6张时补足室外到达、支持空间和更完整动线；8张时拆出更多真实使用场景，形成完整项目图集。",
+    "参数策略：图片比例、清晰度/分辨率、质量档位和生成数量全部服从当前生图设置；不要在提示词里固定横屏、4:3、4K或固定8张。",
+    "思考模式：开启时要更多保留原参考图的视觉 DNA，包括品牌线索、色彩、材质、灯光、构图、空间节奏、家具物件语言和关键细节，但仍然要推演为不同空间而不是复制同一角度。",
     "先建立系列圣经：项目DNA、空间动线、材质系统、灯光系统、重复母题、家具语言、镜头节奏、渲染质感。",
     "所有图片必须像同一个项目、同一套材质系统、同一个设计团队、同一次渲染输出；每张图空间或视角不同，但风格、材料、元素和审美 DNA 保持一致。",
     "深层设计系列定义：统一风格不是重复同一张图；必须把参考图扩展为多场域、多视角、多角度、多功能分区的项目图集。",
     "空间衔接硬性要求：每张图至少出现一个可连接其他图片的线索，例如相同墙地面材料、同款灯具、重复吊顶/格栅/拱形/木作节点、连续门洞/走廊/窗景、同一家具语言或相同室外景观。",
+    "人物/动物硬性要求：所有图片必须是无人、无动物的建筑/室内空间图；禁止出现员工、客户、住客、路人、人物剪影、脸、手、身体局部、人群、动物、宠物或生活方式摆拍。",
     "禁止：每张图像来自不同项目、不同预算等级、不同渲染风格、不同色彩分级、不同家具年代；禁止孤立单图、拼贴感、风格漂移、同一角度多风格变体和无空间关系的随机美图。"
   ].join("\n");
 }
@@ -4079,11 +4170,15 @@ function designSeriesScenePrompt(index, count, analysis = state.designSeriesAnal
   ].filter(Boolean).slice(0, 8).join("；");
   return [
     `项目类型：${analysis?.project_type || projectType.label}。`,
+    designSeriesProjectTypeGuard(projectType),
     `本张分镜：第 ${index}/${count} 张，空间角色为「${title}」。`,
     `空间衔接：${scene.connects_from ? `来自 ${scene.connects_from}，` : ""}${role}${scene.connects_to ? `，并连接到 ${scene.connects_to}` : ""}。`,
     `镜头任务：${camera}。`,
     `整套排布：${designSeriesScenePlan(count, analysis).slice(0, count).map((item, itemIndex) => `${itemIndex + 1}.${item[0]}`).join("；")}。`,
     "深层系列要求：本张必须是不同场域、不同功能分区或不同机位的独立空间画面，不是同一个角度/同一个主视觉的轻微变体，也不是同一空间换不同风格。",
+    "大局观要求：本张是完整设计项目中的一个关键空间，必须能和其他张共同构成一套方案，而不是孤立美图。",
+    "参数要求：本张比例、清晰度/分辨率和质量只服从当前生图设置，不在提示词里额外固定横屏、4:3或4K。",
+    "人物/动物硬性要求：本张必须是无人、无动物空间图，不能出现任何人、员工、客户、住客、路人、剪影、脸、手、身体局部、人群、动物或宠物。",
     repeat ? `必须重复的系列线索：${repeat}。` : "必须重复同一套墙地面材料、灯具语言、家具年代、木作/金属/石材节点、色彩分级和渲染质感。",
     scene.must_vary ? `本张允许变化：${scene.must_vary}。` : "本张只允许变化空间功能、镜头位置、焦点区域和陈列细节，不允许变化项目风格。"
   ].join("\n");

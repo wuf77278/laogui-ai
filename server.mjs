@@ -1637,27 +1637,53 @@ function designSeriesContextText(context = {}) {
     analysis.summary,
     analysis.series_strategy,
     analysis.spatial_sequence,
-    ...(Array.isArray(analysis.suggested_outputs) ? analysis.suggested_outputs : [])
+    ...(Array.isArray(analysis.suggested_outputs) ? analysis.suggested_outputs : []),
+    ...(Array.isArray(analysis.reference_read) ? analysis.reference_read.flatMap((item) => [item.observation, item.usable_design_language]) : []),
+    ...(Array.isArray(analysis.scene_briefs) ? analysis.scene_briefs.flatMap((scene) => [
+      scene.title,
+      scene.field_type,
+      scene.spatial_role,
+      scene.connects_from,
+      scene.connects_to,
+      scene.camera,
+      scene.must_vary,
+      scene.forbidden_repetition,
+      ...(Array.isArray(scene.must_repeat) ? scene.must_repeat : [])
+    ]) : []),
+    ...(Array.isArray(analysis.recurring_signatures) ? analysis.recurring_signatures : []),
+    ...(Array.isArray(analysis.materials) ? analysis.materials : []),
+    ...(Array.isArray(analysis.composition_rules) ? analysis.composition_rules : [])
   ].filter(Boolean).join(" ").toLowerCase();
 }
 
 function detectDesignSeriesProjectType(context = {}) {
   const text = designSeriesContextText(context);
+  const hasOfficeProgramCue = [
+    "办公空间", "办公室", "开放办公", "办公大堂", "企业大堂", "企业接待", "企业展厅", "工区", "工位", "办公桌", "会议室", "会议桌", "洽谈室", "董事办公室", "总裁办公室", "专注间", "电话间", "茶水间",
+    "office", "workplace", "workspace", "workstation", "workstations", "desk", "desks", "task chair", "conference room", "meeting room", "boardroom", "pantry"
+  ].some((keyword) => text.includes(keyword.toLowerCase()));
+  const hasHospitalityProgramCue = [
+    "民宿", "酒店", "旅宿", "旅馆", "宾馆", "客房", "套房", "度假村", "泡池",
+    "hotel", "resort", "homestay", "guesthouse", "hospitality", "guestroom", "bedroom suite", "bnb", "b&b"
+  ].some((keyword) => text.includes(keyword.toLowerCase()));
+  if (hasOfficeProgramCue && !hasHospitalityProgramCue) {
+    return { key: "office", label: "办公/企业接待", score: 99 };
+  }
   const definitions = [
+    {
+      key: "office",
+      label: "办公/企业接待",
+      keywords: ["办公", "办公空间", "办公室", "企业", "会议", "会议室", "会议桌", "工区", "工位", "办公桌", "开放办公", "前厅", "前台", "接待区", "企业接待", "董事", "茶水间", "洽谈", "专注间", "电话间", "workplace", "office", "workspace", "workstation", "desk", "conference", "meeting", "reception", "pantry", "focus room"]
+    },
     {
       key: "hospitality",
       label: "民宿/酒店/度假住宿",
-      keywords: ["民宿", "酒店", "旅宿", "旅馆", "宾馆", "客房", "套房", "大堂", "接待大堂", "度假", "度假村", "主卧", "泡池", "hotel", "resort", "homestay", "guesthouse", "hospitality", "lobby", "suite", "bnb", "b&b"]
+      keywords: ["民宿", "酒店", "旅宿", "旅馆", "宾馆", "客房", "套房", "酒店大堂", "民宿大堂", "接待大堂", "度假", "度假村", "主卧", "泡池", "hotel", "resort", "homestay", "guesthouse", "hospitality", "guestroom", "suite", "bnb", "b&b"]
     },
     {
       key: "foodbeverage",
       label: "餐饮/咖啡/酒吧",
       keywords: ["咖啡", "餐厅", "餐饮", "酒吧", "茶饮", "茶室", "烘焙", "面包店", "小酒馆", "餐吧", "cafe", "coffee", "restaurant", "bar", "bistro", "bakery", "tearoom"]
-    },
-    {
-      key: "office",
-      label: "办公/企业接待",
-      keywords: ["办公", "办公室", "企业", "会议", "工区", "开放办公", "接待区", "董事", "workplace", "office", "workspace", "cowork", "meeting", "reception"]
     },
     {
       key: "retail",
@@ -1680,8 +1706,8 @@ function detectDesignSeriesProjectType(context = {}) {
 
 function designSeriesPlanCount(count = 4) {
   const numeric = Math.max(1, Math.min(8, Number(count) || 4));
-  if (numeric >= 8) return 8;
-  if (numeric >= 6) return 6;
+  if (numeric >= 7) return 8;
+  if (numeric >= 5) return 6;
   return 4;
 }
 
@@ -1702,13 +1728,40 @@ function designSeriesSceneAllocationText(count = 4, context = {}) {
   const detected = detectDesignSeriesProjectType(context);
   const requestedCount = Math.max(1, Math.min(8, Number(count) || 4));
   const roles = defaultDesignSeriesSceneRoles(count, context).slice(0, requestedCount);
+  const typeGuard = designSeriesProjectTypeGuard(detected);
   return [
     `Detected project type: ${detected.label}.`,
+    typeGuard,
+    "Project inference rule: infer a complete spatial project from one or more references, then allocate the requested number of images to the strongest rooms/functions in that project. Do not make isolated same-room style variations.",
+    "Reference DNA rule: precisely extract visible brand cues, color system, material family, spatial organization, lighting atmosphere, composition rhythm, furniture/workstation language and crafted details from the references.",
+    "UI settings rule: output count, aspect ratio, image size/resolution and quality are controlled by the current UI/API request. Do not override them with horizontal, 4:3, 4K or any fixed count unless the user explicitly set those values.",
+    "Universal hard rule: all generated images must be empty architecture/interior spaces with no people, no human figures, no staff, no guests, no silhouettes, no hands, no faces, no crowds, no animals and no pets.",
     `Requested output count: ${requestedCount}.`,
     `Locked scene schedule: ${roles.map((role, index) => `${index + 1}. ${role.title} [${role.field_type}] - ${role.spatial_role}`).join(" | ")}.`,
     "If the user explicitly names required rooms, cover those rooms first while keeping every image a unique scene role.",
-    "For hospitality/homestay/hotel projects, prioritize a balanced package that can include lobby/arrival, public living/lounge, master guestroom/suite, work/reading/activity area, dining/bar/tea area, bath/spa/support, courtyard/exterior and crafted detail depending on count."
+    "For office/workplace/corporate projects, prioritize reception, open workspace, collaboration/project discussion, meeting/boardroom, private office/focus room, pantry/lounge, corridor/support and material/detail scenes depending on count. Never add bedrooms, guestrooms, beds, hotel suites, bath/spa/pool or homestay rooms to an office series.",
+    "For hospitality/homestay/hotel projects only, prioritize a balanced package that can include lobby/arrival, public living/lounge, master guestroom/suite, work/reading/activity area, dining/bar/tea area, bath/spa/support, courtyard/exterior and crafted detail depending on count."
   ].join("\n");
+}
+
+function designSeriesProjectTypeGuard(projectType = {}) {
+  const key = projectType.key || "generic";
+  if (key === "office") {
+    return [
+      "PROJECT_TYPE_LOCK: office/workplace/corporate interior.",
+      "Visual evidence override: if the uploaded reference image shows desks, workstations, task chairs, conference tables, office partitions, corporate reception, meeting rooms, collaboration areas, pantry or workplace lighting, classify it as office even if it also has warm lounge materials.",
+      "Office forbidden content: bedroom, master bedroom, guestroom, guest suite, bed, bedside table, hotel room, homestay room, bathtub, spa, pool, resort bath, residential kitchen or private home living room.",
+      "Allowed office spaces: corporate reception/front desk, open workspace, collaboration area, project discussion zone, meeting room, boardroom, executive/private office, focus room, phone booth, pantry/tea point, lounge breakout, corridor, material/detail node.",
+      "No people or animals: show the office space empty and ready for use; no employees, clients, silhouettes, bodies, faces, hands, crowd, animals or pets."
+    ].join(" ");
+  }
+  if (key === "hospitality") {
+    return "PROJECT_TYPE_LOCK: hospitality/homestay/hotel. Guestroom/suite scenes are allowed only when this type is detected or explicitly requested. No people or animals in any generated image.";
+  }
+  if (key === "residential") {
+    return "PROJECT_TYPE_LOCK: residential/home. Bedroom scenes are allowed only when this type is detected or explicitly requested. No people or animals in any generated image.";
+  }
+  return "PROJECT_TYPE_LOCK: follow the detected project category and do not borrow room types from unrelated categories. No people or animals in any generated image.";
 }
 
 function designSeriesPresetAnalysis(body = {}, references = [], { fallbackReason = "", summary = "" } = {}) {
@@ -1740,7 +1793,9 @@ function designSeriesPresetAnalysis(body = {}, references = [], { fallbackReason
     series_strategy: [
       "Use the uploaded references as open visual evidence and create a coherent multi-space design series.",
       `Detected project type: ${projectType.label}. Use a count-aware scene allocation instead of generic same-room variations.`,
+      "Infer the whole project from the reference visual DNA: brand cues, color system, material family, lighting atmosphere, composition rhythm, furniture/object language and spatial organization.",
       "Keep one project DNA across all outputs while changing space function, room type, camera angle, viewpoint and focal zone.",
+      "Do not lock aspect ratio, resolution, quality or image count in the prompt; those come from the user's current generation settings.",
       styleHint ? `User/style context: ${styleHint}` : ""
     ].filter(Boolean).join(" "),
     project_type: projectType.label,
@@ -1753,7 +1808,8 @@ function designSeriesPresetAnalysis(body = {}, references = [], { fallbackReason
       "maintain compatible openings, thresholds, corridor/stair logic and spatial scale",
       "keep the same color grading, exposure, lighting temperature and shadow softness",
       "vary function and camera while preserving project budget level, furniture era and design team language",
-      "include at least one visual cue in every image that links it to the rest of the series"
+      "include at least one visual cue in every image that links it to the rest of the series",
+      "keep every image unoccupied, with no people, human body parts, animals or pets"
     ],
     recurring_signatures: [
       "shared material palette and tactile texture",
@@ -1788,6 +1844,58 @@ function designSeriesPresetAnalysis(body = {}, references = [], { fallbackReason
   }, references);
 }
 
+function enforceDesignSeriesProjectType(analysis = {}, context = {}) {
+  const detected = detectDesignSeriesProjectType({ ...context, analysis });
+  const count = Math.max(1, Math.min(8, Number(context.seriesCount || context.count || analysis.scene_briefs?.length || 4) || 4));
+  const forbiddenByOffice = /卧室|主卧|客房|套房|酒店房|民宿房|床|床头|卫浴|浴缸|泡池|spa|resort|hotel room|guestroom|suite|bedroom|bathtub|bath|pool/i;
+  if (detected.key !== "office") return analysis;
+  const needsOfficeOverride = String(analysis.project_type || "").toLowerCase().includes("hospitality")
+    || String(analysis.project_type || "").includes("酒店")
+    || String(analysis.project_type || "").includes("民宿")
+    || String(analysis.project_type || "").includes("住宅")
+    || (Array.isArray(analysis.scene_briefs) && analysis.scene_briefs.some((scene) => forbiddenByOffice.test([
+      scene.title,
+      scene.field_type,
+      scene.spatial_role,
+      scene.connects_from,
+      scene.connects_to,
+      scene.camera,
+      scene.must_vary,
+      scene.forbidden_repetition
+    ].filter(Boolean).join(" "))));
+  if (!needsOfficeOverride) {
+    return {
+      ...analysis,
+      project_type: detected.label,
+      scene_allocation_strategy: analysis.scene_allocation_strategy || designSeriesSceneAllocationText(count, context)
+    };
+  }
+  const roles = defaultDesignSeriesSceneRoles(count, { ...context, analysis: { ...analysis, project_type: detected.label } }).slice(0, count);
+  return {
+    ...analysis,
+    project_type: detected.label,
+    scene_allocation_strategy: designSeriesSceneAllocationText(count, { ...context, analysis: { ...analysis, project_type: detected.label } }),
+    suggested_outputs: roles.map((role) => role.title),
+    spatial_sequence: roles.map((role) => role.title).join(" -> "),
+    scene_briefs: roles.map((role, index) => ({
+      ...role,
+      index: index + 1,
+      title: role.title,
+      must_repeat: [
+        "same office material family",
+        "same workplace lighting philosophy",
+        "same corporate furniture/object era",
+        "same render finish",
+        "no people or animals"
+      ],
+      forbidden_repetition: [
+        role.forbidden_repetition,
+        "No bedrooms, guestrooms, hotel suites, beds, bath/spa/pool, residential private rooms, people, animals or pets."
+      ].filter(Boolean).join(" ")
+    }))
+  };
+}
+
 async function analyzeDesignSeriesReferences(body) {
   const references = activeReferenceImagesFromBody(body);
   if (!references.length) {
@@ -1807,16 +1915,23 @@ async function analyzeDesignSeriesReferences(body) {
         "Do not assign fixed roles such as material, furniture, lighting, color or atmosphere to the reference images.",
         "Treat every reference image as a complete open reference. Read spatial language, mood, composition, materials, lighting, object systems and design intent only when they are actually visible and useful.",
         "Then propose a coherent design series that can be generated from these references.",
+        "Core goal: stand at project-planning level. From one or more references, infer the likely whole project, then allocate the user-requested number of images to the most useful spaces in that project.",
         "Important: this function is deep one-to-many spatial design generation. It is NOT one camera angle with multiple styles, NOT one hero composition repeated with small variations, and NOT four isolated beautiful images.",
         "Definition of deep design series: one unified design system expanded into multiple fields, multiple camera angles, multiple viewpoints and multiple functional zones.",
         "Unified style means same project DNA, material system, lighting philosophy, furniture era, palette, render quality and design team language. It does not mean same room, same camera, same circular lobby, same sofa scene or same facade repeated.",
         "The output set must read like a connected project walkthrough or professional design package: different spaces/functions/views that belong to the same project.",
+        "Reference extraction must be precise: extract visible brand elements, color elements, material system, spatial organization, lighting atmosphere, composition rhythm, furniture/workstation/object language, ceiling/wall/floor logic and crafted details.",
+        "Thinking-mode emphasis: when reasoning is enabled, keep more of the original reference visual DNA in the project bible and scene briefs, but still extrapolate new connected spaces instead of copying one angle.",
+        "Generation settings rule: do not hardcode horizontal, 4:3, 4K, 8 images or any fixed output setting in the analysis or image prompts. Output count, aspect ratio, size/resolution and quality must follow the current UI/API generation settings.",
+        "Project-type classification is mandatory and must be based on visual evidence plus user context. If references show office/workplace cues such as desks, workstations, office chairs, meeting tables, glass partitions, reception desk, corporate lobby, collaboration areas or pantry, project_type must be office/workplace/corporate, not hospitality.",
         designSeriesSceneAllocationText(body.seriesCount || body.count || 4, {
           brief: body.brief || {},
           intent: body.intent || "",
           userPrompt: body.userPrompt || ""
         }),
         "Scene allocation rule: use the detected project type and requested output count to choose the strongest set of rooms/functions. Do not leave scene_briefs as generic labels when the project type implies specific spaces.",
+        "Occupancy rule: every scene must be unoccupied. Do not include people, staff, guests, clients, workers, silhouettes, body parts, faces, hands, crowds, animals, pets or lifestyle photography staging.",
+        "Office hard rule: when project_type is office/workplace/corporate, scene_briefs must not include bedroom, master bedroom, guestroom, suite, hotel room, bath, spa, soaking tub, resort, homestay or residential private rooms. Use reception, open workspace, collaboration, meeting, private office/focus, pantry/lounge, corridor/support and detail instead.",
         "For hotel/homestay/hospitality, a 4-image set should normally cover lobby/arrival, public living/lounge, master guestroom/suite, and a work/tea/dining/detail support scene. A 6-image set should add exterior/arrival and bath/spa/support. An 8-image set should also cover tea/dining/bar and work/reading/activity as separate scenes.",
         "Build a project bible before any image prompt: project DNA, spatial sequence, field/zone list, functional zoning, adjacency between spaces, recurring signatures, material system, lighting philosophy, palette, camera rhythm and render finish.",
         "The scene_briefs must assign truly different spaces/functions/viewpoints to each image and describe how each output connects to the previous/next image, for example exterior/arrival -> entry -> public lounge -> dining/office/retail zone -> suite/quiet room -> bath/corridor -> material detail.",
@@ -1890,7 +2005,12 @@ async function analyzeDesignSeriesReferences(body) {
 
   try {
     const text = await openaiResponsesTextStream(payload, { timeoutMs: 240000 });
-    const analysis = normalizeDesignSeriesAnalysis(parseModelJson(text), references);
+    const analysis = enforceDesignSeriesProjectType(normalizeDesignSeriesAnalysis(parseModelJson(text), references), {
+      brief: body.brief || {},
+      intent: body.intent || "",
+      userPrompt: body.userPrompt || "",
+      seriesCount: body.seriesCount || body.count || 4
+    });
     return {
       ...analysis,
       analysis_backend: analysis.analysis_backend || "gpt-5.5"
@@ -2082,7 +2202,7 @@ function defaultDesignSeriesSceneRoles(count = 4, context = {}) {
       4: [
         designSeriesRole("到达/入口/项目主视觉", "arrival", "establish the first arrival point and overall project identity", "site approach or exterior threshold", "main public or primary functional zone", "wide establishing view with clear threshold and circulation cue", "show arrival identity, not another interior detail"),
         designSeriesRole("公共核心/主要功能场域", "public-core", "show the main shared or primary functional space where the project language operates at full scale", "arrival or entry threshold", "secondary function or quiet zone", "eye-level wide interior view showing circulation, furniture grouping and wall/ceiling/floor system", "show the primary function and spatial depth, not another entrance hero"),
-        designSeriesRole("次级功能/安静场域", "secondary-or-quiet", "show a different functional zone such as dining, office, retail display, lounge, meeting, guest room or quiet room using the same project DNA", "public core or corridor", "transition/support/detail zone", "different eye-level or mid-wide view with calmer scale and changed focal direction", "show a different program and camera direction, not another public core view"),
+        designSeriesRole("次级功能/安静场域", "secondary-or-quiet", "show a different functional zone such as dining, office, retail display, lounge, meeting, wellness, study or quiet room using the same project DNA", "public core or corridor", "transition/support/detail zone", "different eye-level or mid-wide view with calmer scale and changed focal direction", "show a different program and camera direction, not another public core view"),
         designSeriesRole("过渡空间/材料节点", "transition-detail", "show a connective threshold, corridor, stair, service/support moment or crafted material detail that ties the series together", "previous public/secondary zone", "the rest of the project", "detail-rich framed view, closer or more linear than the previous images", "show material/craft/circulation evidence, not another wide hero shot")
       ],
       6: [
@@ -2090,7 +2210,7 @@ function defaultDesignSeriesSceneRoles(count = 4, context = {}) {
         designSeriesRole("接待/公共主空间", "public-core", "main public room connected to the entrance", "entry", "lounge/dining/office/display/corridor", "wide eye-level interior view with circulation and full material system", "social or primary functional scale"),
         designSeriesRole("休闲/餐厨/办公/展示等次级功能区", "secondary-function", "secondary shared space adjacent to the public zone, with a different program but the same design DNA", "public main space", "quiet/private/support rooms", "mid-wide interior view from a new direction", "different function with repeated material language"),
         designSeriesRole("安静/私密/套房/会议等不同尺度空间", "quiet-private", "quieter or more private room inheriting the same material and lighting system", "corridor/public zone", "support/detail/terrace", "calm eye-level room view with changed view axis", "quiet/private atmosphere and changed scale"),
-        designSeriesRole("走廊/楼梯/卫浴/服务等过渡或支持空间", "support-transition", "connective or support space that proves the design system works beyond hero rooms", "private/secondary zone or corridor", "detail/exit", "controlled framed or linear perspective view", "narrower spatial rhythm and threshold logic"),
+        designSeriesRole("走廊/楼梯/服务/支持等过渡空间", "support-transition", "connective or support space that proves the design system works beyond hero rooms", "private/secondary zone or corridor", "detail/exit", "controlled framed or linear perspective view", "narrower spatial rhythm and threshold logic"),
         designSeriesRole("材料节点/氛围特写", "detail", "close spatial moment showing repeated craft and material signatures", "any previous room", "whole project memory", "detail or intimate perspective with tactile material evidence", "texture, lighting detail and crafted junction")
       ],
       8: [
@@ -2098,8 +2218,8 @@ function defaultDesignSeriesSceneRoles(count = 4, context = {}) {
         designSeriesRole("门厅/接待", "entry-lobby", "threshold between exterior and interior", "entry", "main public room", "eye-level arrival view from a new position", "first interior impression"),
         designSeriesRole("公共休闲区", "public-core", "main social or primary functional space", "lobby", "dining/bar/office/display/corridor", "wide interior view with full spatial depth", "large-scale furniture and circulation"),
         designSeriesRole("餐厨/吧台/办公/展示/活动区", "secondary-function", "secondary public function with operational or activity detail", "public lounge", "quiet/private corridor", "mid-wide operational view from another axis", "functional detail"),
-        designSeriesRole("安静/私密/客房/会议区", "quiet-private", "quieter or private room scale", "corridor", "support/detail/terrace", "calm eye-level view", "private or focused atmosphere"),
-        designSeriesRole("卫浴/泡池/更衣/服务空间", "support", "support space with the same material system", "suite/private zone", "detail", "controlled support-area view", "stone/water/service/light expression"),
+        designSeriesRole("安静/专注/会议/洽谈区", "quiet-focused", "quieter or focused room scale selected by the detected project category", "corridor", "support/detail/terrace", "calm eye-level view", "private or focused atmosphere"),
+        designSeriesRole("服务/后勤/支持空间", "support", "support space with the same material system selected by the detected project category", "focused/private zone", "detail", "controlled support-area view", "stone/wood/service/light expression"),
         designSeriesRole("走廊/楼梯/过渡", "transition", "spatial connector that reveals project continuity", "public/private rooms", "detail/end point", "linear perspective view with strong threshold cues", "circulation and threshold language"),
         designSeriesRole("材料节点/氛围特写", "detail", "close crafted moment tying the series together", "whole project", "memory/detail", "detail-rich intimate view", "tactile signature")
       ]
@@ -2139,6 +2259,9 @@ function designSeriesContinuityContract({ analysis = {}, index = 1, count = 4, s
     "DESIGN_SERIES_CONTINUITY_CONTRACT:",
     `- This is image ${index} of ${count} in one deep spatial project series, not an isolated render and not a style variation of one angle.`,
     "- Deep series definition: unified style across different fields, viewpoints, angles and functional zones. Same design DNA, different spatial role.",
+    "- Project-planning rule: infer the whole project from the references, then show the current most useful scene in that project according to the requested count.",
+    "- UI settings rule: keep output count, aspect ratio, resolution/size and quality exactly as provided by the current UI/API request; do not add fixed horizontal, 4:3, 4K or 8-image requirements.",
+    "- Reference DNA extraction: preserve visible brand cues, color elements, material system, spatial organization, lighting atmosphere, composition rhythm, furniture/object language and crafted details.",
     `- Project DNA: ${analysis.project_dna || analysis.series_strategy || "same project identity, same design team, same render pipeline"}.`,
     `- Spatial sequence: ${analysis.spatial_sequence || "the images should read as a connected walk-through from arrival/public space to private space and detail moments"}.`,
     `- Current scene role is non-negotiable: ${sceneBrief.title || ""} / ${sceneBrief.spatial_role || ""}.`,
@@ -2150,6 +2273,7 @@ function designSeriesContinuityContract({ analysis = {}, index = 1, count = 4, s
     `- Forbidden repetition: ${sceneBrief.forbidden_repetition || "do not repeat the same room, same camera position, same hero composition or same primary furniture grouping from other outputs."}`,
     `- Continuity rules: ${(analysis.continuity_rules || []).join("; ") || "repeat key materials across adjacent rooms; maintain a believable circulation axis; keep openings/thresholds/ceiling logic compatible; use the same lighting temperature and post-processing; keep object scale and styling density consistent."}`,
     "- Spatial linkage requirement: include at least one visual cue that can connect this image to the rest of the set, such as a repeated wall/floor material, ceiling detail, doorway/threshold, corridor axis, exterior view, furniture family, lighting fixture language or crafted motif.",
+    "- No people or animals: the image must be an empty spatial design render. Do not include people, employees, guests, clients, silhouettes, faces, hands, crowds, lifestyle figures, animals or pets.",
     "- Hard avoid: do not make this image a totally new hotel/house/shop; do not change render style, color grading, material family, furniture era, lighting mood or project budget level between images; do not solve continuity by repeating the same view."
   ].join("\n");
 }
@@ -2158,12 +2282,14 @@ function designSeriesFinalPromptLock({ index = 1, count = 4, sceneBrief = {} } =
   return [
     "DESIGN_SERIES_IMAGE_LOCK:",
     `- This final prompt is for image ${index}/${count}. The generated image must follow this exact scene role and field category.`,
+    "- Respect current generation settings for aspect ratio, image size/resolution, quality and total count. Do not inject horizontal, 4:3, 4K or 8-image constraints unless they came from the current request.",
     `- Scene role: ${sceneBrief.title || "series scene"} / ${sceneBrief.spatial_role || "one distinct space in the same project"}.`,
     `- Field category: ${sceneBrief.field_type || "distinct functional zone"}.`,
     `- Spatial continuity: comes from ${sceneBrief.connects_from || "the previous space"} and leads to ${sceneBrief.connects_to || "the next space"}.`,
     `- Camera and composition: ${sceneBrief.camera || "use a clear architectural camera appropriate to this scene role"}.`,
     `- Required variation: ${sceneBrief.must_vary || "change the space function, camera position and focal zone while preserving the same project DNA."}`,
     `- Forbidden repetition: ${sceneBrief.forbidden_repetition || "do not repeat the same room, same camera position, same hero composition or same primary furniture grouping."}`,
+    "- No people or animals allowed: empty architecture/interior space only. No humans, staff, guests, clients, workers, silhouettes, portraits, faces, hands, body parts, crowds, animals or pets.",
     "- If any earlier text says image 1, entrance hero, or a different scene role, treat that earlier text only as global series context and follow this IMAGE_LOCK instead.",
     "- If any earlier text over-focuses on a single reference angle, reinterpret it as style/material DNA only, not as the scene to repeat.",
     "- Do not repeat the same entrance hero composition for every output. This image must be visually distinct in function, viewpoint and focal zone while staying connected by materials, lighting, palette, furniture language and render finish."
@@ -2180,7 +2306,12 @@ async function generateDesignSeries(body) {
 
   const useReasoning = body.thinkingEnabled !== false;
   const analysis = body.analysis?.image_prompt
-    ? normalizeDesignSeriesAnalysis(body.analysis, references)
+    ? enforceDesignSeriesProjectType(normalizeDesignSeriesAnalysis(body.analysis, references), {
+        brief: body.brief || {},
+        intent: body.intent || "",
+        userPrompt: body.userPrompt || "",
+        seriesCount: body.seriesCount || body.count || 4
+      })
     : useReasoning
       ? await analyzeDesignSeriesReferences(body)
       : designSeriesPresetAnalysis(body, references, {
@@ -2190,6 +2321,7 @@ async function generateDesignSeries(body) {
   const seriesCount = Math.max(1, Math.min(8, Number(body.seriesCount || body.count || 1) || 1));
   const seriesIndex = Math.max(1, Math.min(seriesCount, Number(body.seriesIndex || 1) || 1));
   const sceneBrief = designSeriesSceneBrief(analysis, seriesIndex, seriesCount);
+  const detectedProjectType = detectDesignSeriesProjectType({ brief, intent: body.intent || "", userPrompt: body.userPrompt || "", analysis });
   const prompt = [
     gptImage2PromptFusionGuide({
       mode: "designseries",
@@ -2213,17 +2345,22 @@ async function generateDesignSeries(body) {
     "",
     designSeriesContinuityContract({ analysis, index: seriesIndex, count: seriesCount, sceneBrief }),
     "",
+    designSeriesProjectTypeGuard(detectedProjectType),
+    "",
     analysis.image_prompt || "Generate a cohesive architecture/interior design series image.",
     "",
     "DEEP_DESIGN_SERIES_DEFINITION:",
     "- Create one finished single scene image that belongs to a coherent design series for spatial designers.",
     "- This series is unified by style/material/light/render language, but diversified by field, function, viewpoint, angle and spatial scale.",
+    "- Stand at the project-planning level: infer the whole design from the references, then generate the current scene as one part of that larger design.",
+    "- Precisely preserve reference-derived brand cues, color elements, material system, spatial rhythm, lighting atmosphere, composition logic, furniture/object language and crafted details.",
     "- Do not turn the series into one camera angle with multiple style variations.",
+    "- Do not hardcode aspect ratio, resolution/size, quality or total image count in the prompt. These are already supplied by the current generation request.",
     "",
     `This request represents image ${seriesIndex}/${seriesCount}; follow the scene role and spatial continuity contract above more strongly than generic style words.`,
     "Do not create a multi-panel presentation board, collage, contact sheet, moodboard, split-screen layout, captions or text unless the user explicitly asks for that.",
     "Use the uploaded reference images as design language references, not as content to copy exactly.",
-    `Project type: ${analysis.project_type || detectDesignSeriesProjectType({ brief, intent: body.intent || "", userPrompt: body.userPrompt || "", analysis }).label}`,
+    `Project type: ${analysis.project_type || detectedProjectType.label}`,
     `Scene allocation strategy: ${analysis.scene_allocation_strategy || designSeriesSceneAllocationText(seriesCount, { brief, intent: body.intent || "", userPrompt: body.userPrompt || "", analysis })}`,
     `Series strategy: ${analysis.series_strategy}`,
     `Project DNA: ${analysis.project_dna || ""}`,
@@ -2240,6 +2377,7 @@ async function generateDesignSeries(body) {
     `Reference weights: ${referenceWeightSummary(references)}`,
     `Reference usage intent: ${referenceIntentSummary(references)}`,
     `User intent: ${body.intent || ""}`,
+    "No people, no human figures, no staff, no guests, no clients, no silhouettes, no hands, no faces, no crowds, no animals, no pets.",
     "No readable text, no logos, no watermark, no UI overlay, no presentation-board composition."
   ].join("\n");
 
