@@ -107,6 +107,8 @@ const config = {
   },
   maxJsonBodyBytes: boundedIntegerEnv("MAX_JSON_BODY_MB", 80, 1, 200) * 1024 * 1024,
   imageGenerationConcurrency: boundedIntegerEnv(["IMAGE_GENERATION_CONCURRENCY", "LAOGUI_IMAGE_CONCURRENCY"], 2, 1, 8),
+  imageGenerationQueueMaxPending: boundedIntegerEnv(["IMAGE_GENERATION_QUEUE_MAX_PENDING", "LAOGUI_IMAGE_QUEUE_MAX_PENDING"], 12, 0, 200),
+  imageGenerationQueueTimeoutMs: boundedIntegerEnv(["IMAGE_GENERATION_QUEUE_TIMEOUT_SECONDS", "LAOGUI_IMAGE_QUEUE_TIMEOUT_SECONDS"], 600, 10, 3600) * 1000,
   publicApi: {
     token: process.env.LAOGUI_API_TOKEN || process.env.API_ACCESS_TOKEN || "",
     corsOrigin: process.env.API_CORS_ORIGIN || ""
@@ -253,6 +255,27 @@ function sendOwnerOnly(res) {
     ok: false,
     error: "只有本机 localhost 可以修改 API 设置。请在电脑本机打开 http://localhost:4177 后再调整。"
   });
+}
+
+function isRemoteRequest(req) {
+  return !isOwnerRequest(req);
+}
+
+function requireRemoteApiAuthorization(req, res) {
+  if (!isRemoteRequest(req)) return true;
+  if (externalApiAuthorized(req)) return true;
+  sendUnauthorizedApi(res);
+  return false;
+}
+
+function clientIdFromRequest(req, url, { requiredForRemote = true } = {}) {
+  const raw = url.searchParams.get("clientId") || "";
+  if (requiredForRemote && isRemoteRequest(req) && !raw.trim()) {
+    const error = new Error("Missing clientId");
+    error.status = 400;
+    throw error;
+  }
+  return sanitizeClientId(raw || "local");
 }
 
 async function readJson(req) {
@@ -4284,10 +4307,6 @@ function compactCanvasSnapshot(snapshot = {}) {
   return next;
 }
 
-function clientIdFromUrl(url) {
-  return sanitizeClientId(url.searchParams.get("clientId") || "local");
-}
-
 function taskIdFromBodyOrUrl(body = {}, url = null) {
   return String(body.clientTaskId || body.taskId || url?.searchParams?.get("taskId") || "")
     .replace(/[^A-Za-z0-9_-]/g, "")
@@ -4376,7 +4395,7 @@ function shortRuntimeEndpointLabel(baseUrl) {
   }
 }
 
-function publicRuntimeImageEndpoint(endpoint) {
+function publicRuntimeImageEndpoint(endpoint, { includeKeyPreview = false } = {}) {
   return {
     id: endpoint.id,
     label: endpoint.label,
@@ -4384,7 +4403,7 @@ function publicRuntimeImageEndpoint(endpoint) {
     responsesPath: endpoint.responsesPath,
     enabled: endpoint.enabled,
     keyConfigured: Boolean(endpoint.apiKey),
-    keyPreview: endpoint.apiKey ? `${endpoint.apiKey.slice(0, 5)}...${endpoint.apiKey.slice(-4)}` : "",
+    keyPreview: includeKeyPreview && endpoint.apiKey ? `${endpoint.apiKey.slice(0, 5)}...${endpoint.apiKey.slice(-4)}` : "",
     createdAt: endpoint.createdAt,
     updatedAt: endpoint.updatedAt
   };
@@ -4419,16 +4438,17 @@ async function saveRuntimeSettings() {
 
 function runtimeSettingsBody(req = null) {
   const imageEndpointHealthValue = imageEndpointHealth();
+  const owner = req ? isOwnerRequest(req) : true;
   return {
     ok: true,
     settings: {
-      imageEndpoints: runtimeSettings.imageEndpoints.map(publicRuntimeImageEndpoint),
+      imageEndpoints: runtimeSettings.imageEndpoints.map((endpoint) => publicRuntimeImageEndpoint(endpoint, { includeKeyPreview: owner })),
       activeImageBaseUrl: config.imageProvider.baseUrl,
       imageEndpointHealth: imageEndpointHealthValue,
       recommendedImageEndpoint: imageEndpointRecommendation(imageEndpointHealthValue),
       imageBackend: "responses-image-generation-tool",
       imageGenContract: "Custom endpoints still use Responses image_generation through the Image Gen path.",
-      canManageSettings: req ? isOwnerRequest(req) : true,
+      canManageSettings: owner,
       publicApiTokenConfigured: Boolean(config.publicApi.token),
       publicApiCorsOrigin: config.publicApi.corsOrigin || ""
     }
@@ -4740,7 +4760,7 @@ function healthBody() {
     reasoningBaseUrl: config.reasoningProvider.baseUrl,
     imageBaseUrl: config.imageProvider.baseUrl,
     imageBaseUrls: config.imageProvider.baseUrls,
-    runtimeImageEndpoints: runtimeSettings.imageEndpoints.map(publicRuntimeImageEndpoint),
+    runtimeImageEndpoints: runtimeSettings.imageEndpoints.map((endpoint) => publicRuntimeImageEndpoint(endpoint, { includeKeyPreview: false })),
     imageEndpointHealth: imageEndpointHealthValue,
     recommendedImageEndpoint: imageEndpointRecommendation(imageEndpointHealthValue),
     imageQueue: imageGenerationQueueState(),
@@ -4759,7 +4779,9 @@ function imageGenerationQueueState() {
   return {
     active: activeImageGenerationTasks,
     pending: imageGenerationQueue.length,
-    limit: config.imageGenerationConcurrency
+    limit: config.imageGenerationConcurrency,
+    maxPending: config.imageGenerationQueueMaxPending,
+    timeoutMs: config.imageGenerationQueueTimeoutMs
   };
 }
 
@@ -4776,9 +4798,28 @@ async function withImageGenerationSlot(label, run) {
   const queuedAt = Date.now();
   let queued = false;
   if (activeImageGenerationTasks >= config.imageGenerationConcurrency) {
+    if (imageGenerationQueue.length >= config.imageGenerationQueueMaxPending) {
+      const error = new Error("生图任务排队过多，请稍后再试。");
+      error.status = 429;
+      error.details = imageGenerationQueueState();
+      throw error;
+    }
     queued = true;
     await new Promise((resolve) => {
-      imageGenerationQueue.push(resolve);
+      let timeout = null;
+      const resume = () => {
+        if (timeout) clearTimeout(timeout);
+        resolve();
+      };
+      timeout = setTimeout(() => {
+        const index = imageGenerationQueue.indexOf(resume);
+        if (index >= 0) imageGenerationQueue.splice(index, 1);
+        const error = new Error("生图任务排队超时，请稍后重试。");
+        error.status = 429;
+        error.details = imageGenerationQueueState();
+        resolve(Promise.reject(error));
+      }, config.imageGenerationQueueTimeoutMs);
+      imageGenerationQueue.push(resume);
     });
   } else {
     activeImageGenerationTasks += 1;
@@ -5537,7 +5578,7 @@ async function handleExternalApi(req, res, routePath) {
   if (req.method === "GET" && routePath === "/task-logs") {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const limit = clampNumber(Number(url.searchParams.get("limit") || 80), 1, 200);
-    const clientId = clientIdFromUrl(url);
+    const clientId = clientIdFromRequest(req, url);
     const logs = await readTaskLogs(limit, clientId);
     sendJson(res, 200, { ok: true, clientId, logs });
     return;
@@ -5546,7 +5587,7 @@ async function handleExternalApi(req, res, routePath) {
   const taskLogMatch = routePath.match(/^\/task-logs\/([^/]+)$/);
   if (taskLogMatch && req.method === "DELETE") {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const clientId = clientIdFromUrl(url);
+    const clientId = clientIdFromRequest(req, url);
     const result = await deleteTaskLog(decodeURIComponent(taskLogMatch[1]), clientId);
     sendJson(res, 200, { ok: true, clientId, ...result });
     return;
@@ -5554,7 +5595,7 @@ async function handleExternalApi(req, res, routePath) {
 
   if (req.method === "GET" && routePath === "/task-result") {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const clientId = clientIdFromUrl(url);
+    const clientId = clientIdFromRequest(req, url);
     const taskId = taskIdFromBodyOrUrl({}, url);
     if (!taskId) {
       sendJson(res, 400, { ok: false, error: "Missing taskId" });
@@ -5572,7 +5613,7 @@ async function handleExternalApi(req, res, routePath) {
 
   if (req.method === "GET" && routePath === "/canvas-state") {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const clientId = clientIdFromUrl(url);
+    const clientId = clientIdFromRequest(req, url);
     const state = await readCanvasState(clientId);
     sendJson(res, 200, { ok: true, clientId, state });
     return;
@@ -5580,7 +5621,7 @@ async function handleExternalApi(req, res, routePath) {
 
   if (req.method === "POST" && routePath === "/canvas-state") {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const clientId = clientIdFromUrl(url);
+    const clientId = clientIdFromRequest(req, url);
     const body = await readJson(req);
     const state = await writeCanvasState(body, clientId);
     sendJson(res, 200, { ok: true, clientId, savedAt: state.savedAt });
@@ -5664,7 +5705,7 @@ async function handleExternalApi(req, res, routePath) {
 
   if (req.method === "POST" && routePath === "/plan") {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const clientId = clientIdFromUrl(url);
+    const clientId = clientIdFromRequest(req, url);
     const body = await readJson(req);
     const plan = await runLoggedTask({
       type: "api-v1-plan",
@@ -5678,7 +5719,7 @@ async function handleExternalApi(req, res, routePath) {
 
   if (req.method === "POST" && routePath === "/images/generate") {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const clientId = clientIdFromUrl(url);
+    const clientId = clientIdFromRequest(req, url);
     const body = await readJson(req);
     const taskId = taskIdFromBodyOrUrl(body, url);
     const image = await runRecoverableTask({
@@ -5699,7 +5740,7 @@ async function handleExternalApi(req, res, routePath) {
 
   if (req.method === "POST" && routePath === "/images/render-from-images") {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const clientId = clientIdFromUrl(url);
+    const clientId = clientIdFromRequest(req, url);
     const body = await readJson(req);
     const taskId = taskIdFromBodyOrUrl(body, url);
     const render = await runRecoverableTask({
@@ -5720,7 +5761,7 @@ async function handleExternalApi(req, res, routePath) {
 
   if (req.method === "POST" && routePath === "/design-series/analyze") {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const clientId = clientIdFromUrl(url);
+    const clientId = clientIdFromRequest(req, url);
     const body = await readJson(req);
     const analysis = await runLoggedTask({
       type: "api-v1-analyze-design-series",
@@ -5734,7 +5775,7 @@ async function handleExternalApi(req, res, routePath) {
 
   if (req.method === "POST" && routePath === "/design-series/generate") {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const clientId = clientIdFromUrl(url);
+    const clientId = clientIdFromRequest(req, url);
     const body = await readJson(req);
     const taskId = taskIdFromBodyOrUrl(body, url);
     const series = await runRecoverableTask({
@@ -5763,6 +5804,7 @@ async function handleApi(req, res) {
     res.end();
     return;
   }
+  if (!requireRemoteApiAuthorization(req, res)) return;
 
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -5787,14 +5829,14 @@ async function handleApi(req, res) {
     }
 
     if (req.method === "GET" && url.pathname === "/api/canvas-state") {
-      const clientId = clientIdFromUrl(url);
+      const clientId = clientIdFromRequest(req, url);
       const state = await readCanvasState(clientId);
       sendJson(res, 200, { ok: true, clientId, state });
       return;
     }
 
     if (req.method === "POST" && url.pathname === "/api/canvas-state") {
-      const clientId = clientIdFromUrl(url);
+      const clientId = clientIdFromRequest(req, url);
       const body = await readJson(req);
       const state = await writeCanvasState(body, clientId);
       sendJson(res, 200, { ok: true, clientId, savedAt: state.savedAt });
@@ -5804,7 +5846,7 @@ async function handleApi(req, res) {
     if (req.method === "GET" && req.url?.startsWith("/api/task-logs")) {
       const url = new URL(req.url, `http://${req.headers.host}`);
       const limit = clampNumber(Number(url.searchParams.get("limit") || 80), 1, 200);
-      const clientId = clientIdFromUrl(url);
+      const clientId = clientIdFromRequest(req, url);
       const logs = await readTaskLogs(limit, clientId);
       sendJson(res, 200, { ok: true, clientId, logs });
       return;
@@ -5813,14 +5855,14 @@ async function handleApi(req, res) {
     const taskLogUrl = new URL(req.url, `http://${req.headers.host}`);
     const taskLogMatch = taskLogUrl.pathname.match(/^\/api\/task-logs\/([^/]+)$/);
     if (taskLogMatch && req.method === "DELETE") {
-      const clientId = clientIdFromUrl(taskLogUrl);
+      const clientId = clientIdFromRequest(req, taskLogUrl);
       const result = await deleteTaskLog(decodeURIComponent(taskLogMatch[1]), clientId);
       sendJson(res, 200, { ok: true, clientId, ...result });
       return;
     }
 
     if (req.method === "GET" && url.pathname === "/api/task-result") {
-      const clientId = clientIdFromUrl(url);
+      const clientId = clientIdFromRequest(req, url);
       const taskId = taskIdFromBodyOrUrl({}, url);
       if (!taskId) {
         sendJson(res, 400, { ok: false, error: "Missing taskId" });
@@ -5918,7 +5960,7 @@ async function handleApi(req, res) {
     }
 
     if (req.method === "POST" && url.pathname === "/api/task-log-event") {
-      const clientId = clientIdFromUrl(url);
+      const clientId = clientIdFromRequest(req, url);
       const body = await readJson(req);
       const entry = {
         id: randomUUID(),
@@ -5939,7 +5981,7 @@ async function handleApi(req, res) {
     }
 
     if (req.method === "POST" && url.pathname === "/api/plan") {
-      const clientId = clientIdFromUrl(url);
+      const clientId = clientIdFromRequest(req, url);
       const body = await readJson(req);
       const plan = await runLoggedTask({
         type: "plan",
@@ -5952,7 +5994,7 @@ async function handleApi(req, res) {
     }
 
     if (req.method === "POST" && url.pathname === "/api/generate-image") {
-      const clientId = clientIdFromUrl(url);
+      const clientId = clientIdFromRequest(req, url);
       const body = await readJson(req);
       const taskId = taskIdFromBodyOrUrl(body, url);
       const image = await runRecoverableTask({
@@ -5972,7 +6014,7 @@ async function handleApi(req, res) {
     }
 
     if (req.method === "POST" && url.pathname === "/api/render-from-images") {
-      const clientId = clientIdFromUrl(url);
+      const clientId = clientIdFromRequest(req, url);
       const body = await readJson(req);
       const taskId = taskIdFromBodyOrUrl(body, url);
       const render = await runRecoverableTask({
@@ -5992,7 +6034,7 @@ async function handleApi(req, res) {
     }
 
     if (req.method === "POST" && url.pathname === "/api/analyze-design-series") {
-      const clientId = clientIdFromUrl(url);
+      const clientId = clientIdFromRequest(req, url);
       const body = await readJson(req);
       const analysis = await runLoggedTask({
         type: "analyze-design-series",
@@ -6005,7 +6047,7 @@ async function handleApi(req, res) {
     }
 
     if (req.method === "POST" && url.pathname === "/api/design-series") {
-      const clientId = clientIdFromUrl(url);
+      const clientId = clientIdFromRequest(req, url);
       const body = await readJson(req);
       const taskId = taskIdFromBodyOrUrl(body, url);
       const series = await runRecoverableTask({

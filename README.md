@@ -64,6 +64,9 @@ The app uses separate providers:
 - `IMAGE_RESPONSES_PATH=/responses`: yybb 的 Responses 路径；其他 OpenAI-compatible 服务通常是 `/v1/responses`。
 - `IMAGE_GEN_SKILL_MAX_ATTEMPTS=5`: Image Gen skill 的最高优先级重试次数；全部失败后才切换到旧 App 生图路径。
 - `IMAGE_ALLOW_LEGACY_FALLBACK=0`: 默认只走 Responses `image_generation`，确保网页里配置的自定义生图 API 也经过 Image Gen 链路。
+- `IMAGE_GENERATION_CONCURRENCY=2`: 同时生图任务数；其余任务排队，避免 API 被打爆。
+- `IMAGE_GENERATION_QUEUE_MAX_PENDING=12`: 最多等待中的生图任务数，超过会返回 429。
+- `IMAGE_GENERATION_QUEUE_TIMEOUT_SECONDS=600`: 生图排队最长等待时间。
 - `MAX_JSON_BODY_MB=80`: 单次 JSON 请求体上限，避免超大 base64 上传把本地服务拖慢。
 
 The browser never receives the API key. All model calls are proxied through `server.mjs`.

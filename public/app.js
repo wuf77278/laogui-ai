@@ -46,7 +46,7 @@ const state = {
   activeImageBaseUrl: "",
   recommendedImageEndpoint: null,
   runtimeImageEndpoints: [],
-  canManageApiSettings: true,
+  canManageApiSettings: false,
   endpointProbeBusyIds: new Set(),
   endpointAutoProbeAt: 0,
   theme: "night",
@@ -2420,6 +2420,9 @@ async function refreshTaskLogs({ silent = false } = {}) {
   try {
     const response = await fetch(clientScopedApiPath("/api/task-logs?limit=80"));
     const data = await response.json();
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || "任务日志读取失败");
+    }
     const logs = Array.isArray(data.logs) ? data.logs : [];
     state.taskLogs = logs;
     renderWorkspaceHistoryPanel();
@@ -2436,6 +2439,10 @@ async function refreshTaskLogs({ silent = false } = {}) {
       button.setAttribute("aria-pressed", String(active));
     });
   } catch (error) {
+    els.taskLogList.innerHTML = `<p class="muted">任务日志读取失败，请稍后重试。</p>`;
+    if (state.historyPanelOpen && els.workspaceHistoryList) {
+      els.workspaceHistoryList.innerHTML = `<p class="muted">历史记录读取失败，请稍后重试。</p>`;
+    }
     if (!silent) toast("任务日志读取失败");
   }
 }
@@ -2445,7 +2452,7 @@ function generatedHistoryLogs() {
   return state.taskLogs
     .filter((log) => log.status === "success" && log.result?.outputUrl)
     .filter((log) => {
-      const key = log.result.outputUrl;
+      const key = [log.result.outputUrl, log.result?.prompt || log.input?.intent || "", log.input?.stepMode || log.input?.mode || log.result?.mode || ""].join("|");
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -4927,6 +4934,7 @@ function removePrimaryImage() {
 function removeReferenceImage(index) {
   const referenceIndex = Number(index);
   if (!Number.isInteger(referenceIndex) || referenceIndex < 0 || referenceIndex >= state.referenceImages.length) return;
+  const oldPositions = cloneValue(state.canvas.positions, {}) || {};
   state.referenceImages.splice(referenceIndex, 1);
   state.designSeriesAnalysis = null;
   if (state.canvas.selectedImage?.id === `reference${referenceIndex}` || state.canvas.selectedImage?.id?.startsWith("reference")) {
@@ -4934,6 +4942,16 @@ function removeReferenceImage(index) {
   }
   Object.keys(state.canvas.positions).forEach((key) => {
     if (/^reference\d+$/.test(key)) delete state.canvas.positions[key];
+  });
+  Object.keys(oldPositions).forEach((key) => {
+    const match = key.match(/^reference(\d+)$/);
+    if (!match) return;
+    const oldIndex = Number(match[1]);
+    if (oldIndex < referenceIndex) {
+      state.canvas.positions[key] = oldPositions[key];
+    } else if (oldIndex > referenceIndex) {
+      state.canvas.positions[`reference${oldIndex - 1}`] = oldPositions[key];
+    }
   });
   if (els.referenceImageInput) els.referenceImageInput.value = "";
   refreshGenerationControls();
@@ -5711,6 +5729,7 @@ function deleteOutputItem(item) {
   if (!ok) return;
   state.favoriteOutputIds.delete(item.id);
   state.compareOutputIds.delete(item.id);
+  const deletedLatest = state.render?.url && state.render.url === item.url;
   if (item.source === "render") {
     state.renders.splice(item.index, 1);
     Object.keys(state.canvas.positions).forEach((key) => {
@@ -5720,6 +5739,11 @@ function deleteOutputItem(item) {
   } else if (item.source === "direction") {
     const direction = (state.plan?.directions || []).find((entry) => entry.id === item.directionId);
     if (direction) direction.image = null;
+    if (deletedLatest) {
+      state.render = getOutputItems().filter((output) => output.url && output.url !== item.url).at(-1) || null;
+    }
+  } else if (deletedLatest) {
+    state.render = getOutputItems().filter((output) => output.url && output.url !== item.url).at(-1) || null;
   }
   if (state.canvas.selectedImage?.url === item.url) state.canvas.selectedImage = null;
   renderGeneratedResult();
@@ -7426,6 +7450,7 @@ function resetCanvasView() {
   state.canvas.y = 28;
   state.canvas.zoom = 0.86;
   applyCanvasTransform();
+  scheduleCanvasStateSave({ delay: 300 });
 }
 
 function focusCanvasToNodes(nodeIds = []) {
@@ -7452,6 +7477,7 @@ function focusCanvasToNodes(nodeIds = []) {
   state.canvas.x = (rect.width - (maxX - minX) * zoom) / 2 - minX * zoom;
   state.canvas.y = Math.max(84, (rect.height - (maxY - minY) * zoom) / 2) - minY * zoom;
   applyCanvasTransform();
+  scheduleCanvasStateSave({ delay: 300 });
 }
 
 function focusCanvasToResults() {
@@ -7472,6 +7498,7 @@ function zoomCanvas(delta, originClientX, originClientY) {
   state.canvas.y = originY - rect.top - canvasY * nextZoom;
   state.canvas.zoom = nextZoom;
   applyCanvasTransform();
+  scheduleCanvasStateSave({ delay: 900 });
 }
 
 function wheelDeltaPixels(event) {
@@ -8803,6 +8830,7 @@ function applyTheme(theme) {
   state.theme = normalizeTheme(theme);
   document.body.dataset.theme = state.theme;
   document.documentElement.dataset.theme = state.theme;
+  document.documentElement.style.colorScheme = state.theme === "day" ? "light" : "dark";
   try {
     localStorage.setItem("laogui-theme", state.theme);
   } catch {}
@@ -9312,6 +9340,7 @@ window.addEventListener("pointerup", (event) => {
     return;
   }
   const drag = state.canvas.nodeDrag;
+  const wasPanning = Boolean(state.canvas.panning);
   state.canvas.panning = null;
   state.canvas.nodeDrag = null;
   els.infiniteCanvas.classList.remove("is-panning");
@@ -9320,6 +9349,8 @@ window.addEventListener("pointerup", (event) => {
       id: drag.nodeId,
       ...drag.preview
     });
+  } else if (drag?.moved || wasPanning) {
+    scheduleCanvasStateSave({ delay: 240 });
   }
 });
 window.addEventListener("keydown", (event) => {
