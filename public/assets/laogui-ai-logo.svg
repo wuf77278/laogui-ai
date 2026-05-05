@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 116" role="img" aria-label="老鬼AI">
+  <defs>
+    <filter id="ink-rough" x="-10%" y="-14%" width="120%" height="132%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.026 0.14" numOctaves="3" seed="31" result="noise"/>
+      <feDisplacementMap in="SourceGraphic" in2="noise" scale="2.9" xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+    <filter id="dry-brush" x="-12%" y="-18%" width="124%" height="138%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.08 0.28" numOctaves="2" seed="41" result="grain"/>
+      <feDisplacementMap in="SourceGraphic" in2="grain" scale="1.35"/>
+    </filter>
+    <linearGradient id="rice-paper" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#1b1812"/>
+      <stop offset="0.52" stop-color="#070706"/>
+      <stop offset="1" stop-color="#16120c"/>
+    </linearGradient>
+    <linearGradient id="ink" x1="0" x2="0.98" y1="0" y2="1">
+      <stop offset="0" stop-color="#fffaf0"/>
+      <stop offset="0.44" stop-color="#fff6e3"/>
+      <stop offset="0.74" stop-color="#d7b979"/>
+      <stop offset="1" stop-color="#f7ecd1"/>
+    </linearGradient>
+    <linearGradient id="seal" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#d8a64c"/>
+      <stop offset="1" stop-color="#8f1f17"/>
+    </linearGradient>
+    <pattern id="paper-grain" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M0 8h32M0 22h32M8 0v32M24 0v32" stroke="#fff3d4" stroke-width="0.4" opacity="0.045"/>
+    </pattern>
+  </defs>
+  <rect x="2" y="2" width="356" height="112" rx="18" fill="url(#rice-paper)"/>
+  <rect x="2" y="2" width="356" height="112" rx="18" fill="url(#paper-grain)"/>
+  <rect x="2" y="2" width="356" height="112" rx="18" fill="none" stroke="#d8b774" stroke-width="1.2" opacity="0.34"/>
+  <g opacity="0.18" stroke="#d8b774" stroke-width="1" stroke-linecap="round">
+    <path d="M24 91c58-18 123-16 185-4"/>
+    <path d="M32 23c74 11 151 8 232-3"/>
+  </g>
+  <g filter="url(#ink-rough)" fill="url(#ink)">
+    <text x="22" y="78"
+      font-family="HanziPen SC, Xingkai SC, STXingkai, Kaiti SC, KaiTi, Songti SC, serif"
+      font-size="76"
+      font-weight="900"
+      letter-spacing="-10">老鬼</text>
+  </g>
+  <g filter="url(#dry-brush)" stroke="#fff4d7" stroke-width="5.2" stroke-linecap="round" opacity="0.58">
+    <path d="M52 83c-12 8-27 14-43 17"/>
+    <path d="M132 85c-16 10-34 16-55 19"/>
+    <path d="M204 80c-9 8-20 13-34 16"/>
+  </g>
+  <g transform="translate(263 29)">
+    <rect x="0" y="0" width="58" height="48" rx="7" fill="url(#seal)" opacity="0.96"/>
+    <rect x="4" y="4" width="50" height="40" rx="4" fill="none" stroke="#ffe7b0" stroke-width="1.2" opacity="0.58"/>
+    <text x="29" y="31"
+      text-anchor="middle"
+      fill="#fff9eb"
+      font-family="Inter, Arial Black, Arial, sans-serif"
+      font-size="23"
+      font-weight="900"
+      letter-spacing="-1.5">AI</text>
+  </g>
+  <text x="264" y="94"
+    fill="#d4b06a"
+    font-family="Kaiti SC, KaiTi, Songti SC, serif"
+    font-size="13"
+    opacity="0.76"
+    letter-spacing="3">空间智造</text>
+</svg>
