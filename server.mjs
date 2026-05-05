@@ -4083,6 +4083,42 @@ async function readTaskLogs(limit = 80, clientId = "local") {
   }
 }
 
+async function deleteTaskLog(logId, clientId = "local") {
+  const safeClientId = sanitizeClientId(clientId);
+  const targetId = String(logId || "").trim();
+  if (!targetId) {
+    const error = new Error("Missing log id");
+    error.status = 400;
+    throw error;
+  }
+  const logPath = taskLogPathForClient(safeClientId);
+  let raw = "";
+  try {
+    raw = await fs.readFile(logPath, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return { deleted: false };
+    throw error;
+  }
+  const lines = raw.split(/\r?\n/).filter(Boolean);
+  let deleted = false;
+  const kept = lines.filter((line) => {
+    try {
+      const entry = JSON.parse(line);
+      if (String(entry?.id || "") === targetId) {
+        deleted = true;
+        return false;
+      }
+    } catch {}
+    return true;
+  });
+  if (!deleted) return { deleted: false };
+  await fs.mkdir(path.dirname(logPath), { recursive: true });
+  const tmpPath = `${logPath}.${process.pid}.tmp`;
+  await fs.writeFile(tmpPath, kept.length ? `${kept.join("\n")}\n` : "");
+  await fs.rename(tmpPath, logPath);
+  return { deleted: true };
+}
+
 function sanitizeClientId(value) {
   const raw = String(value || "").trim();
   const cleaned = raw.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80);
@@ -5369,6 +5405,15 @@ async function handleExternalApi(req, res, routePath) {
     return;
   }
 
+  const taskLogMatch = routePath.match(/^\/task-logs\/([^/]+)$/);
+  if (taskLogMatch && req.method === "DELETE") {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const clientId = clientIdFromUrl(url);
+    const result = await deleteTaskLog(decodeURIComponent(taskLogMatch[1]), clientId);
+    sendJson(res, 200, { ok: true, clientId, ...result });
+    return;
+  }
+
   if (req.method === "GET" && routePath === "/task-result") {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const clientId = clientIdFromUrl(url);
@@ -5624,6 +5669,15 @@ async function handleApi(req, res) {
       const clientId = clientIdFromUrl(url);
       const logs = await readTaskLogs(limit, clientId);
       sendJson(res, 200, { ok: true, clientId, logs });
+      return;
+    }
+
+    const taskLogUrl = new URL(req.url, `http://${req.headers.host}`);
+    const taskLogMatch = taskLogUrl.pathname.match(/^\/api\/task-logs\/([^/]+)$/);
+    if (taskLogMatch && req.method === "DELETE") {
+      const clientId = clientIdFromUrl(taskLogUrl);
+      const result = await deleteTaskLog(decodeURIComponent(taskLogMatch[1]), clientId);
+      sendJson(res, 200, { ok: true, clientId, ...result });
       return;
     }
 

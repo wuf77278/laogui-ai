@@ -705,7 +705,19 @@ a:focus-visible {
   overflow: auto;
 }
 
+.project-template-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(17, 17, 15, 0.025);
+}
+
 .preset-row button,
+.project-template-row button,
 .style-preset-row button {
   min-height: 30px;
   padding: 0 9px;
@@ -718,8 +730,10 @@ a:focus-visible {
 }
 
 .preset-row button:hover,
+.project-template-row button:hover,
 .style-preset-row button:hover,
 .preset-row button.active,
+.project-template-row button.active,
 .style-preset-row button.active {
   border-color: rgba(196, 154, 60, 0.72);
   color: var(--ink);
@@ -2357,11 +2371,17 @@ a:focus-visible {
   margin-right: 12px;
 }
 
+.agent-panel .project-template-row {
+  margin-left: 12px;
+  margin-right: 12px;
+}
+
 .brief-panel.agent-panel .style-preset-row {
   background: rgba(255, 255, 255, 0.032);
 }
 
 .brief-panel.agent-panel .preset-row button,
+.brief-panel.agent-panel .project-template-row button,
 .brief-panel.agent-panel .style-preset-row button {
   color: var(--ink-soft);
   border-color: var(--line);
@@ -2369,8 +2389,10 @@ a:focus-visible {
 }
 
 .brief-panel.agent-panel .preset-row button:hover,
+.brief-panel.agent-panel .project-template-row button:hover,
 .brief-panel.agent-panel .style-preset-row button:hover,
 .brief-panel.agent-panel .preset-row button.active,
+.brief-panel.agent-panel .project-template-row button.active,
 .brief-panel.agent-panel .style-preset-row button.active {
   color: var(--ink);
   border-color: rgba(214, 180, 87, 0.42);
@@ -7884,6 +7906,19 @@ body.workspace-active .output-manager-list {
   max-height: 420px;
 }
 
+body.workspace-active .output-manager-actions {
+  grid-template-columns: minmax(0, 1fr) 34px 34px;
+  gap: 8px;
+}
+
+body.workspace-active .output-manager-actions input {
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
 body.workspace-active .output-manager-item {
   grid-template-columns: 84px minmax(0, 1fr) auto;
   align-items: start;
@@ -7987,6 +8022,10 @@ body.workspace-active .output-manager-buttons .secondary-button,
 body.workspace-active .output-manager-buttons .text-button {
   min-height: 32px;
   padding-inline: 9px;
+}
+
+body.workspace-active .output-manager-buttons .text-button[title="删除记录"] {
+  color: #d99f8f !important;
 }
 
 body.workspace-active .output-manager-item.is-latest {
@@ -10143,6 +10182,7 @@ body.workspace-active .segmented-control button,
 body.workspace-active .image-count-grid button,
 body.workspace-active .aspect-grid button,
 body.workspace-active .preset-row button,
+body.workspace-active .project-template-row button,
 body.workspace-active .style-preset-row button {
   border-color: rgba(214, 181, 124, 0.18);
   background: rgba(6, 6, 5, 0.62);
@@ -10174,6 +10214,7 @@ body.workspace-active .segmented-control button.active,
 body.workspace-active .image-count-grid button.active,
 body.workspace-active .aspect-grid button.active,
 body.workspace-active .preset-row button.active,
+body.workspace-active .project-template-row button.active,
 body.workspace-active .style-preset-row button.active {
   border-color: rgba(226, 188, 128, 0.48);
   background: rgba(184, 138, 87, 0.2);
@@ -10266,6 +10307,7 @@ body.workspace-active input::placeholder {
 }
 
 body.workspace-active .preset-row,
+body.workspace-active .project-template-row,
 body.workspace-active .style-preset-row {
   border-color: rgba(214, 181, 124, 0.16) !important;
   background:
@@ -10274,8 +10316,10 @@ body.workspace-active .style-preset-row {
 }
 
 body.workspace-active .brief-panel.agent-panel .preset-row button,
+body.workspace-active .brief-panel.agent-panel .project-template-row button,
 body.workspace-active .brief-panel.agent-panel .style-preset-row button,
 body.workspace-active .preset-row button,
+body.workspace-active .project-template-row button,
 body.workspace-active .style-preset-row button {
   border-color: rgba(214, 181, 124, 0.18) !important;
   background: rgba(18, 18, 15, 0.82) !important;
@@ -10284,12 +10328,16 @@ body.workspace-active .style-preset-row button {
 }
 
 body.workspace-active .brief-panel.agent-panel .preset-row button:hover,
+body.workspace-active .brief-panel.agent-panel .project-template-row button:hover,
 body.workspace-active .brief-panel.agent-panel .style-preset-row button:hover,
 body.workspace-active .brief-panel.agent-panel .preset-row button.active,
+body.workspace-active .brief-panel.agent-panel .project-template-row button.active,
 body.workspace-active .brief-panel.agent-panel .style-preset-row button.active,
 body.workspace-active .preset-row button:hover,
+body.workspace-active .project-template-row button:hover,
 body.workspace-active .style-preset-row button:hover,
 body.workspace-active .preset-row button.active,
+body.workspace-active .project-template-row button.active,
 body.workspace-active .style-preset-row button.active {
   border-color: rgba(226, 188, 128, 0.48) !important;
   background: rgba(184, 138, 87, 0.2) !important;
@@ -10361,7 +10409,8 @@ body.workspace-active .workspace-status-panel .secondary-link,
 body.workspace-active .output-manager-buttons .secondary-button,
 body.workspace-active .output-manager-buttons .text-button,
 body.workspace-active .output-manager-buttons .secondary-link,
-body.workspace-active .output-manager-actions .icon-only {
+body.workspace-active .output-manager-actions .icon-only,
+body.workspace-active .output-manager-actions input {
   border-color: rgba(214, 181, 124, 0.18) !important;
   background: rgba(10, 10, 9, 0.72) !important;
   color: rgba(244, 236, 220, 0.82) !important;
@@ -11082,6 +11131,7 @@ body[data-theme="day"].workspace-active .agent-drawer,
 body[data-theme="day"].workspace-active .canvas-command,
 body[data-theme="day"].workspace-active .generation-option-card,
 body[data-theme="day"].workspace-active .output-manager-item,
+body[data-theme="day"].workspace-active .output-manager-actions input,
 body[data-theme="day"].workspace-active .task-progress-panel,
 body[data-theme="day"].workspace-active .direction-card,
 body[data-theme="day"].workspace-active .resource-card,
@@ -11118,6 +11168,7 @@ body[data-theme="day"].workspace-active .segmented-control button,
 body[data-theme="day"].workspace-active .image-count-grid button,
 body[data-theme="day"].workspace-active .aspect-grid button,
 body[data-theme="day"].workspace-active .preset-row button,
+body[data-theme="day"].workspace-active .project-template-row button,
 body[data-theme="day"].workspace-active .style-preset-row button,
 body[data-theme="day"].workspace-active .theme-toggle,
 body[data-theme="day"].workspace-active .theme-toggle button {
@@ -11136,6 +11187,7 @@ body[data-theme="day"].workspace-active .segmented-control button.active,
 body[data-theme="day"].workspace-active .image-count-grid button.active,
 body[data-theme="day"].workspace-active .aspect-grid button.active,
 body[data-theme="day"].workspace-active .preset-row button.active,
+body[data-theme="day"].workspace-active .project-template-row button.active,
 body[data-theme="day"].workspace-active .style-preset-row button.active,
 body[data-theme="day"].workspace-active .theme-toggle button.active,
 body[data-theme="day"].workspace-active .api-endpoint-item.active {
@@ -11145,6 +11197,7 @@ body[data-theme="day"].workspace-active .api-endpoint-item.active {
 }
 
 body[data-theme="day"].workspace-active .preset-row,
+body[data-theme="day"].workspace-active .project-template-row,
 body[data-theme="day"].workspace-active .style-preset-row {
   border-color: rgba(104, 86, 55, 0.16) !important;
   background:
@@ -11153,8 +11206,10 @@ body[data-theme="day"].workspace-active .style-preset-row {
 }
 
 body[data-theme="day"].workspace-active .brief-panel.agent-panel .preset-row button,
+body[data-theme="day"].workspace-active .brief-panel.agent-panel .project-template-row button,
 body[data-theme="day"].workspace-active .brief-panel.agent-panel .style-preset-row button,
 body[data-theme="day"].workspace-active .preset-row button,
+body[data-theme="day"].workspace-active .project-template-row button,
 body[data-theme="day"].workspace-active .style-preset-row button {
   border-color: rgba(104, 86, 55, 0.2) !important;
   background: rgba(255, 253, 247, 0.84) !important;
@@ -11162,12 +11217,16 @@ body[data-theme="day"].workspace-active .style-preset-row button {
 }
 
 body[data-theme="day"].workspace-active .brief-panel.agent-panel .preset-row button:hover,
+body[data-theme="day"].workspace-active .brief-panel.agent-panel .project-template-row button:hover,
 body[data-theme="day"].workspace-active .brief-panel.agent-panel .style-preset-row button:hover,
 body[data-theme="day"].workspace-active .brief-panel.agent-panel .preset-row button.active,
+body[data-theme="day"].workspace-active .brief-panel.agent-panel .project-template-row button.active,
 body[data-theme="day"].workspace-active .brief-panel.agent-panel .style-preset-row button.active,
 body[data-theme="day"].workspace-active .preset-row button:hover,
+body[data-theme="day"].workspace-active .project-template-row button:hover,
 body[data-theme="day"].workspace-active .style-preset-row button:hover,
 body[data-theme="day"].workspace-active .preset-row button.active,
+body[data-theme="day"].workspace-active .project-template-row button.active,
 body[data-theme="day"].workspace-active .style-preset-row button.active {
   border-color: rgba(155, 111, 60, 0.44) !important;
   background: rgba(155, 111, 60, 0.16) !important;
@@ -11413,6 +11472,7 @@ body[data-theme="day"].workspace-active .canvas-image-object,
 body[data-theme="day"].workspace-active .api-current-endpoint,
 body[data-theme="day"].workspace-active .api-endpoint-item,
 body[data-theme="day"].workspace-active .preset-row,
+body[data-theme="day"].workspace-active .project-template-row,
 body[data-theme="day"].workspace-active .style-preset-row {
   border-color: rgba(17, 17, 15, 0.1) !important;
   background:
@@ -11433,6 +11493,7 @@ body[data-theme="day"].workspace-active .segmented-control button,
 body[data-theme="day"].workspace-active .image-count-grid button,
 body[data-theme="day"].workspace-active .aspect-grid button,
 body[data-theme="day"].workspace-active .preset-row button,
+body[data-theme="day"].workspace-active .project-template-row button,
 body[data-theme="day"].workspace-active .style-preset-row button,
 body[data-theme="day"].workspace-active .theme-toggle,
 body[data-theme="day"].workspace-active .theme-toggle button {
@@ -11447,6 +11508,7 @@ body[data-theme="day"].workspace-active .segmented-control button.active,
 body[data-theme="day"].workspace-active .image-count-grid button.active,
 body[data-theme="day"].workspace-active .aspect-grid button.active,
 body[data-theme="day"].workspace-active .preset-row button.active,
+body[data-theme="day"].workspace-active .project-template-row button.active,
 body[data-theme="day"].workspace-active .style-preset-row button.active,
 body[data-theme="day"].workspace-active .theme-toggle button.active,
 body[data-theme="day"].workspace-active .api-endpoint-item.active {

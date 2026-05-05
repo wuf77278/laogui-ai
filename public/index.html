@@ -192,6 +192,11 @@
         <path d="M15 5v14" />
         <path d="M7 9l3 3-3 3" />
       </symbol>
+      <symbol id="icon-filter" viewBox="0 0 24 24">
+        <path d="M4 6h16" />
+        <path d="M7 12h10" />
+        <path d="M10 18h4" />
+      </symbol>
     </svg>
 
     <div class="app-shell">
@@ -629,6 +634,16 @@
                   <button type="button" data-preset="office">办公展厅</button>
                   <button type="button" data-preset="residential">住宅改造</button>
                 </div>
+                <div class="project-template-row" aria-label="常用设计模板">
+                  <button type="button" data-project-template="homestay-lobby">民宿大堂</button>
+                  <button type="button" data-project-template="guest-suite">客房套房</button>
+                  <button type="button" data-project-template="tea-room">茶室</button>
+                  <button type="button" data-project-template="restaurant">餐厅</button>
+                  <button type="button" data-project-template="retail-display">商业展示</button>
+                  <button type="button" data-project-template="plan-color">平面图上色</button>
+                  <button type="button" data-project-template="white-model-render">白模转效果图</button>
+                  <button type="button" data-project-template="material-replace">材质替换</button>
+                </div>
                 <div class="style-preset-row" aria-label="常用风格">
                   <button type="button" data-style-preset="none">不选用</button>
                   <button type="button" data-style-preset="现代简约">现代简约</button>
@@ -751,7 +766,9 @@
             <details class="agent-drawer">
               <summary>输出管理</summary>
               <div class="output-manager-actions">
-                <button id="exportOutputsButton" class="secondary-button icon-only" type="button" title="批量下载当前画布图片" aria-label="批量下载当前画布图片"><svg><use href="#icon-export"></use></svg></button>
+                <input id="outputManagerSearch" type="search" placeholder="搜索作品" aria-label="搜索当前画布作品" />
+                <button id="outputFavoritesOnlyButton" class="secondary-button icon-only" type="button" title="只看收藏" aria-label="只看收藏" aria-pressed="false"><svg><use href="#icon-star"></use></svg></button>
+                <button id="exportOutputsButton" class="secondary-button icon-only" type="button" title="下载筛选结果" aria-label="下载筛选结果"><svg><use href="#icon-export"></use></svg></button>
               </div>
               <div id="outputManagerList" class="output-manager-list">
                 <p class="muted">生成图片后可在这里下载。</p>

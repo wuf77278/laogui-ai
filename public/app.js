@@ -50,9 +50,12 @@ const state = {
   endpointProbeBusyIds: new Set(),
   endpointAutoProbeAt: 0,
   theme: "night",
+  outputSearch: "",
+  outputFavoritesOnly: false,
   favoriteOutputIds: new Set(),
   compareOutputIds: new Set(),
   selectedScenePreset: null,
+  selectedProjectTemplate: null,
   selectedStylePreset: null,
   agentPanelCollapsed: false,
   canvasFloatingCollapsed: false,
@@ -237,6 +240,7 @@ const els = {
   agentUploadZone: $("agentUploadZone"),
   uploadPreviewBlock: $("uploadPreviewBlock"),
   presetButtons: Array.from(document.querySelectorAll("[data-preset]")),
+  projectTemplateButtons: Array.from(document.querySelectorAll("[data-project-template]")),
   stylePresetButtons: Array.from(document.querySelectorAll("[data-style-preset]")),
   themeButtons: Array.from(document.querySelectorAll("[data-theme-choice]")),
   securitySettingsSummary: $("securitySettingsSummary"),
@@ -307,6 +311,8 @@ const els = {
   taskProgressReview: $("taskProgressReview"),
   taskProgressPrompt: $("taskProgressPrompt"),
   outputManagerList: $("outputManagerList"),
+  outputManagerSearch: $("outputManagerSearch"),
+  outputFavoritesOnlyButton: $("outputFavoritesOnlyButton"),
   exportOutputsButton: $("exportOutputsButton"),
   taskLogList: $("taskLogList"),
   refreshTaskLogsButton: $("refreshTaskLogsButton"),
@@ -625,9 +631,12 @@ function blankCanvasSnapshot(mode = state.mode || "custom") {
     cadResults: [],
     designSeriesAnalysis: null,
     designSeriesResults: [],
+    outputSearch: "",
+    outputFavoritesOnly: false,
     favoriteOutputIds: [],
     compareOutputIds: [],
     selectedScenePreset: null,
+    selectedProjectTemplate: null,
     selectedStylePreset: null,
     canvasCommandUserEdited: false,
     commandValue: "",
@@ -789,9 +798,12 @@ function captureCanvasSnapshot() {
     cadResults: cloneValue(state.cadResults, []),
     designSeriesAnalysis: cloneValue(state.designSeriesAnalysis),
     designSeriesResults: cloneValue(state.designSeriesResults, []),
+    outputSearch: state.outputSearch || "",
+    outputFavoritesOnly: Boolean(state.outputFavoritesOnly),
     favoriteOutputIds: Array.from(state.favoriteOutputIds || []),
     compareOutputIds: Array.from(state.compareOutputIds || []),
     selectedScenePreset: state.selectedScenePreset,
+    selectedProjectTemplate: state.selectedProjectTemplate,
     selectedStylePreset: state.selectedStylePreset,
     canvasCommandUserEdited: state.canvasCommandUserEdited,
     commandValue: els.canvasCommand?.value || "",
@@ -943,9 +955,12 @@ async function restoreCanvasRecord(record) {
   state.cadResults = cloneValue(snapshot.cadResults, []);
   state.designSeriesAnalysis = cloneValue(snapshot.designSeriesAnalysis);
   state.designSeriesResults = cloneValue(snapshot.designSeriesResults, []);
+  state.outputSearch = String(snapshot.outputSearch || "");
+  state.outputFavoritesOnly = Boolean(snapshot.outputFavoritesOnly);
   state.favoriteOutputIds = new Set(snapshot.favoriteOutputIds || []);
   state.compareOutputIds = new Set(snapshot.compareOutputIds || []);
   state.selectedScenePreset = snapshot.selectedScenePreset || null;
+  state.selectedProjectTemplate = snapshot.selectedProjectTemplate || null;
   state.selectedStylePreset = snapshot.selectedStylePreset || null;
   state.canvasCommandUserEdited = Boolean(snapshot.canvasCommandUserEdited);
   state.promptContext = cloneValue(snapshot.promptContext, defaultPromptContextForMode(state.mode));
@@ -1440,6 +1455,73 @@ const presets = {
     style: "舒适、自然、收纳友好、长期耐看",
     functions: "客餐厅、厨房、阅读/亲子、收纳、可变工作区。",
     command: "生成一版住宅改造效果图，保留原有空间架构，优化采光、收纳、软装和家庭生活尺度。"
+  }
+};
+
+const projectTemplates = {
+  "homestay-lobby": {
+    mode: "designseries",
+    spaceType: "精品民宿 / 小型酒店大堂",
+    style: "地域材料、安静度假感、低照度灯光、可停留的公共空间",
+    functions: "接待前台、等候休息、早餐/咖啡、行李暂存、壁炉或景观位、文创小陈列、通往客房和庭院的过渡。",
+    constraints: "避免网红化和廉价装饰；保留建筑结构、开口、层高和在地材料线索。",
+    command: "常用模板：民宿大堂。按一个完整精品民宿项目组织：入口抵达、接待前台、休息会客、早餐/咖啡、走廊过渡、材料节点。若生成多张图，必须分配为不同功能区和不同机位，统一地域材料、灯光和家具语言。"
+  },
+  "guest-suite": {
+    mode: "designseries",
+    spaceType: "精品酒店 / 民宿客房套房",
+    style: "安静、舒适、自然材料、长住友好、细节完成度高",
+    functions: "睡眠区、窗边休闲、书桌/工区、衣柜收纳、洗漱干区、浴室或泡池、入户行李区。",
+    constraints: "避免过满软装；保持酒店运营可落地，动线清楚，清洁维护方便。",
+    command: "常用模板：客房套房。生成同一套房的完整设计组图：卧室主视觉、窗边休息、书桌工区、卫浴/洗漱、入户收纳、细节节点。按出图数量自动选择最能表达空间价值的视角。"
+  },
+  "tea-room": {
+    mode: "designseries",
+    spaceType: "茶室 / 东方会客空间",
+    style: "东方禅意、留白、木石纸感、低照度、克制仪式感",
+    functions: "茶席、备水、收纳陈列、会客坐席、窗景/庭院、水景或端景。",
+    constraints: "避免符号堆砌和古装化；用现代比例表达东方气质。",
+    command: "常用模板：茶室。优先表达茶席、备水区、会客区、窗景/庭院、材料节点和灯光氛围；统一木、石、纸感、织物和器物陈列，镜头干净克制。"
+  },
+  restaurant: {
+    mode: "designseries",
+    spaceType: "餐厅 / 餐饮商业空间",
+    style: "有品牌记忆点、动线清晰、照明分层、材料耐用",
+    functions: "门头/入口、等候区、散座、卡座、包间、吧台/出餐、服务台、洗手间过渡。",
+    constraints: "避免只做漂亮空场；必须体现运营动线、座位密度和服务效率。",
+    command: "常用模板：餐厅。按餐饮项目完整表达：入口识别、主就餐区、卡座/包间、吧台或出餐口、服务动线、灯光材料节点。多张图必须覆盖不同消费场景。"
+  },
+  "retail-display": {
+    mode: "designseries",
+    spaceType: "商业展示 / 品牌零售",
+    style: "品牌识别强、陈列清晰、重点照明、可转化",
+    functions: "橱窗、入口主视觉、陈列岛、墙面展架、试用/体验、收银、仓储隐藏。",
+    constraints: "避免展品杂乱；展示层级、客流动线和品牌墙必须明确。",
+    command: "常用模板：商业展示。生成一个完整品牌零售/展厅系列：橱窗入口、主陈列、体验洽谈、收银服务、细节节点。统一品牌材料、灯光和陈列节奏。"
+  },
+  "plan-color": {
+    mode: "plan-axonometric",
+    spaceType: "平面图上色 / 3D平面表达",
+    style: "图纸清晰、材料分区明确、轻量真实体块",
+    functions: "保留原平面结构，表达墙体、地面、家具、开口和功能分区。",
+    constraints: "不得移动、删除、重画或简化原图布局；不能生成无关人视角效果图。",
+    command: "常用模板：平面图上色。把上传平面图作为硬约束底图，保持外轮廓、墙体、门窗、楼梯、固定洁具和主要家具脚印不变，只增加材料、色块、轻体块、阴影和功能分区可读性。"
+  },
+  "white-model-render": {
+    mode: "whitemodel",
+    spaceType: "白模转真实效果图",
+    style: "真实材质、自然光、完整软装、建筑尺度准确",
+    functions: "保留白模体块、视角、开口、层级和比例，补全材料、灯光、家具、环境和细节。",
+    constraints: "不要改变模型体块和镜头；不要做成灰模截图或随机装饰。",
+    command: "常用模板：白模转效果图。以白模截图为硬结构，保留体块、开口、层级、视角和比例，补充真实材质、光照、家具、绿化、软装和尺度细节。"
+  },
+  "material-replace": {
+    mode: "materialreplace",
+    spaceType: "材质替换 / 材料方案测试",
+    style: "保留原空间，只替换指定材料系统",
+    functions: "墙面、地面、顶面、柜体、家具、金属、石材、木饰面、织物等材质替换。",
+    constraints: "不得改变几何、透视、物体位置、灯光方向和非目标区域。",
+    command: "常用模板：材质替换。只替换用户点名或选区的材料、颜色、纹理、反射和工艺细节；保留空间几何、构图、家具位置、光向、阴影和非目标区域。"
   }
 };
 
@@ -2399,6 +2481,7 @@ function renderWorkspaceHistoryPanel() {
             ${uiIconButton({ icon: "icon-pin", label: "加入画布", attrs: `data-history-action="add" data-log-id="${escapeAttr(log.id)}"` })}
             ${uiIconButton({ icon: "icon-reference", label: "设为输入", attrs: `data-history-action="input" data-log-id="${escapeAttr(log.id)}"` })}
             ${uiIconButton({ icon: "icon-copy", label: "复制提示词", attrs: `data-history-action="copy" data-log-id="${escapeAttr(log.id)}"` })}
+            ${uiIconButton({ icon: "icon-trash", label: "删除记录", attrs: `data-history-action="delete" data-log-id="${escapeAttr(log.id)}"` })}
             ${uiIconLink({ href: log.result.outputUrl, icon: "icon-export", label: "打开原图", attrs: `target="_blank" rel="noreferrer"` })}
           </div>
         </div>
@@ -2423,7 +2506,7 @@ function bindWorkspaceHistoryEvents() {
       event.stopPropagation();
       const log = state.taskLogs.find((item) => item.id === control.dataset.logId);
       if (!log) return;
-      handleWorkspaceHistoryAction(control.dataset.historyAction, log);
+      handleWorkspaceHistoryAction(control.dataset.historyAction, log).catch((error) => toast(error.message));
     });
   });
 }
@@ -2462,6 +2545,10 @@ async function handleWorkspaceHistoryAction(action, log) {
   }
   if (action === "copy") {
     await copyText(log.result?.prompt || log.result?.sourcePrompt || log.input?.intent || "");
+    return;
+  }
+  if (action === "delete") {
+    await deleteTaskLogRecord(log);
     return;
   }
   if (action === "add") {
@@ -2555,6 +2642,7 @@ function renderTaskLogItem(log) {
         ${finalPrompt ? uiIconButton({ icon: "icon-copy", label: "复制提示词", attrs: `data-log-action="copy-prompt" data-log-id="${escapeAttr(log.id)}"` }) : ""}
         ${nextMode && log.result?.outputUrl ? uiIconButton({ icon: "icon-continue", label: "继续下一步", attrs: `data-log-action="continue-next" data-next-mode="${escapeAttr(nextMode)}" data-log-id="${escapeAttr(log.id)}"` }) : ""}
         ${uiIconButton({ icon: "icon-refresh", label: "复跑", attrs: `data-log-action="rerun" data-log-id="${escapeAttr(log.id)}"` })}
+        ${uiIconButton({ icon: "icon-trash", label: "删除记录", attrs: `data-log-action="delete-log" data-log-id="${escapeAttr(log.id)}"` })}
       </div>
       ${attempts}
       ${prompt}
@@ -2575,9 +2663,21 @@ function bindTaskLogEvents() {
         rerunFromLog(log);
       } else if (button.dataset.logAction === "continue-next") {
         continueFromLogOutput(log, button.dataset.nextMode);
+      } else if (button.dataset.logAction === "delete-log") {
+        deleteTaskLogRecord(log).catch((error) => toast(error.message));
       }
     });
   });
+}
+
+async function deleteTaskLogRecord(log) {
+  if (!log?.id) return;
+  if (!window.confirm("删除这条历史记录？生成图片文件不会被删除。")) return;
+  await requestJson(clientScopedApiPath(`/api/task-logs/${encodeURIComponent(log.id)}`), { method: "DELETE" });
+  state.taskLogs = state.taskLogs.filter((item) => item.id !== log.id);
+  renderWorkspaceHistoryPanel();
+  await refreshTaskLogs({ silent: true });
+  toast("历史记录已删除");
 }
 
 function taskTypeLabel(type) {
@@ -4939,6 +5039,30 @@ function getOutputItems() {
   });
 }
 
+function outputSearchText(item) {
+  return [
+    item.title,
+    item.mode,
+    workflowStepLabel(item.stepMode || item.mode),
+    item.createdAt,
+    item.intent,
+    item.prompt,
+    item.sourcePrompt,
+    item.endpoint,
+    item.inputImageType,
+    item.renderRegion
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function getFilteredOutputItems(items = getOutputItems()) {
+  const query = String(state.outputSearch || "").trim().toLowerCase();
+  return items.filter((item) => {
+    if (state.outputFavoritesOnly && !state.favoriteOutputIds.has(item.id)) return false;
+    if (query && !outputSearchText(item).includes(query)) return false;
+    return true;
+  });
+}
+
 function outputNextWorkflowButtons(item) {
   const nextModes = nextPlanWorkflowModes(item.stepMode || item.mode);
   return nextModes.map((nextMode) => {
@@ -4982,6 +5106,13 @@ function renderOutputManager() {
   const validIds = new Set(items.map((item) => item.id));
   [...state.favoriteOutputIds].forEach((id) => { if (!validIds.has(id)) state.favoriteOutputIds.delete(id); });
   [...state.compareOutputIds].forEach((id) => { if (!validIds.has(id)) state.compareOutputIds.delete(id); });
+  if (els.outputManagerSearch && els.outputManagerSearch.value !== state.outputSearch) {
+    els.outputManagerSearch.value = state.outputSearch || "";
+  }
+  if (els.outputFavoritesOnlyButton) {
+    els.outputFavoritesOnlyButton.classList.toggle("active", state.outputFavoritesOnly);
+    els.outputFavoritesOnlyButton.setAttribute("aria-pressed", String(Boolean(state.outputFavoritesOnly)));
+  }
   if (!items.length) {
     els.outputManagerList.innerHTML = `
       <article class="output-manager-empty">
@@ -4993,8 +5124,20 @@ function renderOutputManager() {
     return;
   }
 
-  if (els.exportOutputsButton) els.exportOutputsButton.disabled = false;
-  els.outputManagerList.innerHTML = items.map((item, index) => {
+  const visibleItems = getFilteredOutputItems(items);
+  if (els.exportOutputsButton) els.exportOutputsButton.disabled = !visibleItems.length;
+  if (!visibleItems.length) {
+    els.outputManagerList.innerHTML = `
+      <article class="output-manager-empty">
+        <strong>没有匹配的作品</strong>
+        <span>换个关键词，或关闭“只看收藏”。</span>
+      </article>
+    `;
+    return;
+  }
+
+  els.outputManagerList.innerHTML = visibleItems.map((item) => {
+    const index = items.findIndex((entry) => entry.id === item.id);
     const favorite = state.favoriteOutputIds.has(item.id);
     const compare = state.compareOutputIds.has(item.id);
     const latest = index === items.length - 1;
@@ -5024,6 +5167,7 @@ function renderOutputManager() {
           ${outputActionButton({ action: "promote", outputId: item.id, icon: "icon-pin", label: "设为最新", className: "text-button" })}
           ${outputActionButton({ action: "copy-prompt", outputId: item.id, icon: "icon-copy", label: "复制提示词", className: "text-button" })}
           ${outputActionButton({ action: "download", outputId: item.id, icon: "icon-export", label: "下载", className: "text-button" })}
+          ${outputActionButton({ action: "delete", outputId: item.id, icon: "icon-trash", label: "删除记录", className: "text-button" })}
         </div>
       </article>
     `;
@@ -5085,6 +5229,7 @@ async function handleOutputAction(action, outputId, nextMode = "") {
   }
   if (action === "favorite") {
     toggleSetValue(state.favoriteOutputIds, item.id);
+    scheduleCanvasStateSave({ delay: 160 });
     renderWorkflowCanvas();
     return;
   }
@@ -5094,6 +5239,7 @@ async function handleOutputAction(action, outputId, nextMode = "") {
       return;
     }
     toggleSetValue(state.compareOutputIds, item.id);
+    scheduleCanvasStateSave({ delay: 160 });
     renderWorkflowCanvas();
     return;
   }
@@ -5483,6 +5629,7 @@ function deleteOutputItem(item) {
   if (state.canvas.selectedImage?.url === item.url) state.canvas.selectedImage = null;
   renderGeneratedResult();
   renderWorkflowCanvas();
+  scheduleCanvasStateSave({ delay: 120 });
   toast("已从画布记录中移除");
 }
 
@@ -7551,6 +7698,32 @@ function modeConfig(mode) {
   return map[mode] || map.custom;
 }
 
+function applyProjectTemplate(name) {
+  const template = projectTemplates[name];
+  if (!template) return;
+  if (template.mode) setMode(template.mode);
+  state.selectedScenePreset = null;
+  state.selectedProjectTemplate = name;
+  clearHiddenPromptContext("scenePreset");
+  writeBrief({
+    spaceType: template.spaceType,
+    style: template.style,
+    functions: template.functions,
+    constraints: template.constraints
+  });
+  setHiddenPromptContext("scenePreset", template.command);
+  if (els.canvasCommand && !state.canvasCommandUserEdited) {
+    els.canvasCommand.value = template.command;
+  }
+  if (els.floatingCanvasCommand && !state.canvasCommandUserEdited) {
+    els.floatingCanvasCommand.value = template.command;
+  }
+  refreshPresetSelection();
+  refreshGenerationControls();
+  renderWorkflowCanvas();
+  toast("已套用常用设计模板");
+}
+
 function withSelectedStyle(intent) {
   if (!state.selectedStylePreset) return intent;
   const description = stylePresetDescriptions[state.selectedStylePreset];
@@ -7562,6 +7735,11 @@ function refreshPresetSelection() {
   els.presetButtons.forEach((button) => {
     button.classList.toggle("active", button.dataset.preset !== "none" && button.dataset.preset === state.selectedScenePreset);
     button.setAttribute("aria-pressed", String(button.classList.contains("active")));
+  });
+  els.projectTemplateButtons.forEach((button) => {
+    const active = button.dataset.projectTemplate === state.selectedProjectTemplate;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
   });
   els.stylePresetButtons.forEach((button) => {
     button.classList.toggle("active", button.dataset.stylePreset !== "none" && button.dataset.stylePreset === state.selectedStylePreset);
@@ -7576,6 +7754,7 @@ function syncDefaultCanvasCommand(mode) {
 function applyPreset(name) {
   if (name === "none") {
     state.selectedScenePreset = null;
+    state.selectedProjectTemplate = null;
     clearHiddenPromptContext("scenePreset");
     refreshPresetSelection();
     renderWorkflowCanvas();
@@ -7585,6 +7764,7 @@ function applyPreset(name) {
   const preset = presets[name];
   if (!preset) return;
   state.selectedScenePreset = name;
+  state.selectedProjectTemplate = null;
   refreshPresetSelection();
   writeBrief({
     spaceType: preset.spaceType,
@@ -8597,9 +8777,9 @@ function formatElapsed(ms) {
 }
 
 async function downloadCurrentCanvasOutputs(button = null) {
-  const items = getOutputItems();
+  const items = getFilteredOutputItems();
   if (!items.length) {
-    toast("暂无可下载的图片");
+    toast("当前筛选下暂无可下载的图片");
     return;
   }
   setBusy(button, true, "下载中");
@@ -8893,6 +9073,7 @@ els.modeTabs.forEach((button) => {
 });
 els.floatingModeSelect?.addEventListener("change", () => setMode(els.floatingModeSelect.value));
 els.presetButtons.forEach((button) => button.addEventListener("click", () => applyPreset(button.dataset.preset)));
+els.projectTemplateButtons.forEach((button) => button.addEventListener("click", () => applyProjectTemplate(button.dataset.projectTemplate)));
 els.stylePresetButtons.forEach((button) => button.addEventListener("click", () => applyStylePreset(button.dataset.stylePreset)));
 els.themeButtons.forEach((button) => button.addEventListener("click", () => applyTheme(button.dataset.themeChoice)));
 els.refreshApiSettingsButton?.addEventListener("click", () => refreshApiSettings());
@@ -9092,6 +9273,16 @@ els.taskLogFilterButtons.forEach((button) => {
     state.taskLogFilter = button.dataset.taskLogFilter || "all";
     refreshTaskLogs({ silent: true });
   });
+});
+els.outputManagerSearch?.addEventListener("input", () => {
+  state.outputSearch = els.outputManagerSearch.value || "";
+  renderOutputManager();
+  scheduleCanvasStateSave({ delay: 500 });
+});
+els.outputFavoritesOnlyButton?.addEventListener("click", () => {
+  state.outputFavoritesOnly = !state.outputFavoritesOnly;
+  renderOutputManager();
+  scheduleCanvasStateSave({ delay: 200 });
 });
 els.exportOutputsButton?.addEventListener("click", () => {
   downloadCurrentCanvasOutputs(els.exportOutputsButton).catch((error) => toast(error.message));
