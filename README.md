@@ -13,6 +13,28 @@ npm start
 
 Open `http://localhost:4177`.
 
+## Desktop App
+
+The project can run as a local desktop app on macOS and Windows. Electron starts
+the same Node service locally, then opens the app at `http://127.0.0.1:4177`.
+
+```bash
+npm install
+npm run desktop
+```
+
+Build installers:
+
+```bash
+npm run pack:mac
+npm run pack:win
+```
+
+In the desktop app, generated images, canvas history, task logs and runtime API
+settings are stored under the OS user data directory instead of the project
+folder. API keys saved from Settings are written to that local runtime settings
+file only.
+
 When opening the app from another device, use the host machine address instead
 of `localhost`, for example `http://<host-lan-ip>:4177` or the mapped tunnel
 URL. The app keeps API keys on the host service, and remote browsers only call
@@ -55,15 +77,20 @@ npm run check
 ## API Roles
 
 - `gpt-5.5`: creates spatial design directions, material logic, client proposal structure, and image prompts.
-- `Image Gen`: generates the final visuals through the Responses `image_generation` tool. The server tries this skill path first, up to `IMAGE_GEN_SKILL_MAX_ATTEMPTS` times, then falls back to the older app-compatible image generation endpoint with `gpt-image-2`.
+- `Images API`: generates final visuals through the OpenAI-compatible `/images/generations` endpoint, or `/images/edits` when a primary/reference image is present. The Responses `image_generation` tool remains as fallback.
 
 The app uses separate providers:
 
 - `REASONING_BASE_URL` / `REASONING_API_KEY`: text and vision reasoning.
-- `YYBB_BASE_URL` / `YYBB_API_KEY`: Image Gen-compatible calls for final image generation.
-- `IMAGE_RESPONSES_PATH=/responses`: yybb 的 Responses 路径；其他 OpenAI-compatible 服务通常是 `/v1/responses`。
-- `IMAGE_GEN_SKILL_MAX_ATTEMPTS=5`: Image Gen skill 的最高优先级重试次数；全部失败后才切换到旧 App 生图路径。
-- `IMAGE_ALLOW_LEGACY_FALLBACK=0`: 默认只走 Responses `image_generation`，确保网页里配置的自定义生图 API 也经过 Image Gen 链路。
+- `YYBB_BASE_URL` / `YYBB_API_KEY`: image-generation compatible calls for final visuals.
+- `IMAGE_API_MODE=images`: 默认优先使用 playground 风格的 OpenAI-compatible Images API；可设为 `responses` 只走 Responses `image_generation`，或 `auto` 保持 Images API 优先并保留回退。
+- `IMAGE_GENERATIONS_PATH=/v1/images/generations` / `IMAGE_EDITS_PATH=/v1/images/edits`: Images API 的文本生图与图像编辑路径。
+- `IMAGE_PROVIDER_MANIFEST='{"submit":{"path":"/v1/images/generations","result":{"b64JsonPaths":["data.*.b64_json"],"imageUrlPaths":["data.*.url"]}}}'`: 可选，自定义 OpenAI-compatible 或异步 HTTP 生图服务的提交、轮询和结果字段映射。
+- `IMAGE_RESPONSES_PATH=/responses`: yybb 的 Responses 路径；其他 OpenAI-compatible 服务通常是 `/v1/responses`，用于回退通道和探测。
+- `IMAGE_GEN_SKILL_MAX_ATTEMPTS=2`: Responses `image_generation` 回退通道的重试次数。
+- `IMAGE_COST_FIRST_MAX_ATTEMPTS=2`: 成本优先端点失败时连续尝试次数，降低异常端点拖慢整批任务的风险。
+- `IMAGE_ENDPOINT_PRECHECK_TTL_SECONDS=300`: 生图前端点测速缓存时间，避免每张图都重复检测所有端点。
+- `IMAGE_ALLOW_LEGACY_FALLBACK=0`: 保留旧兼容开关；新默认通道已是 OpenAI-compatible Images API。
 - `IMAGE_GENERATION_CONCURRENCY=2`: 同时生图任务数；其余任务排队，避免 API 被打爆。
 - `IMAGE_GENERATION_QUEUE_MAX_PENDING=12`: 最多等待中的生图任务数，超过会返回 429。
 - `IMAGE_GENERATION_QUEUE_TIMEOUT_SECONDS=600`: 生图排队最长等待时间。
@@ -88,7 +115,7 @@ The app exposes stable external endpoints under `/api/v1`. The older `/api/*` ro
 - Runtime settings: `GET http://localhost:4177/api/v1/settings`
 - Add Image Gen endpoint: `POST http://localhost:4177/api/v1/settings/image-endpoints`
 
-Custom Image Gen endpoints added from the web settings panel are saved locally in `logs/runtime-settings.json`. They are used as Responses `image_generation` providers, not as direct legacy image-generation calls.
+Custom Image Gen endpoints added from the web settings panel are saved locally in `logs/runtime-settings.json`. They can define direct `/images/generations` and `/images/edits` paths plus an optional Provider Manifest; Responses `image_generation` remains available as fallback.
 
 External access protection is required when sharing beyond localhost:
 
@@ -103,6 +130,36 @@ Call the public `/api/v1/*` API with either header:
 curl http://localhost:4177/api/v1/health \
   -H "Authorization: Bearer replace-with-a-private-token"
 ```
+
+## Codex / CLI Bridge
+
+For Codex workflows, use the thin local CLI wrapper instead of hand-writing
+`curl` payloads. It calls the same `/api/v1` endpoints, converts local images to
+data URLs, and can copy the generated image to a workflow path.
+
+```bash
+npm run api -- health
+npm run api -- image \
+  --prompt "quiet boutique hotel lobby, warm stone, brass details" \
+  --size 1024x1536 \
+  --quality low \
+  --image-out /tmp/laogui-lobby.png
+npm run api -- render \
+  --mode plan-render \
+  --primary /path/to/plan.png \
+  --prompt "turn the selected public lounge zone into an eye-level render"
+npm run api -- series \
+  --brief /path/to/brief.json \
+  --ref /path/to/ref-a.jpg \
+  --ref /path/to/ref-b.jpg \
+  --count 6 \
+  --task-id minsu-board11 \
+  --out-dir /tmp/minsu-board11-series
+```
+
+Set `LAOGUI_API_BASE_URL`, `LAOGUI_API_TOKEN`, and `LAOGUI_CLIENT_ID` when a
+workflow runs outside the local machine. See `docs/codex-bridge.md` for the
+bridge command map and payload examples.
 
 Example plan request:
 

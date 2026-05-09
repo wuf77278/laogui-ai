@@ -2742,7 +2742,7 @@ a:focus-visible {
 
 .task-progress-stats {
   display: grid;
-  grid-template-columns: 0.8fr 1.5fr 0.8fr;
+  grid-template-columns: 0.7fr 1fr 1.35fr 0.75fr;
   gap: 8px;
 }
 
@@ -3410,6 +3410,12 @@ body.reference-only-mode .structure-strength-field {
 .generation-option-card .segmented-control button:last-child,
 .generation-option-card .image-count-grid button:last-child {
   border-right: 0;
+}
+
+.generation-size-button {
+  min-height: 30px;
+  justify-content: center;
+  font-size: 12px;
 }
 
 .agent-composer .canvas-command-actions {
@@ -10751,6 +10757,67 @@ body.settings-open {
   color: var(--muted);
 }
 
+.api-probe-feedback {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.api-probe-feedback:empty {
+  display: none;
+}
+
+.api-probe-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.api-probe-card.available {
+  border-color: rgba(82, 154, 112, 0.32);
+  background: rgba(82, 154, 112, 0.1);
+}
+
+.api-probe-card.warning {
+  border-color: rgba(226, 188, 128, 0.3);
+  background: rgba(226, 188, 128, 0.1);
+}
+
+.api-probe-card.error {
+  border-color: rgba(188, 92, 76, 0.32);
+  background: rgba(188, 92, 76, 0.1);
+}
+
+.api-probe-card div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.api-probe-card strong,
+.api-probe-card small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.api-probe-card strong {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 820;
+}
+
+.api-probe-card small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .settings-hint {
   margin: 0;
   color: var(--muted);
@@ -10850,7 +10917,9 @@ body.settings-open {
   grid-column: 1 / -1;
 }
 
-.api-settings-grid input {
+.api-settings-grid input,
+.api-settings-grid select,
+.api-settings-grid textarea {
   width: 100%;
   min-width: 0;
   min-height: 34px;
@@ -10861,9 +10930,30 @@ body.settings-open {
   color: var(--ink);
 }
 
-.api-settings-grid input:focus {
+.api-settings-grid textarea {
+  min-height: 92px;
+  padding: 8px 9px;
+  resize: vertical;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.api-settings-grid .api-settings-wide {
+  grid-column: 1 / -1;
+}
+
+.api-settings-grid input:focus,
+.api-settings-grid select:focus,
+.api-settings-grid textarea:focus {
   outline: 2px solid rgba(226, 188, 128, 0.26);
   outline-offset: 2px;
+}
+
+.size-picker-modal {
+  max-width: 520px;
+}
+
+.size-picker-block {
+  gap: 12px;
 }
 
 .api-endpoint-list {
@@ -10981,6 +11071,10 @@ body.settings-open {
   }
 
   .settings-metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .api-probe-feedback {
     grid-template-columns: 1fr;
   }
 
@@ -11364,6 +11458,8 @@ body[data-theme="day"] .app-settings-modal .settings-metric-grid div {
 }
 
 body[data-theme="day"] .app-settings-modal .api-settings-grid input,
+body[data-theme="day"] .app-settings-modal .api-settings-grid select,
+body[data-theme="day"] .app-settings-modal .api-settings-grid textarea,
 body[data-theme="day"] .app-settings-modal .theme-toggle button {
   border-color: rgba(17, 17, 15, 0.12) !important;
   background: #fffef9 !important;
@@ -11409,6 +11505,26 @@ body[data-theme="day"] .app-settings-modal .api-endpoint-status.error {
   border-color: rgba(160, 71, 54, 0.26) !important;
   background: rgba(160, 71, 54, 0.1) !important;
   color: #8f3529 !important;
+}
+
+body[data-theme="day"] .app-settings-modal .api-probe-card {
+  border-color: rgba(104, 86, 55, 0.18) !important;
+  background: rgba(255, 253, 247, 0.7) !important;
+}
+
+body[data-theme="day"] .app-settings-modal .api-probe-card.available {
+  border-color: rgba(82, 106, 86, 0.28) !important;
+  background: rgba(82, 106, 86, 0.1) !important;
+}
+
+body[data-theme="day"] .app-settings-modal .api-probe-card.warning {
+  border-color: rgba(155, 122, 66, 0.28) !important;
+  background: rgba(155, 122, 66, 0.1) !important;
+}
+
+body[data-theme="day"] .app-settings-modal .api-probe-card.error {
+  border-color: rgba(160, 71, 54, 0.24) !important;
+  background: rgba(160, 71, 54, 0.08) !important;
 }
 
 body[data-theme="day"] .primary-button,
@@ -11486,6 +11602,8 @@ body[data-theme="day"].workspace-active input,
 body[data-theme="day"].workspace-active textarea,
 body[data-theme="day"].workspace-active select,
 body[data-theme="day"].workspace-active .api-settings-grid input,
+body[data-theme="day"].workspace-active .api-settings-grid select,
+body[data-theme="day"].workspace-active .api-settings-grid textarea,
 body[data-theme="day"].workspace-active .mode-switcher summary,
 body[data-theme="day"].workspace-active .mode-switcher .mode-tabs,
 body[data-theme="day"].workspace-active .mode-tab,
@@ -12090,4 +12208,303 @@ body[data-theme="day"].workspace-active .canvas-floating-restore {
   background: #fffef9 !important;
   color: var(--ink-soft) !important;
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.9) inset, 0 12px 32px rgba(17, 17, 15, 0.1) !important;
+}
+
+.canvas-image-stage.viewpoint-stage {
+  overflow: visible;
+  isolation: isolate;
+  perspective: 980px;
+  cursor: crosshair;
+  background:
+    radial-gradient(circle at 50% 85%, rgba(214, 180, 87, 0.18), transparent 48%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(0, 0, 0, 0.16));
+}
+
+.canvas-image-stage.viewpoint-stage.is-aiming {
+  box-shadow:
+    0 0 0 1px rgba(214, 180, 87, 0.42) inset,
+    0 0 0 6px rgba(214, 180, 87, 0.09);
+}
+
+.canvas-image-stage.viewpoint-stage::after {
+  content: "";
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  bottom: -12px;
+  height: 42px;
+  border-radius: 50%;
+  background:
+    linear-gradient(90deg, rgba(214, 180, 87, 0.16) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(214, 180, 87, 0.12) 1px, transparent 1px);
+  background-size: 22px 22px;
+  filter: blur(0.2px);
+  opacity: 0.58;
+  transform: rotateX(68deg);
+  transform-origin: center;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.canvas-image-stage.viewpoint-stage img {
+  position: relative;
+  z-index: 1;
+  transform: rotateX(7deg) rotateY(-2deg) translateY(-2px);
+  transform-origin: center bottom;
+  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.3);
+}
+
+.viewpoint-marker {
+  position: absolute;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 46px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #fff8df;
+  cursor: grab;
+  transform: translate(-50%, -82%);
+  filter: drop-shadow(0 12px 20px rgba(0, 0, 0, 0.45));
+}
+
+.viewpoint-marker:active {
+  cursor: grabbing;
+}
+
+.viewpoint-marker span,
+.viewpoint-marker span::before,
+.viewpoint-marker span::after {
+  display: block;
+  box-sizing: border-box;
+}
+
+.viewpoint-marker span {
+  position: relative;
+  width: 22px;
+  height: 30px;
+  border: 2px solid rgba(255, 248, 223, 0.94);
+  border-radius: 999px 999px 8px 8px;
+  background:
+    linear-gradient(180deg, rgba(214, 180, 87, 0.98), rgba(127, 93, 33, 0.96));
+  transform: rotate(var(--yaw, 0deg));
+  transform-origin: 50% 82%;
+}
+
+.viewpoint-marker span::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -13px;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 248, 223, 0.98);
+  border-radius: 50%;
+  background: #d6b457;
+  transform: translateX(-50%);
+}
+
+.viewpoint-marker span::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -23px;
+  width: 2px;
+  height: 11px;
+  border-radius: 999px;
+  background: #fff8df;
+  box-shadow:
+    -5px 5px 0 rgba(255, 248, 223, 0.8),
+    5px 5px 0 rgba(255, 248, 223, 0.8);
+  transform: translateX(-50%);
+}
+
+.viewpoint-marker:focus-visible {
+  outline: 2px solid rgba(255, 248, 223, 0.92);
+  outline-offset: 4px;
+  border-radius: 999px;
+}
+
+.viewpoint-cone {
+  position: absolute;
+  z-index: 3;
+  width: 150px;
+  height: 170px;
+  transform: translate(-50%, -86%) rotate(var(--yaw, 0deg));
+  transform-origin: 50% 92%;
+  pointer-events: none;
+  opacity: 0.88;
+}
+
+.viewpoint-cone::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 2px;
+  width: 132px;
+  height: 158px;
+  transform: translateX(-50%);
+  clip-path: polygon(50% 100%, 0 0, 100% 0);
+  background:
+    radial-gradient(circle at 50% 100%, rgba(255, 248, 223, 0.34), rgba(214, 180, 87, 0.16) 36%, transparent 72%),
+    linear-gradient(180deg, rgba(214, 180, 87, 0.02), rgba(214, 180, 87, 0.22));
+  border-radius: 999px;
+}
+
+.viewpoint-cone::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -1px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #fff8df;
+  box-shadow: 0 0 0 5px rgba(214, 180, 87, 0.28);
+  transform: translateX(-50%);
+}
+
+.viewpoint-control-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.viewpoint-control-head b {
+  min-width: 34px;
+  padding: 4px 7px;
+  border: 1px solid rgba(214, 180, 87, 0.28);
+  border-radius: 999px;
+  color: #fff8df;
+  font-size: 11px;
+  text-align: center;
+  background: rgba(214, 180, 87, 0.12);
+}
+
+.viewpoint-intensity-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.viewpoint-intensity-row button {
+  height: 30px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.045);
+  color: rgba(246, 242, 232, 0.72);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.viewpoint-intensity-row button:hover,
+.viewpoint-intensity-row button.active {
+  border-color: rgba(214, 180, 87, 0.42);
+  background: rgba(214, 180, 87, 0.16);
+  color: #fff8df;
+}
+
+.viewpoint-control-card {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid rgba(214, 180, 87, 0.24);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(214, 180, 87, 0.1), rgba(255, 255, 255, 0.035));
+}
+
+.viewpoint-control-card span {
+  display: block;
+  margin-bottom: 3px;
+  color: rgba(246, 242, 232, 0.56);
+  font-size: 11px;
+}
+
+.viewpoint-control-card strong {
+  display: block;
+  color: #fff8df;
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.viewpoint-control-card p {
+  margin-top: 3px;
+  color: rgba(246, 242, 232, 0.68);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.viewpoint-actions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.viewpoint-actions .text-button,
+.viewpoint-actions .secondary-button {
+  min-width: 0;
+  height: 34px;
+  padding: 0;
+  justify-content: center;
+}
+
+.viewpoint-actions .text-button svg,
+.viewpoint-actions .secondary-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.viewpoint-actions .text-button {
+  font-size: 0;
+}
+
+.viewpoint-actions .text-button svg {
+  margin: 0;
+}
+
+.viewpoint-actions .secondary-button {
+  font-size: 0;
+}
+
+.viewpoint-actions .secondary-button svg {
+  margin: 0;
+}
+
+body[data-theme="day"].workspace-active .viewpoint-control-card {
+  border-color: rgba(127, 93, 33, 0.22);
+  background:
+    linear-gradient(180deg, rgba(244, 234, 211, 0.72), rgba(255, 255, 255, 0.78));
+}
+
+body[data-theme="day"].workspace-active .viewpoint-control-card span,
+body[data-theme="day"].workspace-active .viewpoint-control-card p {
+  color: #6f675a;
+}
+
+body[data-theme="day"].workspace-active .viewpoint-control-card strong {
+  color: #171613;
+}
+
+body[data-theme="day"].workspace-active .viewpoint-control-head b {
+  border-color: rgba(127, 93, 33, 0.22);
+  background: rgba(244, 234, 211, 0.82);
+  color: #4d3d1f;
+}
+
+body[data-theme="day"].workspace-active .viewpoint-intensity-row button {
+  border-color: rgba(17, 17, 15, 0.12);
+  background: rgba(255, 255, 255, 0.72);
+  color: #5c554a;
+}
+
+body[data-theme="day"].workspace-active .viewpoint-intensity-row button:hover,
+body[data-theme="day"].workspace-active .viewpoint-intensity-row button.active {
+  border-color: rgba(196, 154, 60, 0.38);
+  background: #f4ead3;
+  color: #171613;
 }

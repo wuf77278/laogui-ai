@@ -1,5 +1,5 @@
 const referenceImageLimit = 8;
-const CANVAS_LAYOUT_VERSION = 3;
+const CANVAS_LAYOUT_VERSION = 4;
 const CANVAS_WORKSPACE_WIDTH = 3200;
 const CANVAS_WORKSPACE_HEIGHT = 2900;
 const IMAGE_UPLOAD_PRIMARY_MAX_EDGE = 2400;
@@ -10,6 +10,12 @@ const IMAGE_UPLOAD_REFERENCE_TARGET_BYTES = 1500 * 1024;
 const IMAGE_PERSISTENCE_TARGET_BYTES = 1600 * 1024;
 const IMAGE_OPTIMIZE_THRESHOLD_BYTES = 900 * 1024;
 const imageOptimizationCache = new Map();
+const IMAGE_CACHE_DB_NAME = "laogui-ai-image-cache";
+const IMAGE_CACHE_DB_VERSION = 1;
+const IMAGE_CACHE_THUMBNAIL_VERSION = 1;
+const IMAGE_CACHE_THUMBNAIL_MAX_EDGE = 720;
+const IMAGE_CACHE_THUMBNAIL_QUALITY = 0.9;
+const DEFAULT_THINKING_MODE_ENABLED = false;
 
 const state = {
   clientId: "",
@@ -46,6 +52,11 @@ const state = {
   activeImageBaseUrl: "",
   recommendedImageEndpoint: null,
   runtimeImageEndpoints: [],
+  runtimeProviders: { reasoning: null, image: null },
+  providerProfiles: [],
+  providerProbes: { reasoning: null, image: null },
+  providerProbeBusy: { reasoning: false, image: false },
+  imageApiProbeFeedback: null,
   canManageApiSettings: false,
   endpointProbeBusyIds: new Set(),
   endpointAutoProbeAt: 0,
@@ -54,9 +65,17 @@ const state = {
   outputFavoritesOnly: false,
   favoriteOutputIds: new Set(),
   compareOutputIds: new Set(),
+  thumbnailUrlCache: new Map(),
   selectedScenePreset: null,
   selectedProjectTemplate: null,
   selectedStylePreset: null,
+  viewpoint: {
+    x: 0.5,
+    y: 0.72,
+    yaw: 0,
+    intensity: "medium",
+    dragging: null
+  },
   agentPanelCollapsed: false,
   canvasFloatingCollapsed: false,
   canvasCommandUserEdited: false,
@@ -70,9 +89,10 @@ const state = {
   generation: {
     aspect: "source",
     quality: "1k",
-    count: 1
+    count: 1,
+    customSize: ""
   },
-  thinkingModeEnabled: true,
+  thinkingModeEnabled: DEFAULT_THINKING_MODE_ENABLED,
   analyzingDesignSeries: false,
   thinking: {
     status: "idle",
@@ -83,7 +103,7 @@ const state = {
     layoutVersion: CANVAS_LAYOUT_VERSION,
     x: 48,
     y: 28,
-    zoom: 0.86,
+    zoom: 1,
     positions: {},
     selectedImage: null,
     imageActionBusy: "",
@@ -148,6 +168,7 @@ const canvasSelectableModes = [
   { mode: "custom", label: "自定义" },
   { mode: "plan-axonometric", label: "平面图转3D" },
   { mode: "plan-render", label: "3D平面转效果图" },
+  { mode: "viewpoint", label: "视角转换" },
   { mode: "photo", label: "现场图转效果图" },
   { mode: "whitemodel", label: "白模润色" },
   { mode: "sketch", label: "手稿生成实景" },
@@ -243,7 +264,6 @@ const els = {
   projectTemplateButtons: Array.from(document.querySelectorAll("[data-project-template]")),
   stylePresetButtons: Array.from(document.querySelectorAll("[data-style-preset]")),
   themeButtons: Array.from(document.querySelectorAll("[data-theme-choice]")),
-  securitySettingsSummary: $("securitySettingsSummary"),
   storageSummary: $("storageSummary"),
   storageMaintenanceHint: $("storageMaintenanceHint"),
   refreshStorageButton: $("refreshStorageButton"),
@@ -251,12 +271,31 @@ const els = {
   archiveGeneratedButton: $("archiveGeneratedButton"),
   pruneLogsButton: $("pruneLogsButton"),
   refreshApiSettingsButton: $("refreshApiSettingsButton"),
+  reasoningApiBaseUrl: $("reasoningApiBaseUrl"),
+  reasoningApiModel: $("reasoningApiModel"),
+  reasoningApiKey: $("reasoningApiKey"),
+  primaryImageApiBaseUrl: $("primaryImageApiBaseUrl"),
+  primaryImageApiModel: $("primaryImageApiModel"),
+  primaryImageApiResponsesPath: $("primaryImageApiResponsesPath"),
+  primaryImageApiGenerationPath: $("primaryImageApiGenerationPath"),
+  primaryImageApiEditPath: $("primaryImageApiEditPath"),
+  primaryImageApiKey: $("primaryImageApiKey"),
+  primaryImageProviderManifest: $("primaryImageProviderManifest"),
+  saveLocalApiSettingsButton: $("saveLocalApiSettingsButton"),
+  probeReasoningApiButton: $("probeReasoningApiButton"),
+  probePrimaryImageApiButton: $("probePrimaryImageApiButton"),
+  localApiProbeFeedback: $("localApiProbeFeedback"),
+  localApiSettingsSummary: $("localApiSettingsSummary"),
   imageApiLabel: $("imageApiLabel"),
   imageApiBaseUrl: $("imageApiBaseUrl"),
   imageApiKey: $("imageApiKey"),
   imageApiResponsesPath: $("imageApiResponsesPath"),
+  imageApiGenerationPath: $("imageApiGenerationPath"),
+  imageApiEditPath: $("imageApiEditPath"),
+  imageApiProviderManifest: $("imageApiProviderManifest"),
   saveImageApiEndpointButton: $("saveImageApiEndpointButton"),
   probeImageApiEndpointButton: $("probeImageApiEndpointButton"),
+  imageApiProbeFeedback: $("imageApiProbeFeedback"),
   currentImageEndpointName: $("currentImageEndpointName"),
   currentImageEndpointUrl: $("currentImageEndpointUrl"),
   currentImageEndpointStatus: $("currentImageEndpointStatus"),
@@ -269,6 +308,14 @@ const els = {
   aspectRatioButtons: Array.from(document.querySelectorAll("[data-aspect-ratio]")),
   qualityTierButtons: Array.from(document.querySelectorAll("[data-quality-tier]")),
   imageCountButtons: Array.from(document.querySelectorAll("[data-image-count]")),
+  sizePickerButton: $("sizePickerButton"),
+  sizePickerOverlay: $("sizePickerOverlay"),
+  sizePickerCloseButton: $("sizePickerCloseButton"),
+  sizePickerTier: $("sizePickerTier"),
+  sizePickerRatio: $("sizePickerRatio"),
+  sizePickerWidth: $("sizePickerWidth"),
+  sizePickerHeight: $("sizePickerHeight"),
+  sizePickerApplyButton: $("sizePickerApplyButton"),
   outputWidth: $("outputWidth"),
   outputHeight: $("outputHeight"),
   structureStrength: $("structureStrength"),
@@ -305,6 +352,7 @@ const els = {
   taskProgressStatus: $("taskProgressStatus"),
   taskProgressBar: $("taskProgressBar"),
   taskProgressCount: $("taskProgressCount"),
+  taskProgressPhase: $("taskProgressPhase"),
   taskProgressEndpoint: $("taskProgressEndpoint"),
   taskProgressElapsed: $("taskProgressElapsed"),
   taskProgressEvents: $("taskProgressEvents"),
@@ -345,6 +393,7 @@ const RECOVERABLE_API_PATHS = new Set(["/api/generate-image", "/api/render-from-
 const TASK_RESULT_POLL_INTERVAL_MS = 2500;
 const TASK_RESULT_POLL_TIMEOUT_MS = 10 * 60 * 1000;
 const TASK_RESULT_MISSING_TIMEOUT_MS = 15000;
+const DESIGN_SERIES_PARALLEL_LIMIT = 2;
 let endpointAutoProbePromise = null;
 
 function createClientId() {
@@ -582,7 +631,17 @@ function defaultThinkingState() {
   return {
     status: "idle",
     target: "",
-    text: "每次生成前，gpt-5.5 会先综合读取参考图、空间约束、材料灯光、构图策略和审美自检，再交给 Image Gen 出图。"
+    text: "思考模式默认关闭；需要 gpt-5.5 先做提示词融合时，请在本次生成前手动开启一次。"
+  };
+}
+
+function defaultViewpointState() {
+  return {
+    x: 0.5,
+    y: 0.72,
+    yaw: 0,
+    intensity: "medium",
+    dragging: null
   };
 }
 
@@ -601,7 +660,7 @@ function defaultCanvasViewState() {
     layoutVersion: CANVAS_LAYOUT_VERSION,
     x: 48,
     y: 28,
-    zoom: 0.86,
+    zoom: 1,
     positions: {},
     selectedImage: null,
     imageActionBusy: "",
@@ -638,14 +697,15 @@ function blankCanvasSnapshot(mode = state.mode || "custom") {
     selectedScenePreset: null,
     selectedProjectTemplate: null,
     selectedStylePreset: null,
+    viewpoint: defaultViewpointState(),
     canvasCommandUserEdited: false,
     commandValue: "",
     renderIntentValue: config.intent || "",
     outputTypeValue: config.outputType || "overall render",
     structureStrengthValue: els.structureStrength?.value || "0.82",
     promptContext: defaultPromptContextForMode(normalizedMode),
-    generation: { aspect: "source", quality: "1k", count: 1 },
-    thinkingModeEnabled: true,
+    generation: { aspect: "source", quality: "1k", count: 1, customSize: "" },
+    thinkingModeEnabled: DEFAULT_THINKING_MODE_ENABLED,
     analyzingDesignSeries: false,
     thinking: defaultThinkingState(),
     canvas: defaultCanvasViewState()
@@ -805,14 +865,18 @@ function captureCanvasSnapshot() {
     selectedScenePreset: state.selectedScenePreset,
     selectedProjectTemplate: state.selectedProjectTemplate,
     selectedStylePreset: state.selectedStylePreset,
+    viewpoint: {
+      ...normalizedViewpointState(state.viewpoint),
+      dragging: null
+    },
     canvasCommandUserEdited: state.canvasCommandUserEdited,
     commandValue: els.canvasCommand?.value || "",
     renderIntentValue: els.renderIntent?.value || "",
     outputTypeValue: els.outputType?.value || "",
     structureStrengthValue: els.structureStrength?.value || "",
     promptContext: cloneValue(state.promptContext, defaultPromptContextForMode(state.mode)),
-    generation: cloneValue(state.generation, { aspect: "source", quality: "1k", count: 1 }),
-    thinkingModeEnabled: state.thinkingModeEnabled,
+    generation: cloneValue(state.generation, { aspect: "source", quality: "1k", count: 1, customSize: "" }),
+    thinkingModeEnabled: DEFAULT_THINKING_MODE_ENABLED,
     analyzingDesignSeries: state.analyzingDesignSeries,
     thinking: cloneValue(state.thinking, defaultThinkingState()),
     canvas: {
@@ -962,14 +1026,22 @@ async function restoreCanvasRecord(record) {
   state.selectedScenePreset = snapshot.selectedScenePreset || null;
   state.selectedProjectTemplate = snapshot.selectedProjectTemplate || null;
   state.selectedStylePreset = snapshot.selectedStylePreset || null;
+  state.viewpoint = {
+    ...normalizedViewpointState({
+      ...defaultViewpointState(),
+      ...(cloneValue(snapshot.viewpoint, {}) || {})
+    }),
+    dragging: null
+  };
   state.canvasCommandUserEdited = Boolean(snapshot.canvasCommandUserEdited);
   state.promptContext = cloneValue(snapshot.promptContext, defaultPromptContextForMode(state.mode));
   state.generation = {
     aspect: snapshot.generation?.aspect || "source",
     quality: snapshot.generation?.quality || "1k",
-    count: clampImageCount(snapshot.generation?.count || 1, state.mode)
+    count: clampImageCount(snapshot.generation?.count || 1, state.mode),
+    customSize: snapshot.generation?.customSize || ""
   };
-  state.thinkingModeEnabled = snapshot.thinkingModeEnabled ?? true;
+  state.thinkingModeEnabled = DEFAULT_THINKING_MODE_ENABLED;
   state.analyzingDesignSeries = Boolean(snapshot.analyzingDesignSeries);
   state.thinking = cloneValue(snapshot.thinking, defaultThinkingState());
   const snapshotCanvas = cloneValue(snapshot.canvas, {});
@@ -977,6 +1049,7 @@ async function restoreCanvasRecord(record) {
     ...defaultCanvasViewState(),
     ...snapshotCanvas
   };
+  if (Math.abs(Number(state.canvas.zoom) - 0.86) < 0.001) state.canvas.zoom = 1;
   state.canvas.layoutVersion = Number(snapshotCanvas?.layoutVersion || 1);
   state.canvas.panning = null;
   state.canvas.nodeDrag = null;
@@ -1261,6 +1334,7 @@ const defaultNodePositions = {
   source: { x: 96, y: 126, w: 340 },
   selection: { x: 96, y: 540, w: 340 },
   references: { x: 476, y: 126, w: 320 },
+  viewpointGuide: { x: 476, y: 126, w: 360 },
   seriesAdvice: { x: 1100, y: 126, w: 380 },
   planWorkflow: { x: 1100, y: 126, w: 380 },
   command: { x: 1100, y: 500, w: 380 },
@@ -1600,6 +1674,13 @@ const workflowButtonMeanings = {
     preserve: "保留 3D 平面图的整体空间关系、红框选区或自动选定区域、功能区、主要陈列/家具逻辑和动线。",
     change: "只把选定区域翻译成人视角室内/建筑效果图，明确前中后景和镜头位置，并在输出记录里标明对应区域。"
   },
+  viewpoint: {
+    label: "视角转换",
+    meaning: "把一张空间图当成可进入的场景，在画布图面上拖动人视角站位点，再从该位置生成新的相机视角。",
+    referenceUse: "参考图用于补充材料、灯光、家具和氛围，但不能覆盖原图建立的空间身份、设计语言和主要结构。",
+    preserve: "保留原图的空间结构、材料系统、灯光逻辑、主要家具/陈列、尺度和设计气质。",
+    change: "根据人视角点的位置和朝向重建新的画面：反推站位、视线方向、前中后景和相邻空间，只改变相机位置与可见范围。"
+  },
   floorplan: {
     label: "3D平面图转效果图",
     meaning: "旧版图纸入口已拆分；旧任务自动按“3D平面图转效果图”处理。",
@@ -1711,6 +1792,7 @@ const featureOptimizationNotes = {
   custom: "专项优化：这是默认自由预设，不强行套用任何工作流；先判断用户需要的产物类型，再读用户指令、主图、参考图和画布资源。参考图先整体观察，再判断它贡献的是空间、材料、家具、灯光、色彩、氛围、构图、产品、立面还是细节；没有主图时可以直接按参考图和文字生成。",
   "plan-axonometric": `专项优化：${planTo3DFixedPrompt}`,
   "plan-render": "专项优化：基于 3D 平面图的明确区域生成人视角效果图；优先使用红框选区，未框选时自动选择最适合表达且与参考图最接近的功能区；必须标明结果来自哪个区域，并详细描述镜头位置、前景/中景/背景、陈列、灯具、材料和动线关系。",
+  viewpoint: "专项优化：把输入图理解为可进入空间。画布上的人视角点代表相机站位，按归一化坐标反推脚下位置、镜头高度、视线方向、前景/中景/背景和相邻空间；保持原图结构、材料、灯光和设计语言，只生成从该位置看到的新视角，不要复制原机位。",
   floorplan: "专项优化：旧版图纸入口已拆分，旧任务按“3D平面图转效果图”处理；建议先生成3D平面图，再做最终人视角效果图。",
   cad: "专项优化：优先提取长直结构线和主要轮廓，降低文字、家具符号、阴影和纹理干扰；输出作为可描底的第一版 CAD 线稿。",
   cadrender: "专项优化：CAD 线稿作为硬约束，先守住轴线、墙体、开口和房间关系，再补充高度、材质、灯光和家具；最终不能残留 CAD 线。",
@@ -1733,6 +1815,7 @@ const defaultCanvasCommands = {
   custom: "自由创作默认预设：先判断我需要的是效果图、设计系列、材料板、局部编辑、扩图、概念图、产品图还是其他视觉产物；再结合参考图、画布资源和我的描述生成。不要强行套平面图、现场图或固定室内模板；画面需要干净、清晰、有设计判断。",
   "plan-axonometric": planTo3DFixedPrompt,
   "plan-render": "目标：从3D平面图的明确区域生成人视角效果图。优先使用我框选的红框区域；如果我没有框选，请自动选择与参考图最接近、最适合出图的一个功能区，并标明效果图来自哪个区域。保留整体空间关系、功能区位置、动线和主要家具/陈列逻辑；明确镜头站位、视线方向、前景/中景/背景、家具系统、墙顶地材料、灯具、色温和陈列密度；避免残留平面符号、不合理透视、整张平面图视角和无法判断区域来源。",
+  viewpoint: "目标：视角转换。把输入图当成可进入的三维空间，画布上的人视角点是相机站位；根据点位坐标、画面位置和朝向生成从该位置看到的新视角。保留原空间结构、材料、灯光、家具/陈列、尺度和设计气质，只改变镜头位置与可见范围；补足合理的前景、中景、背景和相邻空间。不要复制原图机位，不要出现画布标记或人物模型，不要生成鸟瞰/平面图/模型截图。",
   designseries: "目标：从参考图生成同一项目的一套深层设计系列图。先识别每张参考图贡献的空间、材料、灯光、家具、色彩、构图和氛围，再建立同一套项目DNA、空间动线、场域清单、功能分区、重复母题和渲染语言；每张图必须承担不同场域/功能/机位，例如入口主视觉、公共核心区、次级功能区、安静/私密空间、走廊过渡、材料节点。统一的是风格、材质、灯光、色彩、家具年代、设计团队语言和渲染品质；变化的是空间场景、功能分区、视角距离、镜头方向和焦点内容。避免同一个角度反复变体、单一主视觉多版本、拼贴感、单张孤立感和风格漂移。",
   cad: "目标：平面图图片转CAD/SVG底图。优先提取墙体主线、房间边界、开口和长直轮廓；忽略阴影、纹理、家具装饰、照片噪点和无关文字；输出适合继续描底的第一版结构线稿。",
   cadrender: "目标：CAD或图纸线稿转真实空间效果图。把轴线、墙体、开口、房间关系和尺度作为硬约束，再补充层高、材料、灯光、家具和陈列；最终画面不能保留CAD线条或图纸符号。",
@@ -1962,11 +2045,15 @@ async function pollTaskResult(path, clientTaskId) {
     const pollPath = clientScopedApiPath(`/api/task-result?taskId=${encodeURIComponent(clientTaskId)}`);
     try {
       const data = await requestJson(pollPath);
-      if (data.status === "success") return normalizeRecoverableApiResult(path, data.result);
+      if (data.status === "success") {
+        updateActiveTask({ phase: "保存结果", event: "后台生成完成，正在同步结果" });
+        return normalizeRecoverableApiResult(path, data.result);
+      }
       if (data.status === "failed") {
         const detail = data.error?.details?.error?.message || data.error?.details?.message || data.error?.message || "后台任务失败";
         throw new Error(detail);
       }
+      updateActiveTask({ phase: "后台生图中" });
       firstMissingAt = 0;
     } catch (error) {
       if (isMissingTaskResultError(error)) {
@@ -2010,6 +2097,7 @@ async function api(path, payload) {
     if (!recoverable || !clientTaskId || !isRecoverableApiError(error)) throw error;
     updateActiveTask({
       status: "running",
+      phase: "后台生图中",
       event: "连接中断，正在等待后台生成结果"
     });
     toast("连接中断，正在等待后台结果");
@@ -2020,6 +2108,21 @@ async function api(path, payload) {
   }
 }
 
+async function runWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(limit, items.length));
+  const runners = Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await worker(items[index], index);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
 async function refreshHealth() {
   try {
     const response = await fetch("/api/health");
@@ -2027,11 +2130,17 @@ async function refreshHealth() {
     state.imageEndpointHealth = Array.isArray(data.imageEndpointHealth) ? data.imageEndpointHealth : [];
     state.activeImageBaseUrl = data.imageBaseUrl || "";
     state.runtimeImageEndpoints = Array.isArray(data.runtimeImageEndpoints) ? data.runtimeImageEndpoints : state.runtimeImageEndpoints;
+    state.runtimeProviders = data.runtimeProviders || state.runtimeProviders;
+    state.providerProfiles = Array.isArray(data.providerProfiles) ? data.providerProfiles : state.providerProfiles;
     state.recommendedImageEndpoint = data.recommendedImageEndpoint || null;
     const reasoningReady = data.reasoningConfigured ?? data.keyConfigured;
     const imageReady = data.imageConfigured ?? data.keyConfigured;
     const endpointLabel = shortEndpoint(data.imageBaseUrl || data.recommendedImageEndpoint?.baseUrl || "");
-    const imageBackendLabel = data.imageBackend === "responses-image-generation-tool" ? "Image Gen" : "Image";
+    const imageBackendLabel = data.imageBackend === "responses-image-generation-tool"
+      ? "Image Gen"
+      : data.imageBackend === "openai-compatible-images-api"
+        ? "Images API"
+        : "Image";
     els.modelStatus.textContent = reasoningReady && imageReady
       ? `${data.reasoningModel} → ${imageBackendLabel}${endpointLabel ? ` · ${endpointLabel}` : ""}`
       : reasoningReady
@@ -2057,11 +2166,14 @@ async function refreshApiSettings({ silent = false } = {}) {
     const data = await requestJson("/api/settings");
     const settings = data.settings || {};
     state.runtimeImageEndpoints = Array.isArray(settings.imageEndpoints) ? settings.imageEndpoints : [];
+    state.runtimeProviders = settings.providers || state.runtimeProviders;
+    state.providerProfiles = Array.isArray(settings.providerProfiles) ? settings.providerProfiles : state.providerProfiles;
+    state.providerProbes = settings.providerProbes || state.providerProbes;
     state.imageEndpointHealth = Array.isArray(settings.imageEndpointHealth) ? settings.imageEndpointHealth : state.imageEndpointHealth;
     state.activeImageBaseUrl = settings.activeImageBaseUrl || state.activeImageBaseUrl;
     state.recommendedImageEndpoint = settings.recommendedImageEndpoint || state.recommendedImageEndpoint;
     state.canManageApiSettings = settings.canManageSettings !== false;
-    renderSecuritySettings(settings);
+    renderLocalApiSettings(settings);
     renderApiSettings();
     renderStorageAccess();
     if (!silent) toast("API 设置已刷新");
@@ -2126,7 +2238,8 @@ function renderCurrentImageEndpoint() {
   const health = endpointHealthFor(activeBaseUrl) || state.recommendedImageEndpoint || null;
   const statusInfo = endpointStatusInfo(health, { active: Boolean(activeBaseUrl), enabled: true });
   els.currentImageEndpointName.textContent = endpointLabelFor(activeBaseUrl);
-  els.currentImageEndpointUrl.textContent = activeBaseUrl ? `${shortEndpoint(activeBaseUrl)} · ${health?.responsesPath || "/v1/responses"}` : "未连接生图端点";
+  const imagePath = health?.imageGenerationPath || "/v1/images/generations";
+  els.currentImageEndpointUrl.textContent = activeBaseUrl ? `${shortEndpoint(activeBaseUrl)} · ${imagePath}` : "未连接生图端点";
   els.currentImageEndpointUrl.title = activeBaseUrl || "";
   els.currentImageEndpointStatus.textContent = statusInfo.label;
   els.currentImageEndpointStatus.className = `api-endpoint-status ${statusInfo.className}`;
@@ -2143,24 +2256,29 @@ function ensureCanManageApiSettings() {
   return false;
 }
 
-function renderSecuritySettings(settings = {}) {
-  if (!els.securitySettingsSummary) return;
-  const tokenConfigured = Boolean(settings.publicApiTokenConfigured);
-  const corsOrigin = settings.publicApiCorsOrigin || "";
-  els.securitySettingsSummary.innerHTML = `
-    <div><span>访问口令</span><strong class="${tokenConfigured ? "is-ok" : "is-warn"}">${tokenConfigured ? "已配置" : "未配置"}</strong></div>
-    <div><span>CORS</span><strong class="${corsOrigin ? "is-ok" : "is-warn"}">${corsOrigin ? escapeHtml(shortEndpoint(corsOrigin)) : "未限制"}</strong></div>
-    <div><span>设置权限</span><strong class="${state.canManageApiSettings ? "is-ok" : "is-readonly"}">${state.canManageApiSettings ? "本机可管理" : "公网只读"}</strong></div>
-  `;
-}
-
 function renderApiSettingsAccess() {
   const disabled = !state.canManageApiSettings;
   [
+    els.reasoningApiBaseUrl,
+    els.reasoningApiModel,
+    els.reasoningApiKey,
+    els.primaryImageApiBaseUrl,
+    els.primaryImageApiModel,
+    els.primaryImageApiResponsesPath,
+    els.primaryImageApiGenerationPath,
+    els.primaryImageApiEditPath,
+    els.primaryImageProviderManifest,
+    els.primaryImageApiKey,
+    els.saveLocalApiSettingsButton,
+    els.probeReasoningApiButton,
+    els.probePrimaryImageApiButton,
     els.imageApiLabel,
     els.imageApiBaseUrl,
     els.imageApiKey,
     els.imageApiResponsesPath,
+    els.imageApiGenerationPath,
+    els.imageApiEditPath,
+    els.imageApiProviderManifest,
     els.saveImageApiEndpointButton,
     els.probeImageApiEndpointButton
   ].forEach((control) => {
@@ -2171,6 +2289,365 @@ function renderApiSettingsAccess() {
     if (!meta.includes("公网只读")) {
       els.currentImageEndpointMeta.textContent = `${meta} · 公网只读`;
     }
+  }
+}
+
+function apiProviderLabel(kind) {
+  return kind === "image" ? "生图" : "思考";
+}
+
+function compactApiProbeMessage(value, maxLength = 72) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+function apiProbeElapsedText(probe) {
+  const ms = Number(probe?.ms);
+  return Number.isFinite(ms) && ms > 0 ? `${Math.round(ms)}ms` : "";
+}
+
+function apiProviderProbeSummary(kind, probe) {
+  if (!probe) return "";
+  const label = apiProviderLabel(kind);
+  const elapsed = apiProbeElapsedText(probe);
+  const status = probe.ok ? "连接成功" : "检测失败";
+  const message = probe.modelListed === false
+    ? `模型列表未看到 ${probe.model || "当前模型"}`
+    : probe.message || "";
+  return [
+    `${label}${status}`,
+    elapsed,
+    compactApiProbeMessage(message, probe.ok ? 48 : 64)
+  ].filter(Boolean).join(" · ");
+}
+
+function apiProviderProbeToast(kind, probe) {
+  const label = apiProviderLabel(kind);
+  const elapsed = apiProbeElapsedText(probe);
+  if (probe?.ok) {
+    const modelHint = probe.modelListed === false ? "，但模型未出现在列表中" : "";
+    return `${label} API 连接成功${elapsed ? ` · ${elapsed}` : ""}${modelHint}`;
+  }
+  return `${label} API 检测失败${elapsed ? ` · ${elapsed}` : ""}：${compactApiProbeMessage(probe?.message || "请求失败", 96)}`;
+}
+
+function apiProbeStatusInfo(probe, busy = false) {
+  if (busy) return { label: "检测中", className: "warning" };
+  if (probe?.ok) return { label: "连接成功", className: "available" };
+  if (probe) return { label: "检测失败", className: "error" };
+  return { label: "未检测", className: "unknown" };
+}
+
+function localApiProbeFallbackBaseUrl(kind) {
+  if (kind === "image") {
+    return els.primaryImageApiBaseUrl?.value.trim() || state.runtimeProviders?.image?.baseUrl || "";
+  }
+  return els.reasoningApiBaseUrl?.value.trim() || state.runtimeProviders?.reasoning?.baseUrl || "";
+}
+
+function apiProviderProbeDetail(kind, probe, busy = false) {
+  const baseUrl = probe?.baseUrl || localApiProbeFallbackBaseUrl(kind);
+  if (busy) return baseUrl ? `正在连接 ${shortEndpoint(baseUrl)}` : "正在检测连接";
+  if (!probe) return "点击检测后会在这里显示连接结果";
+  const parts = [
+    baseUrl ? shortEndpoint(baseUrl) : "",
+    probe.model || "",
+    apiProbeElapsedText(probe),
+    formatEndpointCheckedAt(probe.checkedAt),
+    probe.modelListed === false ? `模型列表未看到 ${probe.model || "当前模型"}` : compactApiProbeMessage(probe.message || "", 72)
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+
+function renderLocalApiProbeFeedback() {
+  if (!els.localApiProbeFeedback) return;
+  els.localApiProbeFeedback.innerHTML = ["reasoning", "image"].map((kind) => {
+    const probe = state.providerProbes?.[kind] || null;
+    const busy = Boolean(state.providerProbeBusy?.[kind]);
+    const statusInfo = apiProbeStatusInfo(probe, busy);
+    return `
+      <div class="api-probe-card ${escapeAttr(statusInfo.className)}">
+        <div>
+          <strong>${escapeHtml(apiProviderLabel(kind))} API</strong>
+          <small>${escapeHtml(apiProviderProbeDetail(kind, probe, busy))}</small>
+        </div>
+        <span class="api-endpoint-status ${escapeAttr(statusInfo.className)}">${escapeHtml(statusInfo.label)}</span>
+      </div>
+    `;
+  }).join("");
+}
+
+function setImageApiProbeFeedback(feedback = null) {
+  state.imageApiProbeFeedback = feedback;
+  renderImageApiProbeFeedback();
+}
+
+function renderImageApiProbeFeedback() {
+  if (!els.imageApiProbeFeedback) return;
+  const feedback = state.imageApiProbeFeedback;
+  if (!feedback) {
+    els.imageApiProbeFeedback.innerHTML = "";
+    return;
+  }
+  const statusInfo = apiProbeStatusInfo(feedback.ok === true ? { ok: true } : feedback.ok === false ? { ok: false } : null, feedback.busy);
+  els.imageApiProbeFeedback.innerHTML = `
+    <div class="api-probe-card ${escapeAttr(statusInfo.className)}">
+      <div>
+        <strong>${escapeHtml(feedback.title || "端点检测")}</strong>
+        <small>${escapeHtml(feedback.detail || "")}</small>
+      </div>
+      <span class="api-endpoint-status ${escapeAttr(statusInfo.className)}">${escapeHtml(feedback.status || statusInfo.label)}</span>
+    </div>
+  `;
+}
+
+function manifestToTextareaValue(manifest) {
+  return manifest ? JSON.stringify(manifest, null, 2) : "";
+}
+
+function readManifestTextareaValue(control) {
+  const raw = control?.value.trim() || "";
+  if (!raw) return { providerManifest: null };
+  try {
+    return { providerManifest: JSON.parse(raw) };
+  } catch {
+    throw new Error("Provider Manifest 不是有效 JSON");
+  }
+}
+
+function renderLocalApiSettings(settings = {}) {
+  const providers = settings.providers || state.runtimeProviders || {};
+  state.runtimeProviders = providers;
+  if (Array.isArray(settings.providerProfiles)) state.providerProfiles = settings.providerProfiles;
+  state.providerProbes = settings.providerProbes || state.providerProbes || {};
+  const reasoning = providers.reasoning || {};
+  const image = providers.image || {};
+  if (els.reasoningApiBaseUrl && !els.reasoningApiBaseUrl.value) els.reasoningApiBaseUrl.value = reasoning.baseUrl || "";
+  if (els.reasoningApiModel && !els.reasoningApiModel.value) els.reasoningApiModel.value = reasoning.model || "";
+  if (els.primaryImageApiBaseUrl && !els.primaryImageApiBaseUrl.value) els.primaryImageApiBaseUrl.value = image.baseUrl || "";
+  if (els.primaryImageApiModel && !els.primaryImageApiModel.value) els.primaryImageApiModel.value = image.model || "";
+  if (els.primaryImageApiResponsesPath && !els.primaryImageApiResponsesPath.value) els.primaryImageApiResponsesPath.value = image.responsesPath || "/responses";
+  if (els.primaryImageApiGenerationPath && !els.primaryImageApiGenerationPath.value) els.primaryImageApiGenerationPath.value = image.imageGenerationPath || "/v1/images/generations";
+  if (els.primaryImageApiEditPath && !els.primaryImageApiEditPath.value) els.primaryImageApiEditPath.value = image.imageEditPath || "/v1/images/edits";
+  if (els.primaryImageProviderManifest && !els.primaryImageProviderManifest.value) els.primaryImageProviderManifest.value = manifestToTextareaValue(image.providerManifest);
+  if (els.localApiSettingsSummary) {
+    const dataDir = settings.dataDir ? ` · 数据目录：${settings.dataDir}` : "";
+    const reasoningText = reasoning.configured ? `思考 Key ${reasoning.keyPreview || "已保存"}` : "未保存思考 Key";
+    const imageText = image.configured ? `生图 Key ${image.keyPreview || "已保存"}` : "未保存生图 Key";
+    const probeText = ["reasoning", "image"]
+      .map((kind) => apiProviderProbeSummary(kind, state.providerProbes?.[kind]))
+      .filter(Boolean)
+      .join("；");
+    const profileText = Array.isArray(state.providerProfiles) && state.providerProfiles.length
+      ? `已保存 ${state.providerProfiles.length} 套 API：${state.providerProfiles.map((profile) => `${profile.label}${profile.active ? " 当前" : ""}`).join("、")}`
+      : "";
+    els.localApiSettingsSummary.textContent = [reasoningText, imageText, profileText, probeText]
+      .filter(Boolean)
+      .join("；") + dataDir;
+  }
+  renderLocalApiProbeFeedback();
+}
+
+async function saveRuntimeProvider(kind, payload) {
+  const data = await requestJson("/api/settings/providers", {
+    method: "POST",
+    body: JSON.stringify({ kind, ...payload })
+  });
+  state.runtimeProviders = data.settings?.providers || state.runtimeProviders;
+  state.providerProfiles = Array.isArray(data.settings?.providerProfiles) ? data.settings.providerProfiles : state.providerProfiles;
+  state.providerProbes = data.settings?.providerProbes || state.providerProbes;
+  state.runtimeImageEndpoints = data.settings?.imageEndpoints || state.runtimeImageEndpoints;
+  state.imageEndpointHealth = data.settings?.imageEndpointHealth || state.imageEndpointHealth;
+  state.activeImageBaseUrl = data.settings?.activeImageBaseUrl || state.activeImageBaseUrl;
+  renderLocalApiSettings(data.settings || {});
+  renderApiSettings();
+  return data;
+}
+
+function runtimeProviderProbePayload(kind) {
+  const saved = state.runtimeProviders?.[kind] || {};
+  if (kind === "image") {
+    const apiKey = els.primaryImageApiKey?.value.trim() || "";
+    return {
+      kind,
+      baseUrl: els.primaryImageApiBaseUrl?.value.trim() || saved.baseUrl || "",
+      model: els.primaryImageApiModel?.value.trim() || saved.model || "gpt-image-2",
+      responsesPath: els.primaryImageApiResponsesPath?.value.trim() || saved.responsesPath || "/responses",
+      imageGenerationPath: els.primaryImageApiGenerationPath?.value.trim() || saved.imageGenerationPath || "/v1/images/generations",
+      imageEditPath: els.primaryImageApiEditPath?.value.trim() || saved.imageEditPath || "/v1/images/edits",
+      ...readManifestTextareaValue(els.primaryImageProviderManifest),
+      ...(apiKey ? { apiKey } : {})
+    };
+  }
+  const apiKey = els.reasoningApiKey?.value.trim() || "";
+  return {
+    kind,
+    baseUrl: els.reasoningApiBaseUrl?.value.trim() || saved.baseUrl || "",
+    model: els.reasoningApiModel?.value.trim() || saved.model || "gpt-5.5",
+    ...(apiKey ? { apiKey } : {})
+  };
+}
+
+function runtimeProviderProbeReady(kind, payload) {
+  const saved = state.runtimeProviders?.[kind] || {};
+  return Boolean(payload.baseUrl && (payload.apiKey || saved.configured));
+}
+
+async function postRuntimeProviderProbe(payload) {
+  const response = await fetch("/api/settings/providers/probe", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = data?.details?.error?.message || data?.details?.message || data?.error || "请求失败";
+    const error = new Error(detail);
+    error.status = response.status;
+    error.data = data;
+    throw error;
+  }
+  return data;
+}
+
+function applyProbeSettings(data = {}) {
+  const settings = data.settings || {};
+  if (settings.providers) state.runtimeProviders = settings.providers;
+  if (Array.isArray(settings.providerProfiles)) state.providerProfiles = settings.providerProfiles;
+  if (settings.providerProbes) state.providerProbes = settings.providerProbes;
+  if (Array.isArray(settings.imageEndpoints)) state.runtimeImageEndpoints = settings.imageEndpoints;
+  if (Array.isArray(settings.imageEndpointHealth)) state.imageEndpointHealth = settings.imageEndpointHealth;
+  if (Array.isArray(data.imageEndpointHealth)) state.imageEndpointHealth = data.imageEndpointHealth;
+  state.activeImageBaseUrl = settings.activeImageBaseUrl || data.imageBaseUrl || state.activeImageBaseUrl;
+  state.recommendedImageEndpoint = settings.recommendedImageEndpoint || data.recommendedImageEndpoint || state.recommendedImageEndpoint;
+  if ("canManageSettings" in settings) state.canManageApiSettings = settings.canManageSettings !== false;
+}
+
+async function probeRuntimeProvider(kind) {
+  if (!ensureCanManageApiSettings()) return false;
+  const label = apiProviderLabel(kind);
+  const button = kind === "image" ? els.probePrimaryImageApiButton : els.probeReasoningApiButton;
+  let payload;
+  try {
+    payload = runtimeProviderProbePayload(kind);
+  } catch (error) {
+    toast(error.message);
+    return false;
+  }
+  if (!runtimeProviderProbeReady(kind, payload)) {
+    toast(`请先填写${label} API Base URL 和 Key，或先保存已配置的 Key`);
+    if (els.localApiSettingsSummary) els.localApiSettingsSummary.textContent = `${label} API 等待 Base URL 和 Key 后再检测。`;
+    state.providerProbes = {
+      ...(state.providerProbes || {}),
+      [kind]: {
+        ok: false,
+        kind,
+        status: "error",
+        baseUrl: payload.baseUrl,
+        model: payload.model,
+        responsesPath: payload.responsesPath || "",
+        checkedAt: new Date().toISOString(),
+        message: "缺少 Base URL 或 API Key"
+      }
+    };
+    renderLocalApiProbeFeedback();
+    return false;
+  }
+
+  setBusy(button, true, "检测中");
+  state.providerProbeBusy = { ...(state.providerProbeBusy || {}), [kind]: true };
+  renderLocalApiProbeFeedback();
+  if (els.localApiSettingsSummary) els.localApiSettingsSummary.textContent = `${label} API 正在检测连接...`;
+  toast(`${label} API 开始检测`);
+  try {
+    const data = await postRuntimeProviderProbe(payload);
+    const probe = data.probe || {
+      ok: false,
+      kind,
+      status: "error",
+      baseUrl: payload.baseUrl,
+      model: payload.model,
+      responsesPath: payload.responsesPath || "",
+      checkedAt: new Date().toISOString(),
+      message: data.error || "检测失败"
+    };
+    applyProbeSettings(data);
+    state.providerProbes = { ...(state.providerProbes || {}), [kind]: probe };
+    renderLocalApiSettings(data.settings || {});
+    renderApiSettings();
+    refreshHealth();
+    toast(apiProviderProbeToast(kind, probe));
+    return Boolean(probe.ok);
+  } catch (error) {
+    const probe = {
+      ok: false,
+      kind,
+      status: "error",
+      baseUrl: payload.baseUrl,
+      model: payload.model,
+      responsesPath: payload.responsesPath || "",
+      checkedAt: new Date().toISOString(),
+      message: error.message || "检测失败"
+    };
+    state.providerProbes = { ...(state.providerProbes || {}), [kind]: probe };
+    renderLocalApiSettings({ providers: state.runtimeProviders, providerProbes: state.providerProbes });
+    toast(apiProviderProbeToast(kind, probe));
+    return false;
+  } finally {
+    state.providerProbeBusy = { ...(state.providerProbeBusy || {}), [kind]: false };
+    renderLocalApiProbeFeedback();
+    setBusy(button, false);
+    renderApiSettingsAccess();
+  }
+}
+
+async function saveLocalApiSettings() {
+  if (!ensureCanManageApiSettings()) return;
+  const reasoningPayload = {
+    baseUrl: els.reasoningApiBaseUrl?.value.trim() || "",
+    model: els.reasoningApiModel?.value.trim() || "gpt-5.5",
+    apiKey: els.reasoningApiKey?.value.trim() || ""
+  };
+  const imagePayload = {
+    baseUrl: els.primaryImageApiBaseUrl?.value.trim() || "",
+    model: els.primaryImageApiModel?.value.trim() || "gpt-image-2",
+    responsesPath: els.primaryImageApiResponsesPath?.value.trim() || "/responses",
+    imageGenerationPath: els.primaryImageApiGenerationPath?.value.trim() || "/v1/images/generations",
+    imageEditPath: els.primaryImageApiEditPath?.value.trim() || "/v1/images/edits",
+    apiKey: els.primaryImageApiKey?.value.trim() || ""
+  };
+  try {
+    Object.assign(imagePayload, readManifestTextareaValue(els.primaryImageProviderManifest));
+  } catch (error) {
+    toast(error.message);
+    return;
+  }
+  const savedReasoning = state.runtimeProviders?.reasoning || {};
+  const savedImage = state.runtimeProviders?.image || {};
+  if (!reasoningPayload.baseUrl || (!reasoningPayload.apiKey && !savedReasoning.configured)) {
+    toast("请填写思考 API 的 Base URL 和 Key");
+    return;
+  }
+  if (!imagePayload.baseUrl || (!imagePayload.apiKey && !savedImage.configured)) {
+    toast("请填写生图 API 的 Base URL 和 Key");
+    return;
+  }
+  setBusy(els.saveLocalApiSettingsButton, true, "保存中");
+  try {
+    if (!reasoningPayload.apiKey && savedReasoning.configured) delete reasoningPayload.apiKey;
+    if (!imagePayload.apiKey && savedImage.configured) delete imagePayload.apiKey;
+    await saveRuntimeProvider("reasoning", reasoningPayload);
+    await saveRuntimeProvider("image", imagePayload);
+    if (els.reasoningApiKey) els.reasoningApiKey.value = "";
+    if (els.primaryImageApiKey) els.primaryImageApiKey.value = "";
+    await refreshHealth();
+    await probeImageApiEndpoints({ silent: true, controlButton: false, includeDraft: false });
+    toast("本机 API 密钥已保存");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    setBusy(els.saveLocalApiSettingsButton, false);
   }
 }
 
@@ -2240,6 +2717,7 @@ async function runStorageMaintenance(action, payload = {}, button = null) {
 function renderApiSettings() {
   renderCurrentImageEndpoint();
   renderApiSettingsAccess();
+  renderImageApiProbeFeedback();
   if (!els.imageApiEndpointList) return;
   const endpoints = state.runtimeImageEndpoints || [];
   if (!endpoints.length) {
@@ -2261,8 +2739,8 @@ function renderApiSettings() {
             <strong>${escapeHtml(endpoint.label || endpoint.baseUrl)}</strong>
             <span class="api-endpoint-status ${escapeAttr(statusInfo.className)}">${escapeHtml(statusInfo.label)}</span>
           </div>
-          <span title="${escapeAttr(endpoint.baseUrl)}">${escapeHtml(shortEndpoint(endpoint.baseUrl))} · ${escapeHtml(endpoint.responsesPath || "/v1/responses")}</span>
-          <small>${escapeHtml(endpoint.keyPreview || "已保存 Key")} · ${escapeHtml(endpointMetaText(health))}</small>
+          <span title="${escapeAttr(endpoint.baseUrl)}">${escapeHtml(shortEndpoint(endpoint.baseUrl))} · ${escapeHtml(endpoint.imageGenerationPath || health?.imageGenerationPath || "/v1/images/generations")}</span>
+          <small>${escapeHtml(endpoint.keyPreview || "已保存 Key")} · ${escapeHtml(endpoint.providerManifestName || health?.providerManifestName || "OpenAI-compatible")} · ${escapeHtml(endpointMetaText(health))}</small>
         </div>
         <div class="api-endpoint-actions">
           <button class="text-button" type="button" data-api-endpoint-probe="${escapeAttr(endpoint.id)}" ${probing || disabled ? "disabled" : ""}>${probing ? "检测中" : "检测"}</button>
@@ -2274,6 +2752,50 @@ function renderApiSettings() {
   }).join("");
 }
 
+function imageEndpointDraftProbePayload() {
+  return {
+    label: els.imageApiLabel?.value.trim() || "",
+    baseUrl: els.imageApiBaseUrl?.value.trim() || "",
+    apiKey: els.imageApiKey?.value.trim() || "",
+    responsesPath: els.imageApiResponsesPath?.value.trim() || "/v1/responses",
+    imageGenerationPath: els.imageApiGenerationPath?.value.trim() || "/v1/images/generations",
+    imageEditPath: els.imageApiEditPath?.value.trim() || "/v1/images/edits",
+    ...readManifestTextareaValue(els.imageApiProviderManifest)
+  };
+}
+
+function hasImageEndpointDraftInput(payload) {
+  return Boolean(payload.baseUrl || payload.apiKey);
+}
+
+function endpointProbeToastFromProbe(probe) {
+  const label = probe?.label || shortEndpoint(probe?.baseUrl || "") || "端点";
+  const elapsed = apiProbeElapsedText(probe);
+  if (probe?.ok) return `${label} 检测成功${elapsed ? ` · ${elapsed}` : ""}`;
+  return `${label} 检测失败${elapsed ? ` · ${elapsed}` : ""}：${compactApiProbeMessage(probe?.error || probe?.message || "请求失败", 96)}`;
+}
+
+function endpointProbeToastFromHealth(health) {
+  if (!health) return "端点检测完成";
+  return endpointProbeToastFromProbe({
+    ok: health.status === "available",
+    label: health.label,
+    baseUrl: health.baseUrl,
+    ms: health.probeMs,
+    message: health.lastProbeError || health.lastError || health.imageUnsupportedReason || ""
+  });
+}
+
+function endpointProbePoolToast(endpoints = []) {
+  const configured = endpoints.filter((endpoint) => endpoint.configured);
+  const pool = configured.length ? configured : endpoints;
+  if (!pool.length) return "没有可检测的生图端点，请先保存 Base URL 和 Key";
+  const available = pool.filter((endpoint) => endpoint.status === "available").length;
+  const active = pool.find((endpoint) => endpoint.active) || pool.find((endpoint) => endpoint.status === "available");
+  const activeText = active ? ` · 当前 ${active.label || shortEndpoint(active.baseUrl)}` : "";
+  return `端点检测完成：可用 ${available}/${pool.length}${activeText}`;
+}
+
 async function saveImageApiEndpoint() {
   if (!ensureCanManageApiSettings()) return;
   const payload = {
@@ -2281,8 +2803,16 @@ async function saveImageApiEndpoint() {
     baseUrl: els.imageApiBaseUrl?.value.trim() || "",
     apiKey: els.imageApiKey?.value.trim() || "",
     responsesPath: els.imageApiResponsesPath?.value.trim() || "/v1/responses",
+    imageGenerationPath: els.imageApiGenerationPath?.value.trim() || "/v1/images/generations",
+    imageEditPath: els.imageApiEditPath?.value.trim() || "/v1/images/edits",
     enabled: true
   };
+  try {
+    Object.assign(payload, readManifestTextareaValue(els.imageApiProviderManifest));
+  } catch (error) {
+    toast(error.message);
+    return;
+  }
   setBusy(els.saveImageApiEndpointButton, true, "保存中");
   try {
     const data = await requestJson("/api/settings/image-endpoints", {
@@ -2296,7 +2826,7 @@ async function saveImageApiEndpoint() {
     if (els.imageApiKey) els.imageApiKey.value = "";
     renderApiSettings();
     setBusy(els.saveImageApiEndpointButton, true, "检测中");
-    await probeImageApiEndpoints({ silent: true, controlButton: false });
+    await probeImageApiEndpoints({ silent: true, controlButton: false, includeDraft: false });
     toast("已保存并完成端点检测");
   } catch (error) {
     toast(error.message);
@@ -2339,16 +2869,45 @@ async function deleteImageApiEndpoint(id) {
   }
 }
 
-async function probeImageApiEndpoints({ silent = false, controlButton = true } = {}) {
+async function probeImageApiEndpoints({ silent = false, controlButton = true, includeDraft = true } = {}) {
   if (!state.canManageApiSettings) {
     if (!silent) toast(apiSettingsManageMessage());
     return false;
   }
+  let draftPayload;
+  try {
+    draftPayload = imageEndpointDraftProbePayload();
+  } catch (error) {
+    if (!silent) toast(error.message);
+    return false;
+  }
+  const probingDraft = includeDraft && hasImageEndpointDraftInput(draftPayload);
+  if (probingDraft && (!draftPayload.baseUrl || !draftPayload.apiKey)) {
+    setImageApiProbeFeedback({
+      ok: false,
+      title: "端点检测",
+      status: "检测失败",
+      detail: "请填写端点 Base URL 和 API Key 后再检测"
+    });
+    if (!silent) toast("请填写端点 Base URL 和 API Key 后再检测");
+    return false;
+  }
   if (controlButton) setBusy(els.probeImageApiEndpointButton, true, "检测中");
+  if (!silent) {
+    setImageApiProbeFeedback({
+      busy: true,
+      title: probingDraft ? "端点检测" : "端点池检测",
+      status: "检测中",
+      detail: probingDraft && draftPayload.baseUrl ? `正在连接 ${shortEndpoint(draftPayload.baseUrl)}` : "正在检测可用生图端点"
+    });
+  }
+  if (!silent) toast(probingDraft ? "端点开始检测" : "端点池开始检测");
   try {
     const data = await requestJson("/api/image-endpoints/probe", {
       method: "POST",
-      body: JSON.stringify({ autoActivate: true })
+      body: JSON.stringify(probingDraft
+        ? { ...draftPayload, autoActivate: false }
+        : { autoActivate: true })
     });
     state.imageEndpointHealth = Array.isArray(data.imageEndpointHealth) ? data.imageEndpointHealth : [];
     state.activeImageBaseUrl = data.imageBaseUrl || state.activeImageBaseUrl;
@@ -2356,9 +2915,30 @@ async function probeImageApiEndpoints({ silent = false, controlButton = true } =
     state.endpointAutoProbeAt = Date.now();
     renderApiSettings();
     refreshHealth();
-    if (!silent) toast("端点检测完成");
-    return true;
+    if (!silent) {
+      const message = probingDraft
+        ? endpointProbeToastFromProbe(data.draftProbe)
+        : endpointProbePoolToast(state.imageEndpointHealth);
+      setImageApiProbeFeedback({
+        ok: probingDraft ? Boolean(data.draftProbe?.ok) : true,
+        title: probingDraft ? (data.draftProbe?.label || "端点检测") : "端点池检测",
+        status: probingDraft ? (data.draftProbe?.ok ? "连接成功" : "检测失败") : "检测完成",
+        detail: message
+      });
+      toast(probingDraft
+        ? endpointProbeToastFromProbe(data.draftProbe)
+        : endpointProbePoolToast(state.imageEndpointHealth));
+    }
+    return probingDraft ? Boolean(data.draftProbe?.ok) : true;
   } catch (error) {
+    if (!silent) {
+      setImageApiProbeFeedback({
+        ok: false,
+        title: probingDraft ? "端点检测" : "端点池检测",
+        status: "检测失败",
+        detail: error.message
+      });
+    }
     if (!silent) toast(error.message);
     return false;
   } finally {
@@ -2373,6 +2953,15 @@ async function probeImageApiEndpoint(id, { silent = false } = {}) {
     return false;
   }
   state.endpointProbeBusyIds.add(id);
+  if (!silent) {
+    const endpoint = (state.runtimeImageEndpoints || []).find((item) => item.id === id);
+    setImageApiProbeFeedback({
+      busy: true,
+      title: endpoint?.label || "端点检测",
+      status: "检测中",
+      detail: endpoint?.baseUrl ? `正在连接 ${shortEndpoint(endpoint.baseUrl)}` : "正在检测端点"
+    });
+  }
   renderApiSettings();
   try {
     const data = await requestJson("/api/image-endpoints/probe", {
@@ -2382,11 +2971,29 @@ async function probeImageApiEndpoint(id, { silent = false } = {}) {
     state.imageEndpointHealth = Array.isArray(data.imageEndpointHealth) ? data.imageEndpointHealth : state.imageEndpointHealth;
     state.activeImageBaseUrl = data.imageBaseUrl || state.activeImageBaseUrl;
     state.recommendedImageEndpoint = data.recommendedImageEndpoint || state.recommendedImageEndpoint;
+    const checked = state.imageEndpointHealth.find((endpoint) => endpoint.runtimeId === id);
     renderApiSettings();
     refreshHealth();
-    if (!silent) toast("端点检测完成");
-    return true;
+    if (!silent) {
+      const message = endpointProbeToastFromHealth(checked);
+      setImageApiProbeFeedback({
+        ok: checked ? checked.status === "available" : true,
+        title: checked?.label || "端点检测",
+        status: checked?.status === "available" ? "连接成功" : "检测失败",
+        detail: message
+      });
+      toast(message);
+    }
+    return checked ? checked.status === "available" : true;
   } catch (error) {
+    if (!silent) {
+      setImageApiProbeFeedback({
+        ok: false,
+        title: "端点检测",
+        status: "检测失败",
+        detail: error.message
+      });
+    }
     if (!silent) toast(error.message);
     return false;
   } finally {
@@ -2407,7 +3014,7 @@ function maybeAutoProbeImageEndpoints({ force = false } = {}) {
     return Promise.resolve(false);
   }
   state.endpointAutoProbeAt = now;
-  endpointAutoProbePromise = probeImageApiEndpoints({ silent: true, controlButton: false })
+  endpointAutoProbePromise = probeImageApiEndpoints({ silent: true, controlButton: false, includeDraft: false })
     .catch(() => false)
     .finally(() => {
       endpointAutoProbePromise = null;
@@ -2479,7 +3086,7 @@ function renderWorkspaceHistoryPanel() {
     return `
       <article class="workspace-history-item">
         <button class="history-thumb" type="button" data-history-action="preview" data-log-id="${escapeAttr(log.id)}">
-          <img src="${escapeAttr(log.result.outputUrl)}" alt="${escapeAttr(title)}" />
+          <img src="${escapeAttr(log.result.outputUrl)}" data-cache-thumbnail="true" alt="${escapeAttr(title)}" />
         </button>
         <div>
           <strong>${escapeHtml(title)}</strong>
@@ -2495,6 +3102,7 @@ function renderWorkspaceHistoryPanel() {
       </article>
     `;
   }).join("");
+  hydrateCachedThumbnails(els.workspaceHistoryList);
   bindWorkspaceHistoryEvents();
 }
 
@@ -2534,6 +3142,9 @@ function historyLogToOutputRecord(log) {
     renderRegion: log.input?.renderRegion || log.result?.renderRegion || "",
     endpoint: log.result?.endpoint || log.activeImageBaseUrl || "",
     attempts: log.result?.attempts || [],
+    imageApi: log.result?.imageApi || "",
+    actualParams: log.result?.actualParams || null,
+    revisedPrompt: log.result?.revisedPrompt || "",
     prompt: log.result?.prompt || "",
     sourcePrompt: log.result?.sourcePrompt || "",
     intent: log.input?.intent || log.result?.intent || "",
@@ -2592,6 +3203,17 @@ async function useHistoryLogAsInput(log) {
   await useCanvasImageWithMode(record.stepMode || record.mode || "custom");
 }
 
+function formatActualImageParams(params = null, imageApi = "") {
+  const parts = [];
+  if (imageApi) parts.push(imageApi);
+  if (params?.size) parts.push(params.size);
+  if (params?.quality) parts.push(`quality ${params.quality}`);
+  if (params?.output_format) parts.push(params.output_format);
+  if (params?.moderation) parts.push(`moderation ${params.moderation}`);
+  if (params?.n) parts.push(`${params.n}张`);
+  return parts.join(" · ");
+}
+
 function renderTaskLogItem(log) {
   const statusText = log.status === "success" ? "成功" : "失败";
   const typeText = taskTypeLabel(log.type);
@@ -2612,6 +3234,10 @@ function renderTaskLogItem(log) {
   const inputType = log.input?.inputImageType || log.input?.primaryImage?.sourceType || "";
   const renderRegion = log.input?.renderRegion || log.result?.renderRegion || "";
   const retryCount = Number(log.result?.retryCount ?? log.error?.retryCount ?? logAttempts.filter((attempt) => attempt?.status === "failed").length);
+  const actualParams = log.result?.actualParams || null;
+  const imageApi = log.result?.imageApi || "";
+  const revisedPrompt = log.result?.revisedPrompt || "";
+  const actualParamText = formatActualImageParams(actualParams, imageApi);
   const nextMode = nextPlanWorkflowModes(logMode)[0];
   const output = log.result?.outputUrl
     ? uiIconLink({ href: log.result.outputUrl, icon: "icon-export", label: "打开结果", attrs: `target="_blank" rel="noreferrer"` })
@@ -2638,6 +3264,7 @@ function renderTaskLogItem(log) {
         <span>${escapeHtml(statusText)} · ${escapeHtml(duration)}</span>
       </div>
       <p>${escapeHtml(formatTaskTime(timeText))} · 参考图 ${refCount} 张 · 端点 ${escapeHtml(endpoint)}${retryCount ? ` · 重试 ${retryCount} 次` : ""}</p>
+      ${actualParamText ? `<p>实际生图参数：${escapeHtml(actualParamText)}</p>` : ""}
       ${workflowId || inputType || parentImageId || renderRegion ? `<p>${workflowId ? `工作流：${escapeHtml(workflowId)}` : ""}${inputType ? ` · 输入类型：${escapeHtml(inputType)}` : ""}${renderRegion ? ` · 区域：${escapeHtml(renderRegion)}` : ""}${parentImageId ? ` · 父图：${escapeHtml(parentImageId)}` : ""}</p>` : ""}
       ${userPrompt ? `<p>用户原始指令：${escapeHtml(userPrompt)}</p>` : ""}
       ${log.input?.intent ? `<p>任务意图：${escapeHtml(log.input.intent)}</p>` : ""}
@@ -2652,6 +3279,7 @@ function renderTaskLogItem(log) {
         ${uiIconButton({ icon: "icon-trash", label: "删除记录", attrs: `data-log-action="delete-log" data-log-id="${escapeAttr(log.id)}"` })}
       </div>
       ${attempts}
+      ${revisedPrompt ? `<details><summary>API 改写提示词</summary><p>${escapeHtml(revisedPrompt)}</p></details>` : ""}
       ${prompt}
       ${sourcePromptBlock}
     </article>
@@ -2750,6 +3378,7 @@ function startActiveTask({ type, label, total = 1, userPrompt = "", referenceCou
     retries: 0,
     startedAt: Date.now(),
     elapsedMs: 0,
+    phase: "准备中",
     endpoint: endpoint || getActiveImageEndpoint(),
     userPrompt,
     referenceCount,
@@ -2810,9 +3439,21 @@ function appendTaskAttemptEvents(attempts) {
     attempt._seenInProgress = true;
     if (attempt.endpoint) state.activeTask.endpoint = attempt.endpoint;
     if (attempt.status === "failed") state.activeTask.retries += 1;
+    if (attempt.status === "success") state.activeTask.phase = "保存结果";
+    if (attempt.status === "failed") state.activeTask.phase = "端点重试";
     const label = attempt.status === "success" ? "成功" : attempt.status === "skipped" ? "跳过" : "尝试";
-    pushTaskEvent(`${label} · ${attempt.name}${attempt.endpoint ? ` · ${attempt.endpoint}` : ""}${attempt.error ? ` · ${attempt.error}` : ""}`);
+    const duration = attempt.durationMs ? ` · ${formatElapsed(attempt.durationMs)}` : "";
+    pushTaskEvent(`${label} · ${attempt.name}${duration}${attempt.endpoint ? ` · ${attempt.endpoint}` : ""}${attempt.error ? ` · ${attempt.error}` : ""}`);
   });
+}
+
+function inferTaskPhase(task) {
+  if (!task) return "待命";
+  if (task.status === "success") return "完成";
+  if (task.status === "failed") return "失败";
+  if (task.retries > 0) return "端点重试";
+  if (task.current > 0) return "生图中";
+  return "准备中";
 }
 
 function renderTaskProgressPanel() {
@@ -2830,6 +3471,7 @@ function renderTaskProgressPanel() {
     els.taskProgressStatus.className = "status-pill";
     els.taskProgressBar.style.width = "0%";
     els.taskProgressCount.textContent = "0/0";
+    if (els.taskProgressPhase) els.taskProgressPhase.textContent = "待命";
     els.taskProgressEndpoint.textContent = getActiveImageEndpoint() || "--";
     els.taskProgressElapsed.textContent = "0s";
     els.taskProgressEvents.innerHTML = `<span>等待新的生成任务。</span>`;
@@ -2858,6 +3500,7 @@ function renderTaskProgressPanel() {
   els.taskProgressStatus.className = `status-pill ${task.status === "failed" ? "error" : task.status === "success" ? "ready" : ""}`;
   els.taskProgressBar.style.width = `${percent}%`;
   els.taskProgressCount.textContent = `${done}/${task.total}`;
+  if (els.taskProgressPhase) els.taskProgressPhase.textContent = task.phase || inferTaskPhase(task);
   els.taskProgressEndpoint.textContent = shortEndpoint(task.endpoint || getActiveImageEndpoint() || "--");
   els.taskProgressElapsed.textContent = formatElapsed(task.elapsedMs);
   const contextEvents = [
@@ -2968,10 +3611,10 @@ function isInputCompatibleWithMode(analysis, mode = state.mode) {
     "line-plan": ["plan-axonometric", "cad", "cadrender"],
     "cad-screenshot": ["cad", "cadrender", "plan-axonometric"],
     "colored-plan": ["plan-axonometric"],
-    axonometric: ["plan-render"],
-    "site-photo": ["photo", "styletransfer", "materialreplace", "lightingadjust"],
-    "white-model": ["whitemodel"],
-    sketch: ["sketch"],
+    axonometric: ["plan-render", "viewpoint"],
+    "site-photo": ["photo", "viewpoint", "styletransfer", "materialreplace", "lightingadjust"],
+    "white-model": ["whitemodel", "viewpoint"],
+    sketch: ["sketch", "viewpoint"],
     "style-reference": ["custom", "designseries", "styletransfer", "materialboard"]
   };
   return (compatibleModes[key] || []).includes(normalizedMode);
@@ -3045,6 +3688,7 @@ async function generateImage(directionId) {
   const direction = state.plan.directions.find((item) => item.id === directionId);
   if (!direction || state.loadingImages.has(directionId)) return;
 
+  const useThinkingMode = Boolean(state.thinkingModeEnabled);
   state.loadingImages.add(directionId);
   startActiveTask({
     type: "generate-image",
@@ -3056,12 +3700,12 @@ async function generateImage(directionId) {
   state.thinking = {
     status: "active",
     target: direction.name,
-    text: state.thinkingModeEnabled
+    text: useThinkingMode
       ? `正在为「${direction.name}」推理空间镜头、材料表达、灯光层次和画面风险。`
       : `思考模式已关闭，正在使用预设提示词直接生成「${direction.name}」。`
   };
   render();
-  toast(`${thinkingPipelineLabel()} 正在生成「${direction.name}」`);
+  toast(`${useThinkingMode ? "gpt-5.5 → Image Gen" : "预设提示词 → Image Gen"} 正在生成「${direction.name}」`);
   try {
     const data = await api("/api/generate-image", {
       brief: readBrief(),
@@ -3070,11 +3714,12 @@ async function generateImage(directionId) {
       userPrompt: direction.image_prompt || currentCanvasUserPrompt(),
       size: selectedGenerationSize(),
       quality: selectedGenerationQuality(),
-      thinkingEnabled: state.thinkingModeEnabled
+      thinkingEnabled: useThinkingMode
     });
     direction.image = data.image;
     updateActiveTask({
       success: 1,
+      phase: "保存结果",
       endpoint: data.image?.endpoint || state.activeTask.endpoint,
       finalPrompt: data.image?.prompt || direction.image_prompt,
       outputs: [data.image],
@@ -3084,7 +3729,7 @@ async function generateImage(directionId) {
     state.thinking = {
       status: "done",
       target: direction.name,
-      text: data.image?.thinking || (state.thinkingModeEnabled
+      text: data.image?.thinking || (useThinkingMode
         ? `gpt-5.5 已完成「${direction.name}」的生成策略推理，并调用 Image Gen 输出视觉。`
         : `已使用预设提示词调用 Image Gen 输出「${direction.name}」。`)
     };
@@ -3163,6 +3808,216 @@ function planRenderRegionInfo(mode = state.mode, selection = state.selection, re
   };
 }
 
+function viewpointIntensityMeta(value) {
+  const options = {
+    small: {
+      value: "small",
+      label: "小幅换位",
+      shortLabel: "小幅",
+      prompt: "小幅换位：更保守地移动相机，尽量贴近原图空间证据，优先保证结构、尺度和材料稳定。"
+    },
+    medium: {
+      value: "medium",
+      label: "中幅换位",
+      shortLabel: "中幅",
+      prompt: "中幅换位：默认强度，在保持空间身份稳定的前提下生成明显不同的新机位。"
+    },
+    large: {
+      value: "large",
+      label: "大幅换位",
+      shortLabel: "大幅",
+      prompt: "大幅换位：允许更明显的相机移动和合理补全隐藏侧面，但仍不能改变原空间结构、材料系统和设计语言。"
+    }
+  };
+  return options[value] || options.medium;
+}
+
+function viewpointInputProfile() {
+  const analysis = state.primaryImageAnalysis || state.primaryImage?.inputAnalysis || {};
+  const text = [
+    analysis.key,
+    analysis.label,
+    analysis.reason,
+    analysis.suggestedMode,
+    state.primaryImage?.name
+  ].filter(Boolean).join(" ").toLowerCase();
+  const planLike = /(3d|floor.?plan|plan|axonometric|isometric|cad|dxf|svg|white.?model|平面|图纸|轴测|鸟瞰|白模|模型|cad)/i.test(text);
+  if (planLike) {
+    return {
+      kind: "planlike",
+      label: "3D平面 / 空间导览图",
+      note: "适合做机位转换，站位和朝向会更稳定。"
+    };
+  }
+  return {
+    kind: "singleview",
+    label: "普通空间图 / 效果图",
+    note: "单张图没有真实3D数据，AI 会按站位合理估算新机位。"
+  };
+}
+
+function normalizedViewpointState(viewpoint = state.viewpoint) {
+  const fallback = defaultViewpointState();
+  const yaw = Number(viewpoint?.yaw);
+  return {
+    x: round4(clamp(Number(viewpoint?.x ?? fallback.x), 0.05, 0.95)),
+    y: round4(clamp(Number(viewpoint?.y ?? fallback.y), 0.08, 0.94)),
+    yaw: Number.isFinite(yaw) ? clamp(Math.round(yaw), -135, 135) : fallback.yaw,
+    intensity: viewpointIntensityMeta(viewpoint?.intensity || fallback.intensity).value
+  };
+}
+
+function viewpointLocationLabel(viewpoint = state.viewpoint) {
+  const point = normalizedViewpointState(viewpoint);
+  const horizontal = point.x < 0.34 ? "画面左侧" : point.x > 0.66 ? "画面右侧" : "画面中部";
+  const depth = point.y < 0.34 ? "远景/深处" : point.y > 0.66 ? "前景/近处" : "中景";
+  return `${horizontal}${depth}`;
+}
+
+function viewpointDirectionLabel(yaw = state.viewpoint?.yaw || 0) {
+  const value = Number(yaw) || 0;
+  if (value <= -75) return "明显朝左看";
+  if (value <= -25) return "朝左前方看";
+  if (value >= 75) return "明显朝右看";
+  if (value >= 25) return "朝右前方看";
+  return "朝画面深处看";
+}
+
+function viewpointReadoutText(viewpoint = state.viewpoint) {
+  const point = normalizedViewpointState(viewpoint);
+  const intensity = viewpointIntensityMeta(point.intensity);
+  return `${viewpointDirectionLabel(point.yaw)} · ${intensity.label} · x ${Math.round(point.x * 100)} / y ${Math.round(point.y * 100)}`;
+}
+
+function updateRenderedViewpointControls(root = els.canvasNodes) {
+  if (!root) return;
+  const point = normalizedViewpointState();
+  const location = viewpointLocationLabel(point);
+  const direction = viewpointDirectionLabel(point.yaw);
+  const intensity = viewpointIntensityMeta(point.intensity);
+  const readout = viewpointReadoutText(point);
+  const stability = viewpointStabilityLabel(point);
+  root.querySelectorAll("[data-viewpoint-marker]").forEach((marker) => {
+    marker.style.left = `${point.x * 100}%`;
+    marker.style.top = `${point.y * 100}%`;
+    marker.style.setProperty("--yaw", `${point.yaw}deg`);
+    marker.setAttribute("aria-label", `视角点：${location}，${direction}，${intensity.label}`);
+  });
+  root.querySelectorAll(".viewpoint-cone").forEach((cone) => {
+    cone.style.left = `${point.x * 100}%`;
+    cone.style.top = `${point.y * 100}%`;
+    cone.style.setProperty("--yaw", `${point.yaw}deg`);
+  });
+  root.querySelectorAll("[data-viewpoint-location]").forEach((element) => {
+    element.textContent = location;
+  });
+  root.querySelectorAll("[data-viewpoint-direction]").forEach((element) => {
+    element.textContent = direction;
+  });
+  root.querySelectorAll("[data-viewpoint-intensity]").forEach((element) => {
+    element.textContent = intensity.label;
+  });
+  root.querySelectorAll("[data-viewpoint-readout]").forEach((element) => {
+    element.textContent = readout;
+  });
+  root.querySelectorAll("[data-viewpoint-stability]").forEach((element) => {
+    element.textContent = stability;
+  });
+  root.querySelectorAll("[data-viewpoint-action^='intensity-']").forEach((button) => {
+    const active = button.dataset.viewpointAction === `intensity-${point.intensity}`;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+}
+
+function viewpointStabilityLabel(viewpoint = state.viewpoint) {
+  const point = normalizedViewpointState(viewpoint);
+  const profile = viewpointInputProfile();
+  if (profile.kind === "planlike" && point.intensity !== "large") return "高";
+  if (profile.kind === "planlike") return "中高";
+  if (point.intensity === "small") return "中";
+  if (point.intensity === "large") return "较低";
+  return "中";
+}
+
+function viewpointSelectionBounds(viewpoint = state.viewpoint) {
+  const point = normalizedViewpointState(viewpoint);
+  const size = point.intensity === "large" ? 0.22 : point.intensity === "small" ? 0.12 : 0.16;
+  return {
+    x: round4(clamp(point.x - size / 2, 0, 1 - size)),
+    y: round4(clamp(point.y - size / 2, 0, 1 - size)),
+    width: size,
+    height: size
+  };
+}
+
+function viewpointPrompt(viewpoint = state.viewpoint) {
+  const point = normalizedViewpointState(viewpoint);
+  const intensity = viewpointIntensityMeta(point.intensity);
+  const profile = viewpointInputProfile();
+  return [
+    "空间机位控制器：用户在画布源图上设置了站位点、视线方向和换位强度；这些控件只是 UI，不要生成到画面里。",
+    `输入类型判断：${profile.label}；${profile.note}`,
+    `站位点归一化坐标：x=${point.x}, y=${point.y}；图面方位：${viewpointLocationLabel(point)}；视线朝向：${viewpointDirectionLabel(point.yaw)}（yaw ${point.yaw}°）；换位强度：${intensity.label}；稳定性预估：${viewpointStabilityLabel(point)}。`,
+    intensity.prompt,
+    "把输入图理解为可进入的三维空间：根据该点反推相机脚下位置、可通行区域、镜头高度约 1.55m、视线方向、镜头焦段和可见范围。",
+    "输出一张从该站位看过去的全新人视角空间图，而不是复制原图机位；允许补足原图没有直接拍到但与站位合理连续的前景、中景、背景、门洞、家具侧面和相邻空间。",
+    "硬性保留：原图的空间身份、主要结构、开口关系、材料系统、灯光方向、家具/陈列逻辑、尺度和设计气质。",
+    "硬性避免：不要出现人物、UI 标记、小模型、红点、箭头、视锥、水印、文字、平面图、鸟瞰图、模型截图或透视错乱。"
+  ].join("\n");
+}
+
+function viewpointGuideHtml() {
+  const point = normalizedViewpointState();
+  const intensity = viewpointIntensityMeta(point.intensity);
+  const profile = viewpointInputProfile();
+  return `
+    <p>这是新机位生成器：站位点决定从哪里看，视锥决定朝哪边看，换位强度决定 AI 补全幅度。</p>
+    <div class="viewpoint-guide-grid">
+      <span>站位</span><strong data-viewpoint-location>${escapeHtml(viewpointLocationLabel(point))}</strong>
+      <span>朝向</span><strong data-viewpoint-direction>${escapeHtml(viewpointDirectionLabel(point.yaw))}</strong>
+      <span>强度</span><strong data-viewpoint-intensity>${escapeHtml(intensity.label)}</strong>
+      <span>输入</span><strong>${escapeHtml(profile.label)}</strong>
+      <span>稳定性</span><strong data-viewpoint-stability>${escapeHtml(viewpointStabilityLabel(point))}</strong>
+    </div>
+    <p class="viewpoint-guide-note">${escapeHtml(profile.note)} 点击源图可放置站位点；拖动人形标记可连续调整；方向键微调位置，Alt+左右调整朝向。</p>
+    <div class="node-actions wrap">
+      ${uiIconButton({ className: "secondary-button", icon: "icon-viewpoint", label: "生成新机位", attrs: `data-viewpoint-action="generate" ${state.primaryImage ? "" : "disabled"}` })}
+    </div>
+  `;
+}
+
+function viewpointControlHtml() {
+  const point = normalizedViewpointState();
+  const intensity = viewpointIntensityMeta(point.intensity);
+  const intensityButtons = ["small", "medium", "large"].map((value) => {
+    const option = viewpointIntensityMeta(value);
+    const active = option.value === point.intensity;
+    return `<button class="${active ? "active" : ""}" type="button" data-viewpoint-action="intensity-${option.value}" aria-pressed="${active ? "true" : "false"}">${escapeHtml(option.shortLabel)}</button>`;
+  }).join("");
+  return `
+    <div class="viewpoint-control-card" aria-label="空间机位控制器">
+      <div class="viewpoint-control-head">
+        <div>
+          <span>空间机位控制器</span>
+          <strong data-viewpoint-location>${escapeHtml(viewpointLocationLabel(point))}</strong>
+          <p data-viewpoint-readout>${escapeHtml(viewpointReadoutText(point))}</p>
+        </div>
+        <b data-viewpoint-stability>${escapeHtml(viewpointStabilityLabel(point))}</b>
+      </div>
+      <div class="viewpoint-intensity-row" aria-label="换位强度">
+        ${intensityButtons}
+      </div>
+      <div class="viewpoint-actions">
+        ${uiIconButton({ className: "text-button", icon: "icon-refresh", label: "向左旋转", attrs: `data-viewpoint-action="rotate-left"` })}
+        ${uiIconButton({ className: "text-button", icon: "icon-focus", label: "重置机位", attrs: `data-viewpoint-action="reset"` })}
+        ${uiIconButton({ className: "text-button", icon: "icon-refresh", label: "向右旋转", attrs: `data-viewpoint-action="rotate-right"` })}
+        ${uiIconButton({ className: "secondary-button", icon: "icon-viewpoint", label: "生成新视角", attrs: `data-viewpoint-action="generate"` })}
+      </div>
+    </div>
+  `;
+}
+
 async function renderFromImages(options = {}) {
   const primaryImage = options.ignorePrimaryImage ? null : (options.primaryImage || state.primaryImage);
   const mode = normalizeClientMode(options.mode || state.mode);
@@ -3187,12 +4042,14 @@ async function renderFromImages(options = {}) {
   const parentNodeId = options.parentNodeId || primaryImage?.parentNodeId || (primaryImage?.dataUrl && primaryImage === state.primaryImage ? "source" : "");
   const inputAnalysis = options.inputAnalysis || primaryImage?.inputAnalysis || state.primaryImageAnalysis || null;
   const inputImageType = inputAnalysis?.label || primaryImage?.sourceType || "";
+  const viewpoint = options.viewpoint || (mode === "viewpoint" ? normalizedViewpointState() : null);
 
   if (!primaryImage && !options.allowNoPrimary) {
     toast(config.missing);
     return;
   }
 
+  const useThinkingMode = Boolean(state.thinkingModeEnabled);
   const busyButton = options.busyButton || els.renderButton;
   startActiveTask({
     type: "render-from-images",
@@ -3214,13 +4071,14 @@ async function renderFromImages(options = {}) {
   };
   renderWorkflowCanvas();
   const engineLabel = generationEngineLabel(mode);
-  const pipelineLabel = state.thinkingModeEnabled ? `gpt-5.5 → ${engineLabel}` : `预设提示词 → ${engineLabel}`;
+  const pipelineLabel = useThinkingMode ? `gpt-5.5 → ${engineLabel}` : `预设提示词 → ${engineLabel}`;
   toast(outputCount > 1 ? `${pipelineLabel}正在生成 ${outputCount} 张${config.resultTitle}` : `${pipelineLabel}正在生成${config.resultTitle}`);
   try {
     for (let index = 0; index < outputCount; index += 1) {
       updateActiveTask({
         current: index + 1,
         status: "running",
+        phase: useThinkingMode ? "提示词融合" : "生图中",
         endpoint: generationEndpointLabel(mode),
         event: `开始生成第 ${index + 1}/${outputCount} 张`
       });
@@ -3239,10 +4097,11 @@ async function renderFromImages(options = {}) {
         primaryImage,
         referenceImages,
         selection: renderSelection,
+        viewpoint,
         renderRegion: regionInfo,
         size: outputSize,
         quality: outputQuality,
-        thinkingEnabled: state.thinkingModeEnabled
+        thinkingEnabled: useThinkingMode
       });
       const record = {
         ...data.render,
@@ -3256,6 +4115,7 @@ async function renderFromImages(options = {}) {
         inputImageType,
         inputAnalysis,
         selection: renderSelection,
+        viewpoint,
         renderRegion: regionInfo?.label || "",
         renderRegionPrompt: regionInfo?.prompt || "",
         intent: variantIntent,
@@ -3267,6 +4127,7 @@ async function renderFromImages(options = {}) {
       state.renders.push(record);
       updateActiveTask({
         success: state.activeTask.success + 1,
+        phase: "保存结果",
         endpoint: data.render?.endpoint || state.activeTask.endpoint,
         finalPrompt: data.render?.prompt || state.activeTask.finalPrompt,
         outputs: [...state.activeTask.outputs, record],
@@ -3317,6 +4178,7 @@ async function analyzeDesignSeriesReferences() {
     userPrompt: currentCanvasUserPrompt(),
     referenceCount: referenceImages.length
   });
+  updateActiveTask({ phase: "参考分析" });
   state.thinking = {
     status: "active",
     target: "生成设计系列",
@@ -3336,6 +4198,7 @@ async function analyzeDesignSeriesReferences() {
     const fallbackReason = data.analysis?.fallback_reason || "";
     updateActiveTask({
       success: 1,
+      phase: "完成",
       finalPrompt: state.designSeriesAnalysis?.image_prompt || state.designSeriesAnalysis?.series_strategy || "",
       event: fallbackReason ? `参考图分析降级，已用预设继续：${fallbackReason}` : "参考图识别完成"
     });
@@ -3372,6 +4235,7 @@ async function generateDesignSeries(options = {}) {
     return;
   }
 
+  const useThinkingMode = Boolean(state.thinkingModeEnabled);
   const busyButton = options.busyButton || els.renderButton;
   const outputCount = clampImageCount(options.count || state.generation.count, "designseries", { allowSingle: options.allowSingle });
   startActiveTask({
@@ -3386,35 +4250,55 @@ async function generateDesignSeries(options = {}) {
     status: "active",
     target: "生成设计系列",
     text: outputCount > 1
-      ? `${state.thinkingModeEnabled ? "正在根据参考图识别结果组织成套设计策略" : "思考模式已关闭，正在使用设计系列预设"}，并调用 Image Gen 生成 ${outputCount} 张设计系列图。`
-      : `${state.thinkingModeEnabled ? "正在根据参考图识别结果组织成套设计策略" : "思考模式已关闭，正在使用设计系列预设"}，并调用 Image Gen 生成一套设计图。`
+      ? `${useThinkingMode ? "正在根据参考图识别结果组织成套设计策略" : "思考模式已关闭，正在使用设计系列预设"}，并调用 Image Gen 生成 ${outputCount} 张设计系列图。`
+      : `${useThinkingMode ? "正在根据参考图识别结果组织成套设计策略" : "思考模式已关闭，正在使用设计系列预设"}，并调用 Image Gen 生成一套设计图。`
   };
   renderWorkflowCanvas();
-  toast(outputCount > 1 ? `${thinkingPipelineLabel()} 正在生成 ${outputCount} 张设计系列图` : `${thinkingPipelineLabel()} 正在生成设计系列图`);
+  toast(outputCount > 1 ? `${useThinkingMode ? "gpt-5.5 → Image Gen" : "预设提示词 → Image Gen"} 正在生成 ${outputCount} 张设计系列图，最多并发 ${DESIGN_SERIES_PARALLEL_LIMIT} 张` : `${useThinkingMode ? "gpt-5.5 → Image Gen" : "预设提示词 → Image Gen"} 正在生成设计系列图`);
   try {
     let latestRecord = null;
-    let reusableAnalysis = state.thinkingModeEnabled ? state.designSeriesAnalysis : null;
+    let reusableAnalysis = useThinkingMode ? state.designSeriesAnalysis : null;
     if (reusableAnalysis && !reusableAnalysis.project_dna && !reusableAnalysis.spatial_sequence && !reusableAnalysis.scene_briefs?.length) {
       reusableAnalysis = null;
       state.designSeriesAnalysis = null;
     }
+    reusableAnalysis = enforceClientDesignSeriesProjectType(reusableAnalysis);
+    let lockedSeriesAnalysis = reusableAnalysis ? cloneValue(reusableAnalysis) : null;
     const baseIntent = [
       buildCurrentIntent(),
       outputCount > 1 && outputCount !== state.generation.count ? designSeriesCountPrompt(outputCount) : ""
     ].filter(Boolean).join("\n");
     let analysisFallbackNotified = Boolean(reusableAnalysis?.fallback_reason);
-    for (let index = 0; index < outputCount; index += 1) {
-      updateActiveTask({
-        current: index + 1,
-        endpoint: getActiveImageEndpoint(),
-        event: `开始生成第 ${index + 1}/${outputCount} 张设计系列图`
-      });
-      const scenePrompt = designSeriesScenePrompt(index + 1, outputCount, reusableAnalysis);
-      const variantIntent = outputCount > 1
+    const taskBrief = readBrief();
+    const taskUserPrompt = currentCanvasUserPrompt();
+    const outputSize = selectedGenerationSize();
+    const outputQuality = selectedGenerationQuality();
+    const existingSeriesResults = [...state.designSeriesResults];
+    const existingRenders = [...state.renders];
+    const batchRecords = new Array(outputCount);
+    const contiguousBatchCount = () => {
+      let count = 0;
+      while (count < batchRecords.length && batchRecords[count]) count += 1;
+      return count;
+    };
+    const publishOrderedBatch = () => {
+      const visibleRecords = batchRecords.slice(0, contiguousBatchCount());
+      state.designSeriesResults = [...existingSeriesResults, ...visibleRecords];
+      state.renders = [...existingRenders, ...visibleRecords];
+      const visibleLatest = visibleRecords.at(-1);
+      if (visibleLatest) state.render = visibleLatest;
+      renderGeneratedResult();
+      renderWorkflowCanvas();
+    };
+    const buildVariantIntent = (index, analysisForPrompt) => {
+      const scenePrompt = designSeriesScenePrompt(index + 1, outputCount, analysisForPrompt);
+      return outputCount > 1
         ? [
             baseIntent,
             scenePrompt,
             `本次输出为第 ${index + 1}/${outputCount} 张设计系列图。请让它承担这一套系列中的明确空间角色，并保持参考图风格、材质、元素、空间动线和项目DNA统一。`,
+            `本轮锁定空间排布：${designSeriesScheduleText(outputCount, analysisForPrompt)}。第 ${index + 1} 张只能生成「${designSeriesLockedSchedule(outputCount, analysisForPrompt)[index]?.[0] || "当前锁定空间"}」。`,
+            "唯一空间硬规则：整套图里每个空间角色只能出现一次；已经出现过的空间不能以换角度、换陈列、换灯光的形式再次出现。",
             "图片之间必须存在空间衔接关联：像同一个项目中的入口、公共区、私密区、过渡空间和细节节点，而不是同风格但互不相关的房间。",
             "统一风格不等于重复同一个角度；本张必须是多场域、多角度、多视角、多功能分区系列中的一个明确节点。",
             "本张需要和前后张共享可识别元素：连续墙地面材料、门洞/走廊/窗景、重复灯具、同款家具、木作/金属/石材节点、相同色彩分级或同一室外环境线索。",
@@ -3423,20 +4307,35 @@ async function generateDesignSeries(options = {}) {
             "禁止把同一个主视觉、同一个圆形大厅、同一个沙发区、同一个门头或同一个机位反复生成多张。"
           ].filter(Boolean).join("\n")
         : baseIntent;
+    };
+    const generateSeriesItem = async (index) => {
+      const analysisForRequest = lockedSeriesAnalysis ? cloneValue(lockedSeriesAnalysis) : null;
+      updateActiveTask({
+        current: index + 1,
+        phase: analysisForRequest ? "生图中" : "参考分析",
+        endpoint: getActiveImageEndpoint(),
+        event: `开始生成第 ${index + 1}/${outputCount} 张设计系列图`
+      });
+      const variantIntent = buildVariantIntent(index, analysisForRequest);
       const data = await api("/api/design-series", {
-        brief: readBrief(),
+        brief: taskBrief,
         intent: variantIntent,
-        userPrompt: currentCanvasUserPrompt(),
+        userPrompt: taskUserPrompt,
         referenceImages,
-        analysis: reusableAnalysis,
+        analysis: analysisForRequest,
         seriesIndex: index + 1,
         seriesCount: outputCount,
-        size: selectedGenerationSize(),
-        quality: selectedGenerationQuality(),
-        thinkingEnabled: state.thinkingModeEnabled
+        size: outputSize,
+        quality: outputQuality,
+        thinkingEnabled: useThinkingMode,
+        reuseSeriesReasoning: true,
+        promptFusionEnabled: useThinkingMode
       });
-      reusableAnalysis = data.analysis;
-      state.designSeriesAnalysis = data.analysis;
+      reusableAnalysis = enforceClientDesignSeriesProjectType(data.analysis);
+      if (!lockedSeriesAnalysis && reusableAnalysis) {
+        lockedSeriesAnalysis = cloneValue(reusableAnalysis);
+      }
+      state.designSeriesAnalysis = reusableAnalysis;
       if (data.analysis?.fallback_reason && !analysisFallbackNotified) {
         analysisFallbackNotified = true;
         updateActiveTask({
@@ -3457,26 +4356,34 @@ async function generateDesignSeries(options = {}) {
         referenceCount: referenceImages.length,
         createdAt: new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })
       };
-      state.designSeriesResults.push(record);
-      state.render = record;
-      state.renders.push(record);
+      batchRecords[index] = record;
       latestRecord = record;
       updateActiveTask({
         success: state.activeTask.success + 1,
+        phase: "保存结果",
         endpoint: data.render?.endpoint || state.activeTask.endpoint,
         finalPrompt: data.render?.prompt || state.activeTask.finalPrompt,
-        outputs: [...state.activeTask.outputs, record],
+        outputs: batchRecords.filter(Boolean),
         attempts: data.render?.attempts || [],
         event: `第 ${index + 1}/${outputCount} 张设计系列图完成`
       });
-      renderWorkflowCanvas();
+      publishOrderedBatch();
+      return record;
+    };
+
+    if (!lockedSeriesAnalysis) {
+      await generateSeriesItem(0);
     }
+    const remainingIndexes = Array.from({ length: outputCount }, (_, index) => index)
+      .filter((index) => !batchRecords[index]);
+    await runWithConcurrency(remainingIndexes, DESIGN_SERIES_PARALLEL_LIMIT, (index) => generateSeriesItem(index));
+    publishOrderedBatch();
     state.thinking = {
       status: "done",
       target: latestRecord?.title || "生成设计系列",
       text: outputCount > 1
-        ? `${state.designSeriesAnalysis?.fallback_reason ? "参考图分析已降级为内置预设" : state.thinkingModeEnabled ? "gpt-5.5 已完成参考图识别、系列建议和出图策略" : "已使用设计系列内置预设"}，并调用 Image Gen 生成 ${outputCount} 张设计系列图。`
-        : `${state.designSeriesAnalysis?.fallback_reason ? "参考图分析已降级为内置预设" : state.thinkingModeEnabled ? "gpt-5.5 已完成参考图识别、系列建议和出图策略" : "已使用设计系列内置预设"}，并调用 Image Gen 生成设计系列图。`
+        ? `${state.designSeriesAnalysis?.fallback_reason ? "参考图分析已降级为内置预设" : useThinkingMode ? "gpt-5.5 已完成参考图识别、系列建议和出图策略" : "已使用设计系列内置预设"}，并调用 Image Gen 生成 ${outputCount} 张设计系列图。`
+        : `${state.designSeriesAnalysis?.fallback_reason ? "参考图分析已降级为内置预设" : useThinkingMode ? "gpt-5.5 已完成参考图识别、系列建议和出图策略" : "已使用设计系列内置预设"}，并调用 Image Gen 生成设计系列图。`
     };
     renderGeneratedResult();
     renderDesignSeriesAnalysisView();
@@ -3508,6 +4415,10 @@ async function runPrimaryAction(options = {}) {
     await renderFromImages({ ...options, allowNoPrimary: true, ignorePrimaryImage: !state.primaryImage });
     return;
   }
+  if (state.mode === "viewpoint") {
+    await runViewpointRender(options);
+    return;
+  }
   if (state.mode === "cad") {
     await convertPlanToCad(options);
     return;
@@ -3536,6 +4447,34 @@ async function runPrimaryAction(options = {}) {
     return;
   }
   await renderFromImages(options);
+}
+
+async function runViewpointRender(options = {}) {
+  if (!state.primaryImage) {
+    toast(modeConfig("viewpoint").missing);
+    return;
+  }
+  const point = normalizedViewpointState();
+  state.viewpoint = {
+    ...state.viewpoint,
+    ...point,
+    dragging: null
+  };
+  const command = currentCanvasUserPrompt();
+  await renderFromImages({
+    ...options,
+    mode: "viewpoint",
+    primaryImage: state.primaryImage,
+    selection: null,
+    viewpoint: point,
+    count: 1,
+    title: "视角转换图",
+    intent: [
+      modeConfig("viewpoint").intent,
+      viewpointPrompt(point),
+      command ? `用户补充要求：${command}` : ""
+    ].filter(Boolean).join("\n")
+  });
 }
 
 async function enhanceQualityCurrentImage(options = {}) {
@@ -3746,6 +4685,9 @@ function buildCurrentIntent() {
     ? `图片比例：${selectedGenerationAspectLabel()}；画质：${state.generation.quality.toUpperCase()}；尺寸：${size.width}x${size.height}；出图数量：${state.generation.count}；生成形式：设计系列图`
     : `图片比例：${selectedGenerationAspectLabel()}；画质：${state.generation.quality.toUpperCase()}；尺寸：${size.width}x${size.height}；出图数量：${state.generation.count}`;
   const designSeriesCountText = state.mode === "designseries" ? designSeriesCountPrompt(state.generation.count) : "";
+  const designSeriesVisualTypeText = state.mode === "designseries"
+    ? "设计系列识别优先级：先整体识别上传参考图的真实项目类型，再决定分镜排布；旧模板、旧 brief、隐藏预设或上一次项目上下文如果和参考图冲突，不能覆盖参考图视觉证据。"
+    : "";
   const inputAnalysisText = state.primaryImageAnalysis
     ? `输入图识别：${state.primaryImageAnalysis.label}；建议模式：${suggestedModeLabel(state.primaryImageAnalysis.suggestedMode)}；判断理由：${state.primaryImageAnalysis.reason}。如果用户当前选择的按钮不同，不强制拦截，但最终提示词必须显式处理这种风险。`
     : "";
@@ -3786,6 +4728,7 @@ function buildCurrentIntent() {
     structureText,
     generationText,
     designSeriesCountText,
+    designSeriesVisualTypeText,
     scenePresetText,
     styleText,
     resourceText,
@@ -3845,6 +4788,10 @@ function designSeriesContextText(analysis = state.designSeriesAnalysis) {
     currentCanvasUserPrompt(),
     els.renderIntent?.value?.trim?.() || "",
     analysis?.project_type,
+    analysis?.project_type_key,
+    analysis?.project_type_visual,
+    ...(Array.isArray(analysis?.project_type_evidence) ? analysis.project_type_evidence : []),
+    ...(Array.isArray(analysis?.context_conflicts) ? analysis.context_conflicts : []),
     analysis?.title,
     analysis?.summary,
     analysis?.series_strategy,
@@ -3868,7 +4815,56 @@ function designSeriesContextText(analysis = state.designSeriesAnalysis) {
   ].filter(Boolean).join(" ").toLowerCase();
 }
 
+function normalizeDesignSeriesProjectTypeKey(value = "") {
+  const text = String(value || "").toLowerCase();
+  if (!text) return "";
+  if (/office|workplace|workspace|corporate|办公|办公室|办公空间|企业|工区|工位|开放办公|会议室|董事|专注间|电话间/.test(text)) return "office";
+  if (/hospitality|hotel|homestay|guesthouse|guest house|resort|bnb|b&b|民宿|酒店|旅宿|旅馆|宾馆|客房|套房|度假|泡池/.test(text)) return "hospitality";
+  if (/food|beverage|restaurant|cafe|coffee|bar|bistro|bakery|tearoom|餐饮|餐厅|咖啡|酒吧|茶饮|茶室|烘焙|面包店/.test(text)) return "foodbeverage";
+  if (/retail|shop|store|showroom|display|boutique|pop.?up|零售|店铺|商店|展厅|展示|陈列|品牌空间|体验店/.test(text)) return "retail";
+  if (/residential|apartment|villa|home|living room|bedroom|kitchen|住宅|公寓|别墅|家装|居住|客厅|卧室|主卧|厨房|书房/.test(text)) return "residential";
+  if (/generic|通用/.test(text)) return "generic";
+  return "";
+}
+
+function designSeriesProjectTypeLabel(key = "generic") {
+  const labels = {
+    office: "办公/企业接待",
+    hospitality: "民宿/酒店/度假住宿",
+    foodbeverage: "餐饮/咖啡/酒吧",
+    retail: "零售/展厅/品牌空间",
+    residential: "住宅/居住空间",
+    generic: "通用空间项目"
+  };
+  return labels[key] || labels.generic;
+}
+
+function explicitDesignSeriesProjectType(analysis = {}) {
+  const candidates = [
+    analysis?.project_type_visual,
+    analysis?.visual_project_type,
+    analysis?.detected_visual_project_type,
+    analysis?.dominant_project_type,
+    analysis?.project_type_key,
+    analysis?.project_type
+  ];
+  for (const value of candidates) {
+    const key = normalizeDesignSeriesProjectTypeKey(value);
+    if (key && key !== "generic") {
+      return {
+        key,
+        label: designSeriesProjectTypeLabel(key),
+        score: 120,
+        source: value === analysis?.project_type ? "analysis" : "visual-analysis"
+      };
+    }
+  }
+  return null;
+}
+
 function detectDesignSeriesProjectType(analysis = state.designSeriesAnalysis) {
+  const explicit = explicitDesignSeriesProjectType(analysis);
+  if (explicit) return explicit;
   const text = designSeriesContextText(analysis);
   const hasOfficeProgramCue = [
     "办公空间", "办公室", "开放办公", "办公大堂", "企业大堂", "企业接待", "企业展厅", "工区", "工位", "办公桌", "会议室", "会议桌", "洽谈室", "董事办公室", "总裁办公室", "专注间", "电话间", "茶水间",
@@ -3886,7 +4882,7 @@ function detectDesignSeriesProjectType(analysis = state.designSeriesAnalysis) {
     { key: "retail", label: "零售/展厅/品牌空间", keywords: ["零售", "店铺", "商店", "买手店", "展厅", "展示", "陈列", "快闪", "品牌空间", "体验店", "retail", "shop", "store", "showroom", "display", "boutique", "pop-up"] },
     { key: "residential", label: "住宅/居住空间", keywords: ["住宅", "公寓", "别墅", "家装", "居住", "客厅", "餐厨", "厨房", "卧室", "主卧", "书房", "阳台", "residential", "apartment", "villa", "home", "living room", "bedroom", "kitchen"] }
   ];
-  let best = { key: "generic", label: "通用空间项目", score: 0 };
+  let best = { key: "generic", label: designSeriesProjectTypeLabel("generic"), score: 0 };
   definitions.forEach((definition) => {
     const score = definition.keywords.reduce((total, keyword) => total + (text.includes(keyword.toLowerCase()) ? 1 : 0), 0);
     if (score > best.score) best = { key: definition.key, label: definition.label, score };
@@ -3904,54 +4900,83 @@ function designSeriesProjectTypeGuard(projectType = detectDesignSeriesProjectTyp
       "人物/动物硬性要求：所有画面无人物、无动物，禁止员工、客户、路人、剪影、脸、手、身体局部、人群、动物和宠物。"
     ].join("\n");
   }
+  if (projectType.key === "hospitality") {
+    return [
+      "项目类型锁定：民宿/酒店/度假住宿。",
+      "视觉识别优先：如果参考图里有客房、床、床头灯、套房、大堂、住客休闲区、庭院入口、泡池/卫浴、早餐/茶饮/餐吧或度假旅宿氛围，就按民宿/酒店项目生成；即使有书桌或阅读工区，也不能误判为办公。",
+      "民宿/酒店项目禁止：开放工区、成排工位、企业会议室、董事办公室、电话间、企业前台、公司茶水间或办公空间系列。",
+      "民宿/酒店项目允许：外观/到达、大堂/接待、公共客厅、茶室/餐吧/早餐区、阅读/活动区、客房/套房、卫浴/泡池/支持空间、走廊/楼梯/材料节点。",
+      "人物/动物硬性要求：所有画面无人物、无动物。"
+    ].join("\n");
+  }
   return "人物/动物硬性要求：所有设计系列图片必须是无人、无动物的建筑/室内空间图，禁止出现任何人、剪影、脸、手、身体局部、人群、动物或宠物。";
 }
 
 function enforceClientDesignSeriesProjectType(analysis = null) {
   if (!analysis) return analysis;
   const detected = detectDesignSeriesProjectType(analysis);
-  if (detected.key !== "office") return analysis;
-  const forbiddenByOffice = /卧室|主卧|客房|套房|酒店房|民宿房|床|床头|卫浴|浴缸|泡池|spa|resort|hotel room|guestroom|suite|bedroom|bathtub|bath|pool/i;
-  const needsOfficeOverride = String(analysis.project_type || "").toLowerCase().includes("hospitality")
-    || String(analysis.project_type || "").includes("酒店")
-    || String(analysis.project_type || "").includes("民宿")
-    || String(analysis.project_type || "").includes("住宅")
-    || (Array.isArray(analysis.scene_briefs) && analysis.scene_briefs.some((scene) => forbiddenByOffice.test([
-      scene.title,
-      scene.field_type,
-      scene.spatial_role,
-      scene.connects_from,
-      scene.connects_to,
-      scene.camera,
-      scene.must_vary,
-      scene.forbidden_repetition
-    ].filter(Boolean).join(" "))));
+  const sceneTexts = Array.isArray(analysis.scene_briefs)
+    ? analysis.scene_briefs.map((scene) => [
+        scene.title,
+        scene.field_type,
+        scene.spatial_role,
+        scene.connects_from,
+        scene.connects_to,
+        scene.camera,
+        scene.must_vary,
+        scene.forbidden_repetition,
+        ...(Array.isArray(scene.must_repeat) ? scene.must_repeat : [])
+      ].filter(Boolean).join(" ").toLowerCase())
+    : [];
   const count = clampImageCount(state.generation.count, "designseries");
-  const plan = designSeriesScenePlan(count, { ...analysis, project_type: detected.label });
-  if (!needsOfficeOverride) {
+  const duplicateFields = sceneTexts.some((text, index) => text && sceneTexts.indexOf(text) !== index);
+  const missingFields = sceneTexts.length < count;
+  const forbiddenByType = {
+    office: /卧室|主卧|客房|套房|酒店房|民宿房|床|床头|卫浴|浴缸|泡池|spa|resort|hotel room|guestroom|suite|bedroom|bathtub|bath|pool|homestay/i,
+    hospitality: /开放工区|工位|工位区|办公桌排|企业前台|企业接待|董事办公室|总裁办公室|专注间|电话间|boardroom|corporate office|open workspace|workstations|task chairs|office desk rows|executive office|phone booth|workplace planning/i,
+    residential: /开放工区|工位|企业前台|酒店大堂|民宿大堂|客房套房|泡池|boardroom|corporate office|open workspace|workstations|hotel lobby|guestroom suite/i,
+    foodbeverage: /卧室|主卧|客房|套房|开放工区|工位|董事办公室|bedroom|guestroom|suite|open workspace|workstations|executive office/i,
+    retail: /卧室|主卧|客房|套房|开放工区|工位|酒店套房|bedroom|guestroom|suite|open workspace|workstations/i
+  };
+  const normalizedAnalysisKey = normalizeDesignSeriesProjectTypeKey(analysis.project_type);
+  const analysisConflict = normalizedAnalysisKey
+    && detected.key !== "generic"
+    && normalizedAnalysisKey !== detected.key;
+  const hasForbiddenScenes = Boolean(forbiddenByType[detected.key])
+    && sceneTexts.some((text) => forbiddenByType[detected.key].test(text));
+  const needsOverride = detected.key !== "generic"
+    && (analysisConflict || missingFields || duplicateFields || hasForbiddenScenes);
+  const lockedAnalysis = {
+    ...analysis,
+    project_type: detected.label,
+    project_type_key: detected.key,
+    project_type_source: detected.source || analysis.project_type_source || "client-detection"
+  };
+  const plan = designSeriesScenePlan(count, lockedAnalysis);
+  if (!needsOverride) {
     return {
-      ...analysis,
-      project_type: detected.label,
-      scene_allocation_strategy: analysis.scene_allocation_strategy || designSeriesAllocationSummary(count, { ...analysis, project_type: detected.label })
+      ...lockedAnalysis,
+      scene_allocation_strategy: analysis.scene_allocation_strategy || designSeriesAllocationSummary(count, lockedAnalysis),
+      suggested_outputs: plan.slice(0, count).map((item) => item[0]),
+      spatial_sequence: plan.slice(0, count).map((item) => item[0]).join(" -> ")
     };
   }
   return {
-    ...analysis,
-    project_type: detected.label,
-    scene_allocation_strategy: designSeriesAllocationSummary(count, { ...analysis, project_type: detected.label }),
+    ...lockedAnalysis,
+    scene_allocation_strategy: designSeriesAllocationSummary(count, lockedAnalysis),
     suggested_outputs: plan.slice(0, count).map((item) => item[0]),
     spatial_sequence: plan.slice(0, count).map((item) => item[0]).join(" -> "),
     scene_briefs: plan.slice(0, count).map((item, index) => ({
       index: index + 1,
       title: item[0],
-      field_type: "office",
+      field_type: detected.key,
       spatial_role: item[1],
-      connects_from: index ? plan[index - 1][0] : "企业入口",
-      connects_to: plan[index + 1]?.[0] || "办公项目记忆点",
+      connects_from: index ? plan[index - 1][0] : "项目入口",
+      connects_to: plan[index + 1]?.[0] || "项目记忆点",
       camera: item[2],
-      must_repeat: ["同一办公材料系统", "同一企业照明语言", "同一办公家具年代", "无人物和动物"],
-      must_vary: "只变化办公功能区、镜头位置和焦点，不变化项目风格",
-      forbidden_repetition: "禁止卧室、客房、酒店套房、床、浴缸、泡池、住宅私密房间、人物、动物和宠物。"
+      must_repeat: [`同一${detected.label}材料系统`, `同一${detected.label}照明语言`, "同一家具/物件年代", "无人物和动物"],
+      must_vary: "只变化功能区、镜头位置和焦点，不变化项目风格",
+      forbidden_repetition: designSeriesProjectTypeGuard(detected)
     }))
   };
 }
@@ -4143,20 +5168,47 @@ function designSeriesAllocationSummary(count = state.generation.count, analysis 
   ].join("\n");
 }
 
+function designSeriesLockedSchedule(count = state.generation.count, analysis = state.designSeriesAnalysis) {
+  const outputCount = clampImageCount(count, "designseries");
+  return designSeriesScenePlan(outputCount, analysis).slice(0, outputCount);
+}
+
+function designSeriesScheduleText(count = state.generation.count, analysis = state.designSeriesAnalysis) {
+  return designSeriesLockedSchedule(count, analysis)
+    .map((item, index) => `${index + 1}.${item[0]}`)
+    .join("；");
+}
+
+function designSeriesOtherSceneTitles(index, count = state.generation.count, analysis = state.designSeriesAnalysis, direction = "previous") {
+  return designSeriesLockedSchedule(count, analysis)
+    .filter((_, itemIndex) => {
+      const ordinal = itemIndex + 1;
+      if (direction === "previous") return ordinal < index;
+      if (direction === "future") return ordinal > index;
+      return ordinal !== index;
+    })
+    .map((item) => item[0]);
+}
+
 function designSeriesCountPrompt(count = state.generation.count) {
   const outputCount = clampImageCount(count, "designseries");
   const scenePlan = designSeriesAllocationSummary(outputCount);
+  const lockedSchedule = designSeriesScheduleText(outputCount);
   return [
     `设计系列数量规划：本次按当前生图设置生成 ${outputCount} 张，不使用普通单图数量逻辑。`,
     "功能本意：站在项目大局观层面，从一张或多张参考图推断完整设计项目，再按用户选择的数量给出这套设计中最有价值的对应空间图片。",
     "参考图读取：精准分析参考图并提取品牌元素、色彩元素、材料系统、空间组织、灯光氛围、构图节奏、家具/工位/物件语言和细部收口。",
     scenePlan,
+    `锁定空间排布：${lockedSchedule}。`,
+    "唯一空间规则：每个空间角色整套图只出现一次；前台/接待只出现一张，开放工区只出现一张，会议/洽谈只出现一张，后续图片必须切换到其他功能空间。",
+    "办公系列规则：如果参考图识别为办公项目，必须按办公项目生成，不得混入卧室、客房、酒店套房、民宿、床、泡池或住宅私密空间。",
     "数量策略：4张时优先覆盖最能说明项目的入口/公共核心/关键私密或重点功能/节点；6张时补足室外到达、支持空间和更完整动线；8张时拆出更多真实使用场景，形成完整项目图集。",
     "参数策略：图片比例、清晰度/分辨率、质量档位和生成数量全部服从当前生图设置；不要在提示词里固定横屏、4:3、4K或固定8张。",
     "思考模式：开启时要更多保留原参考图的视觉 DNA，包括品牌线索、色彩、材质、灯光、构图、空间节奏、家具物件语言和关键细节，但仍然要推演为不同空间而不是复制同一角度。",
     "先建立系列圣经：项目DNA、空间动线、材质系统、灯光系统、重复母题、家具语言、镜头节奏、渲染质感。",
     "所有图片必须像同一个项目、同一套材质系统、同一个设计团队、同一次渲染输出；每张图空间或视角不同，但风格、材料、元素和审美 DNA 保持一致。",
     "深层设计系列定义：统一风格不是重复同一张图；必须把参考图扩展为多场域、多视角、多角度、多功能分区的项目图集。",
+    "视觉项目类型优先：先看参考图整体判断它是办公、民宿/酒店、住宅、餐饮还是零售；如果旧模板、旧 brief 或隐藏预设与参考图冲突，以参考图的视觉项目类型为准。",
     "空间衔接硬性要求：每张图至少出现一个可连接其他图片的线索，例如相同墙地面材料、同款灯具、重复吊顶/格栅/拱形/木作节点、连续门洞/走廊/窗景、同一家具语言或相同室外景观。",
     "人物/动物硬性要求：所有图片必须是无人、无动物的建筑/室内空间图；禁止出现员工、客户、住客、路人、人物剪影、脸、手、身体局部、人群、动物、宠物或生活方式摆拍。",
     "禁止：每张图像来自不同项目、不同预算等级、不同渲染风格、不同色彩分级、不同家具年代；禁止孤立单图、拼贴感、风格漂移、同一角度多风格变体和无空间关系的随机美图。"
@@ -4165,12 +5217,14 @@ function designSeriesCountPrompt(count = state.generation.count) {
 
 function designSeriesScenePrompt(index, count, analysis = state.designSeriesAnalysis) {
   const projectType = detectDesignSeriesProjectType(analysis);
-  const plan = designSeriesScenePlan(count, analysis);
+  const plan = designSeriesLockedSchedule(count, analysis);
   const fallback = plan[Math.max(0, index - 1)] || plan[0];
   const scene = analysis?.scene_briefs?.find?.((item) => Number(item.index) === index) || analysis?.scene_briefs?.[index - 1] || {};
   const title = fallback[0];
   const role = [fallback[1], scene.spatial_role ? `参考图扩展方向：${scene.spatial_role}` : ""].filter(Boolean).join("；");
   const camera = [fallback[2], scene.camera ? `参考图建议镜头：${scene.camera}` : ""].filter(Boolean).join("；");
+  const previousScenes = designSeriesOtherSceneTitles(index, count, analysis, "previous");
+  const otherScenes = designSeriesOtherSceneTitles(index, count, analysis, "all");
   const repeat = [
     ...(scene.must_repeat || []),
     ...(analysis?.recurring_signatures || [])
@@ -4179,9 +5233,13 @@ function designSeriesScenePrompt(index, count, analysis = state.designSeriesAnal
     `项目类型：${analysis?.project_type || projectType.label}。`,
     designSeriesProjectTypeGuard(projectType),
     `本张分镜：第 ${index}/${count} 张，空间角色为「${title}」。`,
+    `锁定整套排布：${designSeriesScheduleText(count, analysis)}。`,
+    `当前图片只能生成：「${title}」。`,
+    previousScenes.length ? `前面已经覆盖，当前禁止重复：${previousScenes.join("；")}。` : "",
+    otherScenes.length ? `当前也不要抢占其他分镜空间：${otherScenes.join("；")}。` : "",
+    "唯一空间规则：每个空间角色整套只出现一次；不能把前台、开放工区、会议室、沙发区或同一个主视觉换角度重复生成。",
     `空间衔接：${scene.connects_from ? `来自 ${scene.connects_from}，` : ""}${role}${scene.connects_to ? `，并连接到 ${scene.connects_to}` : ""}。`,
     `镜头任务：${camera}。`,
-    `整套排布：${designSeriesScenePlan(count, analysis).slice(0, count).map((item, itemIndex) => `${itemIndex + 1}.${item[0]}`).join("；")}。`,
     "深层系列要求：本张必须是不同场域、不同功能分区或不同机位的独立空间画面，不是同一个角度/同一个主视觉的轻微变体，也不是同一空间换不同风格。",
     "大局观要求：本张是完整设计项目中的一个关键空间，必须能和其他张共同构成一套方案，而不是孤立美图。",
     "参数要求：本张比例、清晰度/分辨率和质量只服从当前生图设置，不在提示词里额外固定横屏、4:3或4K。",
@@ -4195,17 +5253,26 @@ function generationDimensions() {
   if (state.generation.aspect !== "source" && !aspectRatioMap[state.generation.aspect]) state.generation.aspect = "source";
   if (!qualitySizeMap[state.generation.quality]) state.generation.quality = "1k";
   state.generation.count = clampImageCount(state.generation.count, state.mode);
+  const customMatch = String(state.generation.customSize || "").match(/^(\d+)x(\d+)$/);
+  if (customMatch) {
+    return normalizeImageDimensions(Number(customMatch[1]), Number(customMatch[2]));
+  }
   const ratio = state.generation.aspect === "source" ? sourceAspectRatio() : (aspectRatioMap[state.generation.aspect] || aspectRatioMap["1:1"]);
-  const maxEdge = qualitySizeMap[state.generation.quality] || qualitySizeMap["1k"];
   const [ratioWidth, ratioHeight] = ratio;
   let width;
   let height;
-  if (ratioWidth >= ratioHeight) {
-    width = maxEdge;
-    height = Math.max(640, Math.round(maxEdge * ratioHeight / ratioWidth));
+  if (ratioWidth === ratioHeight) {
+    const side = qualitySizeMap[state.generation.quality] || qualitySizeMap["1k"];
+    width = side;
+    height = side;
+  } else if (state.generation.quality === "1k") {
+    const shortSide = 1024;
+    width = ratioWidth > ratioHeight ? Math.round(shortSide * ratioWidth / ratioHeight) : shortSide;
+    height = ratioWidth > ratioHeight ? shortSide : Math.round(shortSide * ratioHeight / ratioWidth);
   } else {
-    width = Math.max(640, Math.round(maxEdge * ratioWidth / ratioHeight));
-    height = maxEdge;
+    const longSide = qualitySizeMap[state.generation.quality] || qualitySizeMap["2k"];
+    width = ratioWidth > ratioHeight ? longSide : Math.round(longSide * ratioWidth / ratioHeight);
+    height = ratioWidth > ratioHeight ? Math.round(longSide * ratioHeight / ratioWidth) : longSide;
   }
   return {
     ...normalizeImageDimensions(width, height)
@@ -4275,12 +5342,13 @@ function setThinkingModeEnabled(enabled) {
     status: "idle",
     target: state.thinkingModeEnabled ? "思考模式" : "预设模式",
     text: state.thinkingModeEnabled
-      ? "思考模式已开启：生成前会先调用 gpt-5.5 读取输入图、参考图、当前按钮意义和用户描述，优化最终提示词后再交给 Image Gen。"
+      ? "思考模式已开启：本次访问期间会先调用 gpt-5.5 读取输入图、参考图、当前按钮意义和用户描述；重新打开页面后默认关闭。"
       : "思考模式已关闭：不做额外提示词融合，只使用网页内置预设提示词、隐藏模板和用户描述直接交给 Image Gen。"
   };
   refreshThinkingModeButtons();
   renderWorkflowCanvas();
-  toast(state.thinkingModeEnabled ? "思考模式已开启" : "思考模式已关闭");
+  scheduleCanvasStateSave({ delay: 400 });
+  toast(state.thinkingModeEnabled ? "思考模式已开启，本次访问期间生效" : "思考模式已关闭");
 }
 
 function toggleThinkingMode() {
@@ -4329,6 +5397,11 @@ function refreshGenerationControls() {
   if (els.generationSummaryLabel) {
     els.generationSummaryLabel.textContent = `${selectedGenerationAspectShortLabel()} · ${state.generation.quality.toUpperCase()} · ${state.generation.count}张`;
   }
+  if (els.sizePickerButton) {
+    const exact = selectedGenerationSize().replace("x", "×");
+    els.sizePickerButton.textContent = state.generation.customSize ? `自定义 ${exact}` : exact;
+    els.sizePickerButton.title = `尺寸 ${exact}`;
+  }
   els.qualityTierButtons.forEach((button) => {
     const active = button.dataset.qualityTier === state.generation.quality;
     button.classList.toggle("active", active);
@@ -4348,6 +5421,66 @@ function refreshGenerationControls() {
   });
   refreshThinkingModeButtons();
   syncFloatingComposer();
+}
+
+function sizePickerIsOpen() {
+  return Boolean(els.sizePickerOverlay && !els.sizePickerOverlay.hidden);
+}
+
+function currentSizePickerRatio() {
+  return els.sizePickerRatio?.value || state.generation.aspect || "source";
+}
+
+function sizeForTierAndRatio(tier = state.generation.quality, ratioValue = state.generation.aspect) {
+  const previous = { ...state.generation };
+  state.generation.quality = tier || "1k";
+  state.generation.aspect = ratioValue || "source";
+  state.generation.customSize = "";
+  const size = generationDimensions();
+  state.generation = previous;
+  return size;
+}
+
+function updateSizePickerFieldsFromTierRatio() {
+  if (!els.sizePickerWidth || !els.sizePickerHeight) return;
+  const size = sizeForTierAndRatio(els.sizePickerTier?.value || state.generation.quality, currentSizePickerRatio());
+  els.sizePickerWidth.value = String(size.width);
+  els.sizePickerHeight.value = String(size.height);
+}
+
+function openSizePicker(trigger = document.activeElement) {
+  if (!els.sizePickerOverlay) return;
+  const size = generationDimensions();
+  overlayFocusReturn.set(els.sizePickerOverlay, isFocusableTarget(trigger) ? trigger : els.sizePickerButton);
+  els.sizePickerOverlay.hidden = false;
+  els.sizePickerOverlay.setAttribute("aria-hidden", "false");
+  document.body.classList.add("settings-open");
+  if (els.sizePickerTier) els.sizePickerTier.value = state.generation.quality || "1k";
+  if (els.sizePickerRatio) els.sizePickerRatio.value = state.generation.aspect || "source";
+  if (els.sizePickerWidth) els.sizePickerWidth.value = String(size.width);
+  if (els.sizePickerHeight) els.sizePickerHeight.value = String(size.height);
+  focusOverlayControl(els.sizePickerOverlay, "#sizePickerWidth");
+}
+
+function closeSizePicker() {
+  if (!sizePickerIsOpen()) return false;
+  els.sizePickerOverlay.hidden = true;
+  restoreOverlayFocus(els.sizePickerOverlay);
+  if (!isSettingsOpen()) document.body.classList.remove("settings-open");
+  return true;
+}
+
+function applySizePicker() {
+  const width = Number(els.sizePickerWidth?.value || 0);
+  const height = Number(els.sizePickerHeight?.value || 0);
+  const size = normalizeImageDimensions(width, height);
+  state.generation.quality = els.sizePickerTier?.value || state.generation.quality || "1k";
+  state.generation.aspect = els.sizePickerRatio?.value || state.generation.aspect || "source";
+  state.generation.customSize = `${size.width}x${size.height}`;
+  closeSizePicker();
+  refreshGenerationControls();
+  renderWorkflowCanvas();
+  toast(`尺寸已设为 ${size.width}×${size.height}`);
 }
 
 function syncFloatingComposer() {
@@ -4454,12 +5587,14 @@ function setCanvasCommandFromFloating(value) {
 
 function setGenerationAspect(value) {
   state.generation.aspect = value || "source";
+  state.generation.customSize = "";
   refreshGenerationControls();
   renderWorkflowCanvas();
 }
 
 function setGenerationQuality(value) {
   state.generation.quality = value || "1k";
+  state.generation.customSize = "";
   refreshGenerationControls();
   renderWorkflowCanvas();
 }
@@ -4678,10 +5813,24 @@ function renderSeriesAdviceHtml(analysis) {
     ` : ""}
     <div class="detail-block">
       <h3>参考图识别</h3>
+      ${analysis.project_type || analysis.project_type_visual ? `<p>${escapeHtml([
+        analysis.project_type_visual ? `只看图识别：${analysis.project_type_visual}` : "",
+        analysis.project_type ? `生成锁定：${analysis.project_type}` : "",
+        analysis.project_type_confidence ? `置信度：${Math.round(Number(analysis.project_type_confidence || 0) * 100)}%` : ""
+      ].filter(Boolean).join("；"))}</p>` : ""}
       <ul class="compact-list">
         ${referenceRead.map((item, index) => `<li>参考图 ${index + 1}：${escapeHtml(item.observation || item.usable_design_language || "")}</li>`).join("")}
       </ul>
     </div>
+    ${analysis.project_type_evidence?.length || analysis.context_conflicts?.length ? `
+      <div class="detail-block">
+        <h3>类型依据</h3>
+        <div class="tag-row">
+          ${(analysis.project_type_evidence || []).slice(0, 6).map((item) => `<span class="tag">${escapeHtml(item)}</span>`).join("")}
+          ${(analysis.context_conflicts || []).slice(0, 4).map((item) => `<span class="tag">冲突：${escapeHtml(item)}</span>`).join("")}
+        </div>
+      </div>
+    ` : ""}
     <div class="detail-block">
       <h3>系列策略</h3>
       <p>${escapeHtml(analysis.series_strategy || "")}</p>
@@ -4771,6 +5920,11 @@ function agentNextStepSuggestions(analysis, advice) {
       ? ["确认红框区域", "补充想要的空间氛围", "生成该区域效果图"]
       : ["建议先框选区域", "不框选则自动选相近区域", "生成后查看区域标记"];
   }
+  if (mode === "viewpoint") {
+    return state.primaryImage
+      ? ["拖动人视角点", "调整朝向", "生成新视角"]
+      : ["上传空间图", "拖动人视角点", "生成新视角"];
+  }
   if (state.render?.url || state.renders.length) {
     return ["选中结果继续优化", "对比收藏最佳图", "必要时高清/锐化"];
   }
@@ -4789,6 +5943,7 @@ function agentRiskNotes(analysis, advice) {
   if (analysis && advice?.mismatch) notes.push(`当前模式与识别结果不一致，建议先试「${advice.label}」`);
   if (!state.primaryImage && !isReferenceOnlyMode()) notes.push("当前能力需要主图输入");
   if (state.mode === "plan-render" && state.primaryImage && !state.selection) notes.push("未框选区域，将自动选择与参考图最接近的区域生成");
+  if (state.mode === "viewpoint" && state.primaryImage) notes.push(`当前视角点：${viewpointLocationLabel()}，${viewpointDirectionLabel()}`);
   if (state.mode === "designseries" && activeReferenceImages().length < 2) notes.push("设计系列建议至少 2 张参考图");
   if (activeReferenceImages().length >= 6) notes.push("参考图较多，建议用权重控制主次");
   if (state.generation.count > 2) notes.push("多张生成更耗时，排障时可先用 1 张");
@@ -4920,6 +6075,7 @@ function removePrimaryImage() {
   state.primaryBitmap = null;
   state.primaryImageAnalysis = null;
   state.selection = null;
+  state.viewpoint = defaultViewpointState();
   if (state.canvas.selectedImage?.id === "source") {
     state.canvas.selectedImage = null;
   }
@@ -5061,6 +6217,7 @@ async function applyQuickIteration(action, busyButton = null, baseItem = null) {
     state.primaryBitmap = await loadImage(primaryImage.dataUrl);
     state.primaryImageAnalysis = inferredAnalysis;
     state.selection = null;
+    state.viewpoint = defaultViewpointState();
     setMode(config.mode);
     setHiddenPromptContext("quickIntent", config.command(latestItem));
     refreshGenerationControls();
@@ -5111,6 +6268,9 @@ function getOutputItems() {
     renderRegionPrompt: render.renderRegionPrompt || "",
     endpoint: render.endpoint || "",
     attempts: render.attempts || [],
+    imageApi: render.imageApi || "",
+    actualParams: render.actualParams || null,
+    revisedPrompt: render.revisedPrompt || "",
     intent: render.intent || "",
     prompt: render.prompt || "",
     sourcePrompt: render.sourcePrompt || "",
@@ -5255,12 +6415,13 @@ function renderOutputManager() {
     const compare = state.compareOutputIds.has(item.id);
     const latest = index === items.length - 1;
     const meta = outputMetaLine(item) || item.mode || "Output";
+    const actual = formatActualImageParams(item.actualParams, item.imageApi);
     const note = String(item.intent || item.prompt || item.sourcePrompt || "可作为下一轮创作输入继续迭代。");
     const notePreview = `${note.slice(0, 140)}${note.length > 140 ? "…" : ""}`;
     return `
       <article class="output-manager-item ${favorite ? "is-favorite" : ""} ${compare ? "is-compared" : ""} ${latest ? "is-latest" : ""}" data-output-id="${escapeAttr(item.id)}">
         <button class="output-manager-thumb" type="button" data-output-action="preview" data-output-id="${escapeAttr(item.id)}" title="预览 ${escapeAttr(item.title)}" aria-label="预览 ${escapeAttr(item.title)}">
-          <img src="${escapeAttr(item.url)}" alt="${escapeAttr(item.title)}" />
+          <img src="${escapeAttr(item.url)}" data-cache-thumbnail="true" alt="${escapeAttr(item.title)}" />
           <span>${latest ? "Latest" : "Preview"}</span>
         </button>
         <div class="output-manager-copy">
@@ -5270,7 +6431,7 @@ function renderOutputManager() {
           </div>
           <div class="output-manager-chips">${outputManagerChips(item, index, items.length)}</div>
           <p>${escapeHtml(notePreview)}</p>
-          <span>${escapeHtml(meta)}</span>
+          <span>${escapeHtml([meta, actual].filter(Boolean).join(" · "))}</span>
         </div>
         <div class="output-manager-buttons" aria-label="结果操作">
           ${outputActionButton({ action: "preview", outputId: item.id, icon: "icon-focus", label: "预览", className: "secondary-button" })}
@@ -5285,6 +6446,7 @@ function renderOutputManager() {
       </article>
     `;
   }).join("");
+  hydrateCachedThumbnails(els.outputManagerList);
   bindOutputActionEvents(els.outputManagerList);
 }
 
@@ -5512,6 +6674,7 @@ async function continuePlanWorkflowFromOutput(item, nextMode) {
   state.primaryBitmap = await loadImage(primaryImage.dataUrl);
   state.primaryImageAnalysis = inferredAnalysis;
   state.selection = null;
+  state.viewpoint = defaultViewpointState();
   setMode(normalizedNext);
   setHiddenPromptContext("panelContext", canvasModeCommand(normalizedNext, outputItemToSelectedImage(item), item));
   refreshGenerationControls();
@@ -5586,6 +6749,7 @@ async function syncOutputItemToCreativePanel(item, preferredMode = "") {
     state.primaryBitmap = bitmap;
     state.primaryImageAnalysis = analysis;
     state.selection = null;
+    state.viewpoint = defaultViewpointState();
     state.render = item.render || {
       id: item.id,
       title: item.title,
@@ -5652,6 +6816,7 @@ async function useCanvasImageWithMode(mode) {
     state.primaryBitmap = bitmap;
     state.primaryImageAnalysis = analysis;
     state.selection = null;
+    state.viewpoint = defaultViewpointState();
     setMode(normalizedMode);
     setHiddenPromptContext("panelContext", canvasModeCommand(normalizedMode, selected, outputItem));
     refreshGenerationControls();
@@ -5677,6 +6842,7 @@ function canvasModeCommand(mode, selected, outputItem) {
     custom: `基于画布中选中的「${title}」自由创作：先判断需要生成的是效果图、设计系列、材料板、局部编辑、扩图、概念图、产品图还是其他视觉产物，再结合右侧参考图和文字要求生成。`,
     "plan-axonometric": `使用画布中选中的「${title}」作为不可改动的平面底图。\n${planTo3DFixedPrompt}`,
     "plan-render": `使用画布中选中的「${title}」作为3D平面图：优先框选要生成效果图的区域；如果没有框选，则自动选择一个与参考图最接近的明确功能区生成人视角效果图，并在输出中标明对应区域。`,
+    viewpoint: `使用画布中选中的「${title}」做视角转换：把图面当成可进入的空间，在源图上拖动人视角点来指定相机站位，再从该站位生成新视角；保留原空间结构、材料、灯光和设计语言，不要把 UI 小模型生成进画面。`,
     cad: `使用画布中选中的「${title}」提取主要墙线、开口、轮廓和图纸线段，忽略阴影纹理和装饰噪点，生成可下载的 CAD / SVG 描底文件。`,
     cadrender: `使用画布中选中的「${title}」作为 CAD 或图纸底图：先锁定轴线、墙体、开口和空间关系，再生成真实空间效果图，最终不保留 CAD 线。`,
     photo: `使用画布中选中的「${title}」作为现场或现状图：保留结构、透视、开口、柱网和层高，只重新设计材料、灯光、家具和陈列。`,
@@ -5712,6 +6878,7 @@ async function lockLayoutFromOutput(item) {
   state.primaryBitmap = await loadImage(primaryImage.dataUrl);
   state.primaryImageAnalysis = inferredAnalysis;
   state.selection = null;
+  state.viewpoint = defaultViewpointState();
   setMode(lockedMode);
   setHiddenPromptContext("panelContext", [
     `锁定这张图的布局继续优化：${item.title}`,
@@ -5757,7 +6924,7 @@ function toggleSetValue(set, value) {
   else set.add(value);
 }
 
-function imageCanvasNode({ id, kind, title, url, width = 320, caption = "", contain = false, actions = "", outputId = "", advice = "" }) {
+function imageCanvasNode({ id, kind, title, url, width = 320, caption = "", contain = false, actions = "", outputId = "", advice = "", viewpoint = false }) {
   return {
     id,
     kind,
@@ -5770,6 +6937,7 @@ function imageCanvasNode({ id, kind, title, url, width = 320, caption = "", cont
     contain,
     caption,
     advice,
+    viewpoint,
     actions
   };
 }
@@ -5789,6 +6957,7 @@ function buildCanvasNodes() {
   const hasCanvasContent = Boolean(
     visiblePrimary ||
     isPlanWorkflowMode(state.mode) ||
+    state.mode === "viewpoint" ||
     state.referenceImages.length ||
     state.assets.length ||
     visibleSelection ||
@@ -5852,6 +7021,7 @@ function buildCanvasNodes() {
         advice ? `建议：${advice.label}` : ""
       ].filter(Boolean).join(" · "),
       advice: advice?.text || "",
+      viewpoint: normalizeClientMode(state.mode) === "viewpoint",
       actions: `
           ${uiIconButton({ className: "text-button", icon: "icon-trash", label: "删除原图", attrs: `data-remove-primary-image="true"` })}
           ${advice ? `
@@ -5860,6 +7030,16 @@ function buildCanvasNodes() {
           ` : ""}
         `
     }));
+  }
+
+  if (normalizeClientMode(state.mode) === "viewpoint") {
+    nodes.push({
+      id: "viewpointGuide",
+      kind: "Camera",
+      title: "新机位控制器",
+      width: 360,
+      html: viewpointGuideHtml()
+    });
   }
 
   if (visibleSelection) {
@@ -6104,11 +7284,19 @@ function renderCanvasNode(node) {
   const pos = getNodePosition(node.id);
   const width = node.width || pos.w || 320;
   if (node.directImage) {
+    const isViewpointStage = Boolean(node.viewpoint);
+    const point = normalizedViewpointState();
     return `
       <figure class="workflow-node canvas-image-object ${node.selected ? "selected" : ""}" data-node-id="${escapeAttr(node.id)}" style="left:${pos.x}px; top:${pos.y}px; width:${width}px;">
-        <div class="canvas-image-stage ${node.contain ? "contain" : ""}" data-node-drag-handle="true" data-preview-url="${escapeAttr(node.imageUrl)}" data-preview-title="${escapeAttr(node.title)}" data-preview-caption="${escapeAttr(node.caption || node.kind)}" data-output-id="${escapeAttr(node.outputId || "")}" title="单击打开底部工具，双击放大；按住 Option/Alt 拖到创作面板可设为底图或参考图">
+        <div class="canvas-image-stage ${node.contain ? "contain" : ""} ${isViewpointStage ? "viewpoint-stage" : ""}" data-node-drag-handle="true" data-preview-url="${escapeAttr(node.imageUrl)}" data-preview-title="${escapeAttr(node.title)}" data-preview-caption="${escapeAttr(node.caption || node.kind)}" data-output-id="${escapeAttr(node.outputId || "")}" ${isViewpointStage ? `data-viewpoint-stage="${escapeAttr(node.id)}"` : ""} title="${isViewpointStage ? "拖动人视角点选择新机位，双击放大" : "单击打开底部工具，双击放大；按住 Option/Alt 拖到创作面板可设为底图或参考图"}">
           <img src="${escapeAttr(node.imageUrl)}" alt="${escapeAttr(node.title)}" />
-          <span class="canvas-image-zoom-hint" aria-hidden="true">单击工具 / Option拖到面板</span>
+          ${isViewpointStage ? `
+            <span class="viewpoint-cone" style="left:${point.x * 100}%; top:${point.y * 100}%; --yaw:${point.yaw}deg;" aria-hidden="true"></span>
+            <button class="viewpoint-marker" type="button" data-viewpoint-marker="${escapeAttr(node.id)}" style="left:${point.x * 100}%; top:${point.y * 100}%; --yaw:${point.yaw}deg;" title="拖动视角点，方向键微调位置，Alt+左右调整朝向" aria-label="拖动视角点，方向键微调位置，Alt+左右调整朝向" tabindex="0">
+              <span aria-hidden="true"></span>
+            </button>
+          ` : ""}
+          <span class="canvas-image-zoom-hint" aria-hidden="true">${isViewpointStage ? "拖动视角点" : "单击工具 / Option拖到面板"}</span>
         </div>
         <figcaption class="canvas-image-meta">
           <div>
@@ -6117,6 +7305,7 @@ function renderCanvasNode(node) {
           </div>
           ${node.caption ? `<p>${escapeHtml(node.caption)}</p>` : ""}
           ${node.advice ? `<p class="canvas-image-advice">${escapeHtml(node.advice)}</p>` : ""}
+          ${isViewpointStage ? viewpointControlHtml() : ""}
           ${node.actions && !node.outputId ? `<div class="node-actions wrap">${node.actions}</div>` : ""}
         </figcaption>
       </figure>
@@ -7030,6 +8219,7 @@ async function setCanvasImageAsPrimaryInput(selectedImage, outputItem = null) {
   state.primaryBitmap = bitmap;
   state.primaryImageAnalysis = analysis;
   state.selection = null;
+  state.viewpoint = defaultViewpointState();
   setInputAdviceThinking(analysis);
   refreshGenerationControls();
   drawSelectionCanvas();
@@ -7298,6 +8488,43 @@ function bindCanvasNodeEvents() {
       toast(`已切换到“${suggestedModeLabel(button.dataset.switchSuggestedMode)}”`);
     });
   });
+  els.canvasNodes.querySelectorAll("[data-viewpoint-marker]").forEach((marker) => {
+    marker.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      state.viewpoint.dragging = {
+        pointerId: event.pointerId,
+        nodeId: marker.dataset.viewpointMarker || "source"
+      };
+      marker.setPointerCapture(event.pointerId);
+      updateViewpointFromPointer(event);
+      marker.closest("[data-viewpoint-stage]")?.classList.add("is-aiming");
+    });
+    marker.addEventListener("pointermove", updateViewpointFromPointer);
+    marker.addEventListener("pointerup", finishViewpointPointer);
+    marker.addEventListener("pointercancel", finishViewpointPointer);
+    marker.addEventListener("keydown", adjustViewpointByKeyboard);
+  });
+  els.canvasNodes.querySelectorAll("[data-viewpoint-stage]").forEach((stage) => {
+    stage.addEventListener("click", (event) => {
+      if (event.target.closest("[data-viewpoint-marker], button, a")) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const nodeId = stage.closest("[data-node-id]")?.dataset.nodeId || "source";
+      if (updateViewpointFromStageEvent(event, nodeId)) {
+        stage.classList.add("is-aiming");
+        window.setTimeout(() => stage.classList.remove("is-aiming"), 260);
+        scheduleCanvasStateSave({ delay: 180 });
+      }
+    });
+  });
+  els.canvasNodes.querySelectorAll("[data-viewpoint-action]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      handleViewpointAction(button.dataset.viewpointAction).catch((error) => toast(error.message));
+    });
+  });
   bindOutputActionEvents(els.canvasNodes);
   els.canvasNodes.querySelectorAll("[data-preview-url]").forEach((stage) => {
     stage.addEventListener("dblclick", (event) => {
@@ -7335,6 +8562,19 @@ function bindCanvasNodeEvents() {
       const handle = event.target.closest("[data-node-drag-handle]");
       if (!handle) return;
       const previewStage = event.target.closest("[data-preview-url]");
+      if (previewStage?.hasAttribute("data-viewpoint-stage") && !event.altKey) {
+        if (event.target.closest("[data-viewpoint-marker], button, a")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const nodeId = nodeEl.dataset.nodeId || "source";
+        if (updateViewpointFromStageEvent(event, nodeId)) {
+          previewStage.classList.add("is-aiming");
+          window.setTimeout(() => previewStage.classList.remove("is-aiming"), 260);
+          scheduleCanvasStateSave({ delay: 180 });
+          previewStage.querySelector("[data-viewpoint-marker]")?.focus({ preventScroll: true });
+        }
+        return;
+      }
       if (previewStage && event.altKey) {
         event.preventDefault();
         event.stopPropagation();
@@ -7448,7 +8688,7 @@ function applyCanvasTransform({ refreshMinimap = true } = {}) {
 function resetCanvasView() {
   state.canvas.x = 48;
   state.canvas.y = 28;
-  state.canvas.zoom = 0.86;
+  state.canvas.zoom = 1;
   applyCanvasTransform();
   scheduleCanvasStateSave({ delay: 300 });
 }
@@ -7557,6 +8797,122 @@ function clientPointToCanvas(clientX, clientY) {
   };
 }
 
+function updateViewpointFromStageEvent(event, nodeId = state.viewpoint?.dragging?.nodeId || "source") {
+  const stage = els.canvasNodes.querySelector(`[data-node-id="${CSS.escape(nodeId)}"] [data-viewpoint-stage]`);
+  if (!stage) return false;
+  const rect = stage.getBoundingClientRect();
+  if (!rect.width || !rect.height) return false;
+  const x = round4(clamp((event.clientX - rect.left) / rect.width, 0.05, 0.95));
+  const y = round4(clamp((event.clientY - rect.top) / rect.height, 0.08, 0.94));
+  state.viewpoint = {
+    ...state.viewpoint,
+    ...normalizedViewpointState(state.viewpoint),
+    x,
+    y
+  };
+  updateRenderedViewpointControls();
+  return true;
+}
+
+function updateViewpointFromPointer(event) {
+  const drag = state.viewpoint?.dragging;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  event.preventDefault();
+  event.stopPropagation();
+  updateViewpointFromStageEvent(event, drag.nodeId);
+}
+
+function finishViewpointPointer(event) {
+  const drag = state.viewpoint?.dragging;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  event.preventDefault();
+  event.stopPropagation();
+  updateViewpointFromStageEvent(event, drag.nodeId);
+  state.viewpoint = {
+    ...state.viewpoint,
+    ...normalizedViewpointState(state.viewpoint),
+    dragging: null
+  };
+  const marker = event.currentTarget;
+  if (marker?.hasPointerCapture?.(event.pointerId)) {
+    marker.releasePointerCapture(event.pointerId);
+  }
+  marker?.closest("[data-viewpoint-stage]")?.classList.remove("is-aiming");
+  scheduleCanvasStateSave({ delay: 180 });
+}
+
+function adjustViewpointByKeyboard(event) {
+  const marker = event.target.closest?.("[data-viewpoint-marker]");
+  if (!marker) return false;
+  const current = normalizedViewpointState();
+  const step = event.shiftKey ? 0.035 : 0.015;
+  const yawStep = event.shiftKey ? 30 : 15;
+  let next = { ...current };
+  if (event.altKey && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+    next.yaw = clamp(current.yaw + (event.key === "ArrowLeft" ? -yawStep : yawStep), -135, 135);
+  } else if (event.key === "ArrowLeft") {
+    next.x = round4(clamp(current.x - step, 0.05, 0.95));
+  } else if (event.key === "ArrowRight") {
+    next.x = round4(clamp(current.x + step, 0.05, 0.95));
+  } else if (event.key === "ArrowUp") {
+    next.y = round4(clamp(current.y - step, 0.08, 0.94));
+  } else if (event.key === "ArrowDown") {
+    next.y = round4(clamp(current.y + step, 0.08, 0.94));
+  } else if (event.key === "Home") {
+    next = defaultViewpointState();
+  } else {
+    return false;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  state.viewpoint = {
+    ...state.viewpoint,
+    ...next,
+    dragging: null
+  };
+  updateRenderedViewpointControls();
+  scheduleCanvasStateSave({ delay: 180 });
+  return true;
+}
+
+async function handleViewpointAction(action) {
+  if (action === "reset") {
+    state.viewpoint = defaultViewpointState();
+    renderWorkflowCanvas();
+    scheduleCanvasStateSave({ delay: 180 });
+    toast("已重置视角点");
+    return;
+  }
+  if (action === "rotate-left" || action === "rotate-right") {
+    const delta = action === "rotate-left" ? -30 : 30;
+    const current = normalizedViewpointState();
+    state.viewpoint = {
+      ...state.viewpoint,
+      ...current,
+      yaw: clamp(current.yaw + delta, -135, 135),
+      dragging: null
+    };
+    renderWorkflowCanvas();
+    scheduleCanvasStateSave({ delay: 180 });
+    return;
+  }
+  if (action?.startsWith("intensity-")) {
+    const current = normalizedViewpointState();
+    state.viewpoint = {
+      ...state.viewpoint,
+      ...current,
+      intensity: viewpointIntensityMeta(action.replace("intensity-", "")).value,
+      dragging: null
+    };
+    renderWorkflowCanvas();
+    scheduleCanvasStateSave({ delay: 180 });
+    return;
+  }
+  if (action === "generate") {
+    await runViewpointRender({ busyButton: els.canvasGenerateButton });
+  }
+}
+
 function syncModeControls(mode) {
   mode = normalizeClientMode(mode);
   syncModeTabs(mode);
@@ -7613,6 +8969,7 @@ function primaryActionLabel(mode) {
   if (mode === "custom") return "生成图片";
   if (mode === "plan-axonometric") return "生成3D平面图";
   if (mode === "plan-render") return "生成效果图";
+  if (mode === "viewpoint") return "生成新视角";
   if (mode === "cad") return "生成CAD";
   if (mode === "designseries") return "生成设计系列";
   if (mode === "upscale") return "算法增强";
@@ -7664,6 +9021,7 @@ function outputSlotTitle(mode) {
   if (mode === "custom") return "自定义生成位";
   if (mode === "plan-axonometric") return "3D平面图生成位";
   if (mode === "plan-render") return "效果图生成位";
+  if (mode === "viewpoint") return "视角转换生成位";
   if (mode === "cad") return "CAD 生成位";
   if (mode === "designseries") return "设计系列生成位";
   if (mode === "materialboard") return "材料板生成位";
@@ -7687,6 +9045,9 @@ function generationThinkingText(mode = state.mode) {
     return state.selection
       ? `正在读取3D平面图，并锁定${selectionRegionLabel(state.selection)}生成人视角效果图。`
       : "正在读取3D平面图和参考图，未框选时会自动选择与参考图最接近的明确区域生成人视角效果图。";
+  }
+  if (normalizedMode === "viewpoint") {
+    return `正在读取源图空间，并根据${viewpointLocationLabel()}的人视角点重建新机位。`;
   }
   return "正在读取输入图的空间结构、参考图的材料氛围，并组织 Image Gen 的出图策略。";
 }
@@ -7716,6 +9077,14 @@ function modeConfig(mode) {
       missing: "请先上传3D平面图或带选区的空间参考图",
       outputType: "eye-level interior render",
       intent: "基于 3D 平面图生成最终人视角室内/建筑效果图。优先要求用户在预览图上框选要生成的区域；如果没有框选，Agent 必须自动选择一个与参考图最接近、最适合出图的明确功能区，并在提示词和输出记录里标明效果图来自哪个区域。"
+    },
+    viewpoint: {
+      uploadLabel: "上传空间图",
+      sourceTitle: "视角源图",
+      resultTitle: "视角转换图",
+      missing: "请先上传一张空间图，再拖动人视角点",
+      outputType: "new eye-level view from marked camera point",
+      intent: "视角转换：把输入图理解为可进入的空间。画布中的人视角点是相机站位，系统根据点位坐标、画面方位和朝向生成从该位置看到的新视角；保留原空间结构、材料、灯光、家具陈列、尺度和设计语言，只改变镜头位置与可见范围。"
     },
     cad: {
       uploadLabel: "上传平面图图片",
@@ -8074,6 +9443,7 @@ async function handlePrimaryUpload(file) {
     state.primaryImage = { name: file.name, type: "image/png", dataUrl: converted.dataUrl, sourceType: "dxf", lineCount: converted.lineCount, inputAnalysis: state.primaryImageAnalysis };
     state.primaryBitmap = await loadImage(converted.dataUrl);
     state.selection = null;
+    state.viewpoint = defaultViewpointState();
     setInputAdviceThinking(state.primaryImageAnalysis);
     refreshGenerationControls();
     drawSelectionCanvas();
@@ -8089,6 +9459,7 @@ async function handlePrimaryUpload(file) {
     state.primaryImage = { name: file.name, type: "image/png", dataUrl, sourceType: "svg", inputAnalysis: state.primaryImageAnalysis };
     state.primaryBitmap = await loadImage(dataUrl);
     state.selection = null;
+    state.viewpoint = defaultViewpointState();
     setInputAdviceThinking(state.primaryImageAnalysis);
     refreshGenerationControls();
     drawSelectionCanvas();
@@ -8114,6 +9485,7 @@ async function handlePrimaryUpload(file) {
     inputAnalysis: state.primaryImageAnalysis
   };
   state.selection = null;
+  state.viewpoint = defaultViewpointState();
   setInputAdviceThinking(state.primaryImageAnalysis);
   refreshGenerationControls();
   drawSelectionCanvas();
@@ -8759,6 +10131,110 @@ async function localImageUrlToDataUrl(url, name) {
   };
 }
 
+function openImageCacheDb() {
+  if (!("indexedDB" in window)) return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(IMAGE_CACHE_DB_NAME, IMAGE_CACHE_DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains("images")) db.createObjectStore("images", { keyPath: "id" });
+      if (!db.objectStoreNames.contains("thumbnails")) db.createObjectStore("thumbnails", { keyPath: "id" });
+      if (!db.objectStoreNames.contains("urlIndex")) db.createObjectStore("urlIndex", { keyPath: "url" });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function imageCacheStore(storeName, mode, callback) {
+  const db = await openImageCacheDb();
+  if (!db) return undefined;
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, mode);
+    const store = tx.objectStore(storeName);
+    const request = callback(store);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function hashDataUrlForCache(dataUrl) {
+  if (window.crypto?.subtle) {
+    const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(dataUrl));
+    return Array.from(new Uint8Array(hash)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < dataUrl.length; index += 1) {
+    hash ^= dataUrl.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `fallback-${(hash >>> 0).toString(16)}`;
+}
+
+async function createCachedThumbnail(dataUrl) {
+  const image = await loadImage(dataUrl);
+  const width = image.naturalWidth;
+  const height = image.naturalHeight;
+  if (!width || !height) throw new Error("图片尺寸无效");
+  const scale = Math.min(1, IMAGE_CACHE_THUMBNAIL_MAX_EDGE / Math.max(width, height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(width * scale));
+  canvas.height = Math.max(1, Math.round(height * scale));
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("当前浏览器不支持 Canvas");
+  ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return {
+    thumbnailDataUrl: canvas.toDataURL("image/webp", IMAGE_CACHE_THUMBNAIL_QUALITY),
+    width,
+    height,
+    thumbnailVersion: IMAGE_CACHE_THUMBNAIL_VERSION
+  };
+}
+
+async function cacheImageUrlThumbnail(url) {
+  if (!url) return "";
+  if (state.thumbnailUrlCache.has(url)) return state.thumbnailUrlCache.get(url);
+  const existingIndex = await imageCacheStore("urlIndex", "readonly", (store) => store.get(url)).catch(() => null);
+  if (existingIndex?.id) {
+    const cachedThumb = await imageCacheStore("thumbnails", "readonly", (store) => store.get(existingIndex.id)).catch(() => null);
+    if (cachedThumb?.thumbnailVersion === IMAGE_CACHE_THUMBNAIL_VERSION && cachedThumb.thumbnailDataUrl) {
+      state.thumbnailUrlCache.set(url, cachedThumb.thumbnailDataUrl);
+      return cachedThumb.thumbnailDataUrl;
+    }
+  }
+
+  const dataUrl = url.startsWith("data:")
+    ? url
+    : (await localImageUrlToDataUrl(url, "cached-image")).dataUrl;
+  const id = await hashDataUrlForCache(dataUrl);
+  const existingImage = await imageCacheStore("images", "readonly", (store) => store.get(id)).catch(() => null);
+  const thumbnail = await createCachedThumbnail(existingImage?.dataUrl || dataUrl);
+  if (!existingImage) {
+    await imageCacheStore("images", "readwrite", (store) => store.put({ id, dataUrl, createdAt: Date.now(), source: "generated", width: thumbnail.width, height: thumbnail.height })).catch(() => null);
+  }
+  await imageCacheStore("thumbnails", "readwrite", (store) => store.put({ id, ...thumbnail })).catch(() => null);
+  await imageCacheStore("urlIndex", "readwrite", (store) => store.put({ url, id, updatedAt: Date.now() })).catch(() => null);
+  state.thumbnailUrlCache.set(url, thumbnail.thumbnailDataUrl);
+  return thumbnail.thumbnailDataUrl;
+}
+
+function hydrateCachedThumbnails(root = document) {
+  root.querySelectorAll?.("img[data-cache-thumbnail]").forEach((image) => {
+    const fullSrc = image.dataset.fullSrc || image.getAttribute("src") || "";
+    if (!fullSrc || image.dataset.cacheBusy === "true") return;
+    image.dataset.fullSrc = fullSrc;
+    image.dataset.cacheBusy = "true";
+    cacheImageUrlThumbnail(fullSrc)
+      .then((thumbnail) => {
+        if (thumbnail && image.dataset.fullSrc === fullSrc) image.src = thumbnail;
+      })
+      .catch(() => {})
+      .finally(() => {
+        image.dataset.cacheBusy = "false";
+      });
+  });
+}
+
 async function copyText(text) {
   if (!text) {
     toast("没有可复制的内容");
@@ -9204,6 +10680,9 @@ els.refreshStorageButton?.addEventListener("click", () => refreshStorageSummary(
 els.cleanupTestGeneratedButton?.addEventListener("click", () => runStorageMaintenance("cleanup-test-generated", {}, els.cleanupTestGeneratedButton));
 els.archiveGeneratedButton?.addEventListener("click", () => runStorageMaintenance("archive-generated", { olderThanDays: 30 }, els.archiveGeneratedButton));
 els.pruneLogsButton?.addEventListener("click", () => runStorageMaintenance("prune-task-logs", { keepDays: 30 }, els.pruneLogsButton));
+els.saveLocalApiSettingsButton?.addEventListener("click", saveLocalApiSettings);
+els.probeReasoningApiButton?.addEventListener("click", () => probeRuntimeProvider("reasoning"));
+els.probePrimaryImageApiButton?.addEventListener("click", () => probeRuntimeProvider("image"));
 els.saveImageApiEndpointButton?.addEventListener("click", saveImageApiEndpoint);
 els.probeImageApiEndpointButton?.addEventListener("click", () => probeImageApiEndpoints());
 els.imageApiEndpointList?.addEventListener("click", (event) => {
@@ -9225,6 +10704,13 @@ els.qualityTierButtons.forEach((button) => button.addEventListener("click", () =
   setGenerationQuality(button.dataset.qualityTier || "1k");
 }));
 els.floatingQualitySelect?.addEventListener("change", () => setGenerationQuality(els.floatingQualitySelect.value || "1k"));
+els.sizePickerButton?.addEventListener("click", () => openSizePicker(els.sizePickerButton));
+els.sizePickerOverlay?.addEventListener("click", (event) => {
+  if (event.target.closest("[data-size-picker-close]")) closeSizePicker();
+});
+els.sizePickerTier?.addEventListener("change", updateSizePickerFieldsFromTierRatio);
+els.sizePickerRatio?.addEventListener("change", updateSizePickerFieldsFromTierRatio);
+els.sizePickerApplyButton?.addEventListener("click", applySizePicker);
 els.imageCountButtons.forEach((button) => button.addEventListener("click", () => {
   setGenerationCount(button.dataset.imageCount);
 }));
@@ -9305,6 +10791,12 @@ els.infiniteCanvas.addEventListener("drop", (event) => {
   addResourceToCanvas(resourceId, { x: point.x, y: point.y, w: 320 });
 });
 window.addEventListener("pointermove", (event) => {
+  if (state.viewpoint?.dragging) {
+    event.preventDefault();
+    updateViewpointFromPointer(event);
+    return;
+  }
+
   if (state.canvas.panelDropDrag) {
     event.preventDefault();
     updateCanvasPanelDropDrag(event);
@@ -9335,6 +10827,14 @@ window.addEventListener("pointermove", (event) => {
   }
 });
 window.addEventListener("pointerup", (event) => {
+  if (state.viewpoint?.dragging) {
+    updateViewpointFromPointer(event);
+    state.viewpoint.dragging = null;
+    renderWorkflowCanvas();
+    scheduleCanvasStateSave({ delay: 180 });
+    return;
+  }
+
   if (state.canvas.panelDropDrag) {
     finishCanvasPanelDropDrag(event).catch((error) => toast(error.message));
     return;
@@ -9355,6 +10855,7 @@ window.addEventListener("pointerup", (event) => {
 });
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
+    if (closeSizePicker()) return;
     if (closeSettings()) return;
     if (state.deepEdit.open) {
       closeDeepEditOverlay();

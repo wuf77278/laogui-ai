@@ -53,6 +53,14 @@
         <path d="M8 20H5a1 1 0 0 1-1-1v-3" />
         <circle cx="12" cy="12" r="3" />
       </symbol>
+      <symbol id="icon-viewpoint" viewBox="0 0 24 24">
+        <circle cx="12" cy="5.5" r="2.5" />
+        <path d="M12 8v7" />
+        <path d="M8 12h8" />
+        <path d="M10 15l-2 5" />
+        <path d="M14 15l2 5" />
+        <path d="M17.5 8.5l3 3-3 3" />
+      </symbol>
       <symbol id="icon-history" viewBox="0 0 24 24">
         <path d="M3 12a9 9 0 1 0 3-6.7" />
         <path d="M3 4v5h5" />
@@ -294,6 +302,17 @@
             </div>
           </article>
           <article class="function-card home-entry-card">
+            <img src="/assets/library/scene-hospitality-lounge.png" width="768" height="768" loading="lazy" decoding="async" alt="视角转换示例空间" />
+            <div>
+              <span class="tag">视角</span>
+              <h2>拖动机位生成新视角</h2>
+              <p>在画布图面上放置人视角点，让 AI 按站位和朝向重建新的空间画面。</p>
+              <button class="icon-only" type="button" data-start-mode="viewpoint" title="视角转换" aria-label="视角转换">
+                <svg><use href="#icon-viewpoint"></use></svg>
+              </button>
+            </div>
+          </article>
+          <article class="function-card home-entry-card">
             <img src="/assets/library/material-stone-metal.png" width="768" height="768" loading="lazy" decoding="async" alt="生成设计系列" />
             <div>
               <span class="tag">系列</span>
@@ -406,6 +425,7 @@
               </div>
               <div class="task-progress-stats">
                 <div><span>进度</span><strong id="taskProgressCount">0/0</strong></div>
+                <div><span>阶段</span><strong id="taskProgressPhase">待命</strong></div>
                 <div><span>端点</span><strong id="taskProgressEndpoint">--</strong></div>
                 <div><span>耗时</span><strong id="taskProgressElapsed">0s</strong></div>
               </div>
@@ -470,6 +490,7 @@
                     <option value="custom">自定义</option>
                     <option value="plan-axonometric">平面图转3D</option>
                     <option value="plan-render">3D平面转效果图</option>
+                    <option value="viewpoint">视角转换</option>
                     <option value="designseries">生成设计系列</option>
                     <option value="photo">现场图转效果图</option>
                     <option value="whitemodel">白模润色</option>
@@ -517,7 +538,7 @@
                 </select>
               </div>
               <div class="canvas-floating-actions">
-                <button id="floatingThinkingModeButton" class="secondary-button icon-only thinking-mode-button active" type="button" title="思考模式已开启" aria-label="思考模式已开启" aria-pressed="true">
+                <button id="floatingThinkingModeButton" class="secondary-button icon-only thinking-mode-button" type="button" title="思考模式已关闭" aria-label="思考模式已关闭" aria-pressed="false">
                   <svg><use href="#icon-think"></use></svg>
                 </button>
                 <button id="floatingGenerateButton" class="primary-button icon-only" type="button" title="生成图片" aria-label="生成图片">
@@ -588,6 +609,7 @@
                   <button class="mode-tab active" type="button" role="tab" data-mode="custom" aria-selected="true" aria-pressed="true">自定义</button>
                   <button class="mode-tab" type="button" role="tab" data-mode="plan-axonometric" aria-selected="false" aria-pressed="false" tabindex="-1">平面图转3D</button>
                   <button class="mode-tab" type="button" role="tab" data-mode="plan-render" aria-selected="false" aria-pressed="false" tabindex="-1">3D平面转效果图</button>
+                  <button class="mode-tab" type="button" role="tab" data-mode="viewpoint" aria-selected="false" aria-pressed="false" tabindex="-1">视角转换</button>
                   <button class="mode-tab" type="button" role="tab" data-mode="designseries" aria-selected="false" aria-pressed="false" tabindex="-1">生成设计系列</button>
                   <button class="mode-tab" type="button" role="tab" data-mode="photo" aria-selected="false" aria-pressed="false" tabindex="-1">现场图转效果图</button>
                   <button class="mode-tab" type="button" role="tab" data-mode="whitemodel" aria-selected="false" aria-pressed="false" tabindex="-1">白模润色</button>
@@ -722,6 +744,7 @@
                     <button type="button" data-quality-tier="2k" aria-pressed="false">2K</button>
                     <button type="button" data-quality-tier="4k" aria-pressed="false">4K</button>
                   </div>
+                  <button id="sizePickerButton" class="text-button generation-size-button" type="button">1024×1024</button>
                 </div>
                 <div class="generation-option-card image-count-options" id="imageCountOptions">
                   <span>数量</span>
@@ -744,8 +767,8 @@
                 </div>
               </div>
               <div class="canvas-command-actions">
-                <button id="thinkingModeButton" class="secondary-button thinking-mode-button active" type="button" title="思考模式已开启" aria-label="思考模式：开，已开启" aria-pressed="true">
-                  思考模式：开
+                <button id="thinkingModeButton" class="secondary-button thinking-mode-button" type="button" title="思考模式已关闭" aria-label="思考模式：关，已关闭" aria-pressed="false">
+                  思考模式：关
                 </button>
                 <button id="canvasGenerateButton" class="primary-button" type="button" title="生成图片" aria-label="生成图片">
                   生成图片
@@ -801,17 +824,6 @@
               <button id="themeDayButton" type="button" data-theme-choice="day" aria-pressed="false">白天</button>
             </div>
           </section>
-          <section class="app-settings-block" aria-labelledby="securitySettingsTitle">
-            <div class="settings-title-row">
-              <span id="securitySettingsTitle" class="agent-skill-title">外部访问安全</span>
-            </div>
-            <div id="securitySettingsSummary" class="settings-metric-grid" aria-live="polite">
-              <div><span>访问口令</span><strong>检测中</strong></div>
-              <div><span>CORS</span><strong>检测中</strong></div>
-              <div><span>设置权限</span><strong>检测中</strong></div>
-            </div>
-            <p class="settings-hint">局域网或内网穿透分享时，建议在 .env 配置 LAOGUI_API_TOKEN 和 API_CORS_ORIGIN；朋友端只能使用生成能力，不能修改 API Key。</p>
-          </section>
           <section class="app-settings-block" aria-labelledby="storageSettingsTitle">
             <div class="settings-title-row">
               <span id="storageSettingsTitle" class="agent-skill-title">存储维护</span>
@@ -833,12 +845,68 @@
           </section>
           <section class="api-settings-block" aria-labelledby="apiSettingsTitle">
             <div class="settings-title-row">
-              <span id="apiSettingsTitle" class="agent-skill-title">Image Gen API</span>
+              <span id="apiSettingsTitle" class="agent-skill-title">本机 API 密钥</span>
               <button id="refreshApiSettingsButton" class="text-button icon-only" type="button" title="刷新 API 状态" aria-label="刷新 API 状态">
                 <svg><use href="#icon-refresh"></use></svg>
               </button>
             </div>
-            <p class="settings-hint">自定义端点会走 Responses image_generation 链路，用 Codex 的 Image Gen 方式出图。</p>
+            <p class="settings-hint">这些配置只保存在本机用户数据目录，不会写入网页文件或发给浏览器之外的设备。</p>
+            <div class="api-settings-grid">
+              <label>
+                思考 Base URL
+                <input id="reasoningApiBaseUrl" type="url" placeholder="https://api.example.com" autocomplete="off" />
+              </label>
+              <label>
+                思考模型
+                <input id="reasoningApiModel" type="text" placeholder="gpt-5.5" autocomplete="off" />
+              </label>
+              <label>
+                思考 API Key
+                <input id="reasoningApiKey" type="password" placeholder="sk-..." autocomplete="off" />
+              </label>
+              <label>
+                生图 Base URL
+                <input id="primaryImageApiBaseUrl" type="url" placeholder="https://api.example.com" autocomplete="off" />
+              </label>
+              <label>
+                生图模型
+                <input id="primaryImageApiModel" type="text" placeholder="gpt-image-2" autocomplete="off" />
+              </label>
+              <label>
+                生图 Responses 路径
+                <input id="primaryImageApiResponsesPath" type="text" value="/responses" autocomplete="off" />
+              </label>
+              <label>
+                生图 Generations 路径
+                <input id="primaryImageApiGenerationPath" type="text" value="/v1/images/generations" autocomplete="off" />
+              </label>
+              <label>
+                生图 Edits 路径
+                <input id="primaryImageApiEditPath" type="text" value="/v1/images/edits" autocomplete="off" />
+              </label>
+              <label>
+                生图 API Key
+                <input id="primaryImageApiKey" type="password" placeholder="sk-..." autocomplete="off" />
+              </label>
+              <label class="api-settings-wide">
+                Provider Manifest
+                <textarea id="primaryImageProviderManifest" rows="4" spellcheck="false" placeholder='{"submit":{"path":"/v1/images/generations","result":{"b64JsonPaths":["data.*.b64_json"]}}}'></textarea>
+              </label>
+            </div>
+            <div class="settings-actions">
+              <button id="saveLocalApiSettingsButton" class="secondary-button" type="button">保存本机密钥</button>
+              <button id="probeReasoningApiButton" class="text-button" type="button">检测思考 API</button>
+              <button id="probePrimaryImageApiButton" class="text-button" type="button">检测生图 API</button>
+            </div>
+            <div id="localApiProbeFeedback" class="api-probe-feedback" aria-live="polite"></div>
+            <p class="settings-hint">检测生图 API 会按当前模式真实调用一次 Images API 或 Responses 小图请求；返回图片数据才算通过。</p>
+            <p id="localApiSettingsSummary" class="settings-hint">等待读取本机配置。</p>
+          </section>
+          <section class="api-settings-block" aria-labelledby="imageApiSettingsTitle">
+            <div class="settings-title-row">
+              <span id="imageApiSettingsTitle" class="agent-skill-title">备用 Image Gen API</span>
+            </div>
+            <p class="settings-hint">可额外保存多个生图端点；检测后会优先使用可用端点。</p>
             <div class="api-current-endpoint" aria-live="polite">
               <div class="api-current-copy">
                 <span>当前连接</span>
@@ -867,13 +935,80 @@
                 Responses 路径
                 <input id="imageApiResponsesPath" type="text" value="/v1/responses" autocomplete="off" />
               </label>
+              <label>
+                Generations 路径
+                <input id="imageApiGenerationPath" type="text" value="/v1/images/generations" autocomplete="off" />
+              </label>
+              <label>
+                Edits 路径
+                <input id="imageApiEditPath" type="text" value="/v1/images/edits" autocomplete="off" />
+              </label>
+              <label class="api-settings-wide">
+                Provider Manifest
+                <textarea id="imageApiProviderManifest" rows="4" spellcheck="false" placeholder='{"submit":{"path":"/v1/images/generations","result":{"imageUrlPaths":["data.*.url"]}}}'></textarea>
+              </label>
             </div>
             <div class="settings-actions">
               <button id="saveImageApiEndpointButton" class="secondary-button" type="button">保存并启用</button>
               <button id="probeImageApiEndpointButton" class="text-button" type="button">检测端点</button>
             </div>
+            <div id="imageApiProbeFeedback" class="api-probe-feedback" aria-live="polite"></div>
             <p class="settings-hint">可以保存多个 Base URL，例如不同域名、不同端口或本地服务；检测会访问每个端点的模型列表并更新可用性。</p>
             <div id="imageApiEndpointList" class="api-endpoint-list" aria-live="polite"></div>
+          </section>
+        </div>
+      </article>
+    </section>
+
+    <section id="sizePickerOverlay" class="app-settings-overlay size-picker-overlay" hidden aria-hidden="true">
+      <div class="app-settings-backdrop" data-size-picker-close></div>
+      <article class="app-settings-modal size-picker-modal" role="dialog" aria-modal="true" aria-labelledby="sizePickerTitle" tabindex="-1">
+        <header class="app-settings-head">
+          <div>
+            <p class="eyebrow">Image Size</p>
+            <h2 id="sizePickerTitle">尺寸</h2>
+          </div>
+          <button id="sizePickerCloseButton" class="icon-button icon-only" type="button" title="关闭尺寸" aria-label="关闭尺寸" data-size-picker-close>
+            <svg><use href="#icon-close"></use></svg>
+          </button>
+        </header>
+        <div class="app-settings-body">
+          <section class="app-settings-block size-picker-block">
+            <div class="api-settings-grid">
+              <label>
+                档位
+                <select id="sizePickerTier">
+                  <option value="1k">1K</option>
+                  <option value="2k">2K</option>
+                  <option value="4k">4K</option>
+                </select>
+              </label>
+              <label>
+                比例
+                <select id="sizePickerRatio">
+                  <option value="source">参考原图比例</option>
+                  <option value="1:1">1:1</option>
+                  <option value="4:5">4:5</option>
+                  <option value="3:4">3:4</option>
+                  <option value="2:3">2:3</option>
+                  <option value="9:16">9:16</option>
+                  <option value="4:3">4:3</option>
+                  <option value="3:2">3:2</option>
+                  <option value="16:9">16:9</option>
+                </select>
+              </label>
+              <label>
+                W
+                <input id="sizePickerWidth" type="number" min="640" max="3840" step="16" value="1024" />
+              </label>
+              <label>
+                H
+                <input id="sizePickerHeight" type="number" min="640" max="3840" step="16" value="1024" />
+              </label>
+            </div>
+            <div class="settings-actions">
+              <button id="sizePickerApplyButton" class="secondary-button" type="button">应用尺寸</button>
+            </div>
           </section>
         </div>
       </article>

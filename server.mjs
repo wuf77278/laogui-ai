@@ -16,16 +16,24 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const publicDir = path.join(__dirname, "public");
-const generatedDir = path.join(publicDir, "generated");
-const generatedArchiveDir = path.join(__dirname, "archive", "generated");
-const logsDir = path.join(__dirname, "logs");
+
+loadDotEnv(path.join(__dirname, ".env"));
+
+const appDataDir = resolveAppDataDir();
+const externalDataDirEnabled = Boolean(process.env.LAOGUI_DATA_DIR);
+const generatedDir = externalDataDirEnabled ? path.join(appDataDir, "generated") : path.join(publicDir, "generated");
+const generatedArchiveDir = path.join(appDataDir, "archive", "generated");
+const logsDir = path.join(appDataDir, "logs");
 const taskLogPath = path.join(logsDir, "task-runs.jsonl");
 const taskLogDir = path.join(logsDir, "task-runs");
 const canvasStatePath = path.join(logsDir, "canvas-state.json");
 const canvasStateDir = path.join(logsDir, "canvas-states");
 const runtimeSettingsPath = path.join(logsDir, "runtime-settings.json");
 
-loadDotEnv(path.join(__dirname, ".env"));
+function resolveAppDataDir() {
+  if (process.env.LAOGUI_DATA_DIR) return path.resolve(process.env.LAOGUI_DATA_DIR);
+  return __dirname;
+}
 
 function normalizeBaseUrl(value, fallback) {
   return String(value || fallback || "").replace(/\/+$/, "");
@@ -42,9 +50,32 @@ function uniqueBaseUrls(values) {
   return [...new Set(values.map((value) => normalizeBaseUrl(value)).filter(Boolean))];
 }
 
+function envHasValue(name) {
+  return String(process.env[name] || "").trim() !== "";
+}
+
 function parseBooleanEnv(value, fallback = false) {
   if (value === undefined || value === null || value === "") return fallback;
   return !["0", "false", "no", "off"].includes(String(value).trim().toLowerCase());
+}
+
+function readJsonEnv(names) {
+  const keys = Array.isArray(names) ? names : [names];
+  for (const key of keys) {
+    const raw = String(process.env[key] || "").trim();
+    if (!raw) continue;
+    try {
+      return JSON.parse(raw);
+    } catch (error) {
+      console.warn(`[settings] ignored invalid JSON env ${key}: ${error.message || error}`);
+    }
+  }
+  return null;
+}
+
+function normalizeImageApiMode(value) {
+  const mode = String(value || "").trim().toLowerCase();
+  return ["images", "responses", "auto"].includes(mode) ? mode : "images";
 }
 
 function boundedIntegerEnv(names, fallback, min = 1, max = 20) {
@@ -58,18 +89,36 @@ function boundedIntegerEnv(names, fallback, min = 1, max = 20) {
 
 function defaultImageBaseUrls() {
   return [
-    "https://yybb.codes",
-    "https://cdn2.yybb.codes",
-    "https://cdn3.yybb.codes",
-    "https://yybb.dog",
-    "https://hk.yybb.codes",
-    "https://www.fhl.mom"
+    "https://ai.mxou.cn",
+    "https://yybb.codes"
   ];
+}
+
+function imageBaseUrlConfiguredByEnv() {
+  return [
+    "IMAGE_BASE_URL",
+    "IMAGE_BASE_URLS",
+    "IMAGE_COST_FIRST_BASE_URLS",
+    "IMAGE_PRIORITY_BASE_URLS",
+    "IMAGE_ENDPOINT_PRIORITY_BASE_URLS",
+    "YYBB_BASE_URL",
+    "YYBB_BASE_URLS",
+    "FHL_IMAGE_BASE_URL",
+    "OPENAI_BASE_URL"
+  ].some(envHasValue);
+}
+
+function includeDefaultImageBaseUrls() {
+  if (envHasValue("IMAGE_INCLUDE_DEFAULT_BASE_URLS")) {
+    return parseBooleanEnv(process.env.IMAGE_INCLUDE_DEFAULT_BASE_URLS, false);
+  }
+  return !imageBaseUrlConfiguredByEnv();
 }
 
 function costFirstImageBaseUrls() {
   const configured = splitBaseUrlList(process.env.IMAGE_COST_FIRST_BASE_URLS || process.env.FHL_IMAGE_BASE_URL);
-  return uniqueBaseUrls(configured.length ? configured : ["https://www.fhl.mom"]);
+  if (configured.length) return uniqueBaseUrls(configured);
+  return [];
 }
 
 function priorityImageBaseUrls() {
@@ -81,12 +130,14 @@ function priorityImageBaseUrls() {
 
 function configuredImageBaseUrls() {
   const priorityBaseUrls = priorityImageBaseUrls();
-  const primary = process.env.IMAGE_BASE_URL || process.env.YYBB_BASE_URL || process.env.OPENAI_BASE_URL || "https://yybb.codes";
+  const includeDefaults = includeDefaultImageBaseUrls();
+  const primaryFallback = includeDefaults ? "https://yybb.codes" : "";
+  const primary = process.env.IMAGE_BASE_URL || process.env.YYBB_BASE_URL || process.env.OPENAI_BASE_URL || primaryFallback;
   return uniqueBaseUrls([
     ...priorityBaseUrls,
     ...splitBaseUrlList(process.env.IMAGE_BASE_URLS || process.env.YYBB_BASE_URLS),
     primary,
-    ...defaultImageBaseUrls()
+    ...(includeDefaults ? defaultImageBaseUrls() : [])
   ]);
 }
 
@@ -103,9 +154,13 @@ const config = {
     baseUrl: normalizeBaseUrl(process.env.IMAGE_BASE_URL || process.env.YYBB_BASE_URL || process.env.OPENAI_BASE_URL, "https://yybb.codes"),
     baseUrls: configuredImageBaseUrls(),
     apiKey: process.env.IMAGE_API_KEY || process.env.YYBB_API_KEY || process.env.OPENAI_API_KEY || "",
-    responsesPath: process.env.IMAGE_RESPONSES_PATH || ""
+    responsesPath: process.env.IMAGE_RESPONSES_PATH || "",
+    imageGenerationPath: process.env.IMAGE_GENERATIONS_PATH || process.env.IMAGE_GENERATION_PATH || "",
+    imageEditPath: process.env.IMAGE_EDITS_PATH || process.env.IMAGE_EDIT_PATH || "",
+    providerManifest: null
   },
   maxJsonBodyBytes: boundedIntegerEnv("MAX_JSON_BODY_MB", 80, 1, 200) * 1024 * 1024,
+  imageApiMode: normalizeImageApiMode(process.env.IMAGE_API_MODE || process.env.IMAGE_GENERATION_API_MODE),
   imageGenerationConcurrency: boundedIntegerEnv(["IMAGE_GENERATION_CONCURRENCY", "LAOGUI_IMAGE_CONCURRENCY"], 2, 1, 8),
   imageGenerationQueueMaxPending: boundedIntegerEnv(["IMAGE_GENERATION_QUEUE_MAX_PENDING", "LAOGUI_IMAGE_QUEUE_MAX_PENDING"], 12, 0, 200),
   imageGenerationQueueTimeoutMs: boundedIntegerEnv(["IMAGE_GENERATION_QUEUE_TIMEOUT_SECONDS", "LAOGUI_IMAGE_QUEUE_TIMEOUT_SECONDS"], 600, 10, 3600) * 1000,
@@ -118,7 +173,14 @@ const config = {
 const imageEndpointStats = new Map();
 const imageGenerationQueue = [];
 let activeImageGenerationTasks = 0;
+let lastImageEndpointPrecheckAt = 0;
+let imageEndpointPrecheckPromise = null;
 const runtimeSettings = {
+  providers: {
+    reasoning: null,
+    image: null
+  },
+  providerProfiles: [],
   imageEndpoints: []
 };
 const taskResults = new Map();
@@ -306,6 +368,10 @@ async function readJson(req) {
   }
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function providerFor(kind) {
   if (kind === "image") return config.imageProvider;
   return config.reasoningProvider;
@@ -328,6 +394,174 @@ function providerResponsesPath(source) {
   if (source.responsesPath) return source.responsesPath.startsWith("/") ? source.responsesPath : `/${source.responsesPath}`;
   return isYybbBaseUrl(source.baseUrl) ? "/responses" : "/v1/responses";
 }
+
+function normalizeProviderApiPath(value, fallback) {
+  const text = String(value || fallback || "").trim() || fallback;
+  return text.startsWith("/") ? text : `/${text}`;
+}
+
+function normalizeStringArray(value, fallback = []) {
+  if (!Array.isArray(value)) return fallback;
+  const items = value
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+  return items.length ? items : fallback;
+}
+
+function normalizeStringRecord(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const entries = Object.entries(value)
+    .filter(([key, item]) => key && ["string", "number", "boolean"].includes(typeof item))
+    .map(([key, item]) => [key, String(item)]);
+  return entries.length ? Object.fromEntries(entries) : undefined;
+}
+
+const defaultImageResultMapping = {
+  imageUrlPaths: ["data.*.url"],
+  b64JsonPaths: ["data.*.b64_json"]
+};
+
+const defaultImageGenerationBodyTemplate = {
+  model: "$profile.model",
+  prompt: "$prompt",
+  size: "$params.size",
+  quality: "$params.quality",
+  output_format: "$params.output_format",
+  moderation: "$params.moderation",
+  output_compression: "$params.output_compression",
+  n: "$params.n"
+};
+
+const defaultImageEditFiles = [
+  { field: "image[]", source: "inputImages", array: true },
+  { field: "mask", source: "mask" }
+];
+
+function normalizeRequestMethod(value, fallback = "POST") {
+  const method = String(value || fallback).trim().toUpperCase();
+  return method === "GET" || method === "POST" ? method : fallback;
+}
+
+function normalizeContentType(value, fallback = "json") {
+  return String(value || fallback).trim().toLowerCase() === "multipart" ? "multipart" : "json";
+}
+
+function normalizeBodyTemplate(value, fallback = defaultImageGenerationBodyTemplate) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : fallback;
+}
+
+function normalizeFileMappings(value, fallback = defaultImageEditFiles) {
+  if (!Array.isArray(value)) return fallback;
+  const files = value
+    .map((item) => {
+      if (!item || typeof item !== "object" || !String(item.field || "").trim()) return null;
+      if (!["inputImages", "mask"].includes(item.source)) return null;
+      return {
+        field: String(item.field).trim(),
+        source: item.source,
+        array: Boolean(item.array)
+      };
+    })
+    .filter(Boolean);
+  return files.length ? files : fallback;
+}
+
+function normalizeResultMapping(value, fallback = defaultImageResultMapping) {
+  const record = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    imageUrlPaths: normalizeStringArray(record.imageUrlPaths, fallback.imageUrlPaths),
+    b64JsonPaths: normalizeStringArray(record.b64JsonPaths, fallback.b64JsonPaths)
+  };
+}
+
+function normalizeSubmitMapping(value, fallback = {}) {
+  const record = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const contentType = normalizeContentType(record.contentType, fallback.contentType || "json");
+  const defaultBody = contentType === "multipart" ? defaultImageGenerationBodyTemplate : defaultImageGenerationBodyTemplate;
+  return {
+    path: normalizeProviderApiPath(record.path, fallback.path || "/v1/images/generations"),
+    method: normalizeRequestMethod(record.method, fallback.method || "POST"),
+    contentType,
+    query: normalizeStringRecord(record.query) || fallback.query,
+    body: normalizeBodyTemplate(record.body, fallback.body || defaultBody),
+    files: contentType === "multipart" ? normalizeFileMappings(record.files, fallback.files || defaultImageEditFiles) : undefined,
+    taskIdPath: typeof record.taskIdPath === "string" && record.taskIdPath.trim() ? record.taskIdPath.trim() : fallback.taskIdPath,
+    result: normalizeResultMapping(record.result, fallback.result || defaultImageResultMapping)
+  };
+}
+
+function normalizePollMapping(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const statusPath = typeof value.statusPath === "string" && value.statusPath.trim() ? value.statusPath.trim() : "";
+  if (!statusPath) return undefined;
+  return {
+    path: normalizeProviderApiPath(value.path, "/v1/images/tasks/{task_id}"),
+    method: normalizeRequestMethod(value.method, "GET"),
+    query: normalizeStringRecord(value.query),
+    intervalSeconds: Math.max(1, Number(value.intervalSeconds) || 5),
+    statusPath,
+    successValues: normalizeStringArray(value.successValues, ["SUCCESS", "succeeded", "completed", "COMPLETED"]),
+    failureValues: normalizeStringArray(value.failureValues, ["FAILURE", "failed", "error", "FAILED", "cancelled"]),
+    errorPath: typeof value.errorPath === "string" && value.errorPath.trim() ? value.errorPath.trim() : "",
+    result: normalizeResultMapping(value.result, defaultImageResultMapping)
+  };
+}
+
+function normalizeProviderManifest(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const submit = input.submit && typeof input.submit === "object" ? input.submit : null;
+  if (!submit) return null;
+  return {
+    id: String(input.id || input.name || "custom-http-image").trim(),
+    name: String(input.name || input.id || "自定义服务商").trim(),
+    template: "http-image",
+    submit: normalizeSubmitMapping(submit, {
+      path: "/v1/images/generations",
+      method: "POST",
+      contentType: "json",
+      body: defaultImageGenerationBodyTemplate,
+      result: defaultImageResultMapping
+    }),
+    editSubmit: input.editSubmit && typeof input.editSubmit === "object"
+      ? normalizeSubmitMapping(input.editSubmit, {
+          path: "/v1/images/edits",
+          method: "POST",
+          contentType: "multipart",
+          body: defaultImageGenerationBodyTemplate,
+          files: defaultImageEditFiles,
+          result: defaultImageResultMapping
+        })
+      : undefined,
+    poll: normalizePollMapping(input.poll)
+  };
+}
+
+function providerManifestFromInput(input, existing = null) {
+  const direct = input?.providerManifest ?? input?.manifest ?? input?.customProviderManifest ?? input?.customProvider;
+  if (typeof input?.providerManifestJson === "string" && input.providerManifestJson.trim()) {
+    try {
+      return normalizeProviderManifest(JSON.parse(input.providerManifestJson));
+    } catch (error) {
+      error.message = `Provider Manifest JSON 无效：${error.message || error}`;
+      error.status = 400;
+      throw error;
+    }
+  }
+  if (typeof direct === "string" && direct.trim()) {
+    try {
+      return normalizeProviderManifest(JSON.parse(direct));
+    } catch (error) {
+      error.message = `Provider Manifest JSON 无效：${error.message || error}`;
+      error.status = 400;
+      throw error;
+    }
+  }
+  if (direct && typeof direct === "object") return normalizeProviderManifest(direct);
+  if (input?.providerManifest === null || input?.manifest === null || input?.customProviderManifest === null) return null;
+  return existing?.providerManifest || null;
+}
+
+config.imageProvider.providerManifest = normalizeProviderManifest(readJsonEnv(["IMAGE_PROVIDER_MANIFEST", "IMAGE_API_PROVIDER_MANIFEST"]));
 
 function isYybbBaseUrl(baseUrl) {
   return /(^|\/\/)(?:[^/]*\.)?yybb\.(?:codes|dog)(?:\/|$)/i.test(String(baseUrl || ""));
@@ -362,6 +596,9 @@ function runtimeImageEndpointSources() {
       baseUrl: endpoint.baseUrl,
       apiKey: endpoint.apiKey,
       responsesPath: endpoint.responsesPath || config.imageProvider.responsesPath,
+      imageGenerationPath: endpoint.imageGenerationPath || config.imageProvider.imageGenerationPath,
+      imageEditPath: endpoint.imageEditPath || config.imageProvider.imageEditPath,
+      providerManifest: endpoint.providerManifest || null,
       kind: "custom",
       keySource: "runtime",
       runtimeId: endpoint.id,
@@ -371,12 +608,18 @@ function runtimeImageEndpointSources() {
 
 function imageProviderSources() {
   const runtimeSources = runtimeImageEndpointSources();
-  const envSources = config.imageProvider.baseUrls.map((baseUrl) => ({
+  const runtimeBaseUrls = new Set(runtimeSources.map((source) => normalizeBaseUrl(source.baseUrl)));
+  const envSources = config.imageProvider.baseUrls
+    .filter((baseUrl) => !runtimeBaseUrls.has(normalizeBaseUrl(baseUrl)))
+    .map((baseUrl) => ({
     ...config.imageProvider,
     baseUrl,
     apiKey: imageProviderApiKey(baseUrl),
     kind: imageProviderKind(baseUrl),
     keySource: imageProviderKeySource(baseUrl),
+    imageGenerationPath: config.imageProvider.imageGenerationPath,
+    imageEditPath: config.imageProvider.imageEditPath,
+    providerManifest: config.imageProvider.providerManifest || null,
     responsesPath: isFhlBaseUrl(baseUrl)
       ? (process.env.FHL_RESPONSES_PATH || config.reasoningProvider.responsesPath || config.imageProvider.responsesPath)
       : config.imageProvider.responsesPath
@@ -439,8 +682,8 @@ function imageEndpointPriorityBoost(source) {
 function imageEndpointCostFirstMaxAttempts(source) {
   const costFirstBaseUrls = costFirstImageBaseUrls();
   if (!costFirstBaseUrls.includes(normalizeBaseUrl(source.baseUrl))) return 1;
-  const configured = Number(process.env.IMAGE_COST_FIRST_MAX_ATTEMPTS || process.env.FHL_IMAGE_MAX_ATTEMPTS || 5);
-  return Math.max(1, Math.min(Number.isFinite(configured) ? configured : 5, 20));
+  const configured = Number(process.env.IMAGE_COST_FIRST_MAX_ATTEMPTS || process.env.FHL_IMAGE_MAX_ATTEMPTS || 2);
+  return Math.max(1, Math.min(Number.isFinite(configured) ? configured : 2, 20));
 }
 
 function imageEndpointCostFirstCandidate(source, now = Date.now()) {
@@ -557,6 +800,9 @@ function imageEndpointHealth() {
       label: source.label || shortRuntimeEndpointLabel(source.baseUrl),
       runtimeId: source.runtimeId || null,
       responsesPath: providerResponsesPath(source),
+      imageGenerationPath: providerImageApiPath(source, "generation"),
+      imageEditPath: providerImageApiPath(source, "edit"),
+      providerManifestName: source.providerManifest?.name || null,
       kind: source.kind,
       keySource: source.keySource,
       priority: imageEndpointPriority(source.baseUrl),
@@ -579,6 +825,16 @@ function imageEndpointHealth() {
       lastError: stat.lastError || null
     };
   });
+}
+
+const providerProbeStats = {
+  reasoning: null,
+  image: null
+};
+
+function publicProviderProbe(kind) {
+  const probe = providerProbeStats[kind];
+  return probe ? { ...probe } : null;
 }
 
 function imageEndpointRecommendation(endpoints = imageEndpointHealth()) {
@@ -727,14 +983,27 @@ async function probeImageEndpoints({ timeoutMs = 12000, endpointId = "", baseUrl
 }
 
 async function refreshImageEndpointSpeeds({ force = false } = {}) {
-  if (!force && process.env.IMAGE_ENDPOINT_PRECHECK === "0") return imageEndpointHealth();
-  const timeoutMs = Number(process.env.IMAGE_ENDPOINT_PRECHECK_TIMEOUT_MS || 6000);
-  try {
-    return await probeImageEndpoints({ timeoutMs });
-  } catch (error) {
-    console.warn(`[image-provider] pre-generation endpoint probe failed: ${error.message || error}`);
+  if (process.env.IMAGE_ENDPOINT_PRECHECK === "0") return imageEndpointHealth();
+  const ttlMs = boundedIntegerEnv(["IMAGE_ENDPOINT_PRECHECK_TTL_SECONDS", "LAOGUI_IMAGE_ENDPOINT_PRECHECK_TTL_SECONDS"], 300, 10, 3600) * 1000;
+  const now = Date.now();
+  if (!force && lastImageEndpointPrecheckAt && now - lastImageEndpointPrecheckAt < ttlMs) {
     return imageEndpointHealth();
   }
+  if (imageEndpointPrecheckPromise) return imageEndpointPrecheckPromise;
+  const timeoutMs = Number(process.env.IMAGE_ENDPOINT_PRECHECK_TIMEOUT_MS || 6000);
+  imageEndpointPrecheckPromise = (async () => {
+    try {
+      const health = await probeImageEndpoints({ timeoutMs });
+      lastImageEndpointPrecheckAt = Date.now();
+      return health;
+    } catch (error) {
+      console.warn(`[image-provider] pre-generation endpoint probe failed: ${error.message || error}`);
+      return imageEndpointHealth();
+    } finally {
+      imageEndpointPrecheckPromise = null;
+    }
+  })();
+  return imageEndpointPrecheckPromise;
 }
 
 async function tryImageProviderPool(run) {
@@ -840,6 +1109,184 @@ async function runCurlModelsRequest(url, apiKey, timeoutMs) {
     throw error;
   }
   return body;
+}
+
+async function probeResponsesTextProvider(source, model, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(providerUrl(source, providerResponsesPath(source)), {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${source.apiKey}`,
+        "content-type": "application/json",
+        accept: "text/event-stream"
+      },
+      body: JSON.stringify({
+        model,
+        input: "Reply with exactly OK. This is a local API connectivity test.",
+        stream: true
+      }),
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      const errorBody = await safeJsonResponse(response);
+      const message = errorBody?.error?.message || errorBody?.message || response.statusText || "Responses test failed";
+      const error = new Error(message);
+      error.status = response.status;
+      error.details = errorBody;
+      throw error;
+    }
+
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.includes("event-stream")) {
+      const body = await response.json().catch(() => ({}));
+      return findOutputText(body) || body?.output_text || "";
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let text = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary >= 0) {
+        const frame = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        text += parseResponsesTextFromSseFrame(frame);
+        boundary = buffer.indexOf("\n\n");
+      }
+      if (done) break;
+    }
+    if (buffer.trim()) text += parseResponsesTextFromSseFrame(buffer);
+    return text.trim();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function probeProviderConnection(kind, provider, { timeoutMs = 12000 } = {}) {
+  const started = Date.now();
+  const source = {
+    baseUrl: normalizeBaseUrl(provider.baseUrl),
+    apiKey: provider.apiKey,
+    responsesPath: provider.responsesPath,
+    imageGenerationPath: provider.imageGenerationPath,
+    imageEditPath: provider.imageEditPath,
+    providerManifest: provider.providerManifest || null,
+    kind
+  };
+  if (!source.baseUrl || !source.apiKey) {
+    const error = new Error(kind === "image" ? "请先填写生图 API Base URL 和 Key。" : "请先填写思考 API Base URL 和 Key。");
+    error.status = 400;
+    throw error;
+  }
+
+  try {
+    const model = String(provider.model || "").trim();
+    const responsesPath = source.responsesPath || providerResponsesPath(source);
+    let message = "Responses API 检测成功。";
+    let imageBytes = 0;
+    let modelListed = null;
+    let imageProbeSource = null;
+
+    if (kind === "image") {
+      imageProbeSource = {
+        ...source,
+        responsesPath,
+        imageGenerationPath: provider.imageGenerationPath || source.imageGenerationPath || config.imageProvider.imageGenerationPath,
+        imageEditPath: provider.imageEditPath || source.imageEditPath || config.imageProvider.imageEditPath,
+        providerManifest: provider.providerManifest || source.providerManifest || null,
+        keySource: "runtime",
+        label: shortRuntimeEndpointLabel(source.baseUrl)
+      };
+      const generated = config.imageApiMode === "responses"
+        ? await openaiResponsesImageStreamFromSource({
+            model,
+            input: [
+              {
+                role: "user",
+                content: [
+                  {
+                    type: "input_text",
+                    text: "Use the image_generation tool to create exactly one tiny clean test image: a simple modern wooden chair on a white background. No text, no watermark."
+                  }
+                ]
+              }
+            ],
+            tools: [
+              {
+                type: "image_generation",
+                size: "1024x1024",
+                quality: "low",
+                output_format: "png"
+              }
+            ]
+          }, { timeoutMs, source: imageProbeSource })
+        : await openaiCompatibleImagesFromSource({
+            prompt: "A tiny clean test image: a simple modern wooden chair on a white background. No text, no watermark.",
+            inputImages: [],
+            size: "1024x1024",
+            quality: "low"
+          }, { timeoutMs, source: imageProbeSource });
+      imageBytes = generated.buffer?.length || 0;
+      message = `${generated.imageApi === "responses" ? "Responses Image Gen" : "Images API"} 检测成功，已返回图片数据 ${formatBytes(imageBytes)}。`;
+    } else {
+      const text = await probeResponsesTextProvider({ ...source, responsesPath }, model, timeoutMs);
+      message = text ? `Responses 文本检测成功：${truncateLogText(text, 80)}` : "Responses 文本检测成功。";
+    }
+
+    const result = {
+      ok: true,
+      kind,
+      status: "available",
+      baseUrl: source.baseUrl,
+      model,
+      responsesPath,
+      imageGenerationPath: kind === "image" ? providerImageApiPath(imageProbeSource || source, "generation") : "",
+      imageEditPath: kind === "image" ? providerImageApiPath(imageProbeSource || source, "edit") : "",
+      providerManifestName: kind === "image" ? (imageProbeSource?.providerManifest?.name || "") : "",
+      ms: Date.now() - started,
+      checkedAt: new Date().toISOString(),
+      modelListed,
+      imageBytes,
+      message
+    };
+    providerProbeStats[kind] = result;
+    if (kind === "image") {
+      markImageEndpointSuccess(imageProbeSource || source, result.ms, { activate: false, probe: true });
+    }
+    return result;
+  } catch (error) {
+    const result = {
+      ok: false,
+      kind,
+      status: "error",
+      baseUrl: source.baseUrl,
+      model: String(provider.model || "").trim(),
+      responsesPath: source.responsesPath || providerResponsesPath(source),
+      ms: Date.now() - started,
+      checkedAt: new Date().toISOString(),
+      message: error?.status ? `${error.status} ${error.message || ""}`.trim() : String(error?.message || error || "检测失败")
+    };
+    providerProbeStats[kind] = result;
+    if (kind === "image") {
+      const imageSource = {
+        ...source,
+        responsesPath: source.responsesPath || providerResponsesPath(source),
+        imageGenerationPath: provider.imageGenerationPath || source.imageGenerationPath || config.imageProvider.imageGenerationPath,
+        imageEditPath: provider.imageEditPath || source.imageEditPath || config.imageProvider.imageEditPath,
+        providerManifest: provider.providerManifest || source.providerManifest || null,
+        keySource: "runtime",
+        label: shortRuntimeEndpointLabel(source.baseUrl)
+      };
+      markImageEndpointFailure(imageSource, error, { probe: true });
+    }
+    return result;
+  }
 }
 
 async function openaiChatCompletionStream(payload, { timeoutMs = 180000, provider = "reasoning" } = {}) {
@@ -971,7 +1418,9 @@ async function openaiResponsesImageStreamFromSource(payload, { timeoutMs = 42000
     if (!imageB64) throw new Error("Responses image_generation returned no image data");
     return {
       buffer: Buffer.from(stripDataUrlPrefix(imageB64), "base64"),
-      thinking: text.trim()
+      thinking: text.trim(),
+      imageApi: "responses",
+      actualParams: pickActualImageParams(Array.isArray(payload.tools) ? payload.tools[0] : null)
     };
   } finally {
     clearTimeout(timer);
@@ -1077,58 +1526,363 @@ function normalizeImageToolQuality(quality) {
 }
 
 function imageGenSkillMaxAttempts() {
-  return boundedIntegerEnv(["IMAGE_GEN_SKILL_MAX_ATTEMPTS", "IMAGEGEN_SKILL_MAX_ATTEMPTS"], 5, 1, 20);
+  return boundedIntegerEnv(["IMAGE_GEN_SKILL_MAX_ATTEMPTS", "IMAGEGEN_SKILL_MAX_ATTEMPTS"], 2, 1, 20);
 }
 
-async function openaiImagesGenerationDirect({ prompt, size, quality }) {
-  const payload = {
-    model: config.imageModel,
-    prompt,
-    n: 1,
-    size,
-    quality: normalizeImageToolQuality(quality),
-    response_format: "b64_json",
-    output_format: "png"
+const PROMPT_REWRITE_GUARD_PREFIX = "Use the following text as the complete prompt. Do not rewrite it:";
+
+function imagePromptWithRewriteGuard(prompt) {
+  const text = String(prompt || "").trim();
+  return text.startsWith(PROMPT_REWRITE_GUARD_PREFIX)
+    ? text
+    : `${PROMPT_REWRITE_GUARD_PREFIX}\n${text}`;
+}
+
+function providerImageApiPath(source, kind = "generation") {
+  const manifestPath = kind === "edit"
+    ? source.providerManifest?.editSubmit?.path
+    : source.providerManifest?.submit?.path;
+  if (manifestPath) return normalizeProviderApiPath(manifestPath, kind === "edit" ? "/v1/images/edits" : "/v1/images/generations");
+
+  const configured = kind === "edit"
+    ? (source.imageEditPath || process.env.IMAGE_EDITS_PATH || process.env.IMAGE_EDIT_PATH)
+    : (source.imageGenerationPath || process.env.IMAGE_GENERATIONS_PATH || process.env.IMAGE_GENERATION_PATH);
+  const fallback = kind === "edit" ? "/v1/images/edits" : "/v1/images/generations";
+  return normalizeProviderApiPath(configured, fallback);
+}
+
+function appendQuery(pathname, query) {
+  if (!query || !Object.keys(query).length) return pathname;
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) params.set(key, value);
+  return `${pathname}${pathname.includes("?") ? "&" : "?"}${params.toString()}`;
+}
+
+function getByPath(source, pathValue) {
+  if (!pathValue) return source;
+  return String(pathValue).split(".").filter(Boolean).reduce((current, key) => {
+    if (current == null) return undefined;
+    if (/^\d+$/.test(key) && Array.isArray(current)) return current[Number(key)];
+    if (typeof current === "object") return current[key];
+    return undefined;
+  }, source);
+}
+
+function getAllByPath(source, pathValue) {
+  if (!pathValue) return [source];
+  let current = [source];
+  for (const key of String(pathValue).split(".").filter(Boolean)) {
+    const next = [];
+    for (const item of current) {
+      if (item == null) continue;
+      if (key === "*") {
+        if (Array.isArray(item)) next.push(...item);
+        else if (typeof item === "object") next.push(...Object.values(item));
+        continue;
+      }
+      if (/^\d+$/.test(key) && Array.isArray(item)) {
+        next.push(item[Number(key)]);
+        continue;
+      }
+      if (typeof item === "object") next.push(item[key]);
+    }
+    current = next;
+  }
+  return current.flatMap((item) => Array.isArray(item) ? item : [item]).filter((item) => item != null);
+}
+
+function resolveTemplateValue(value, context) {
+  if (typeof value === "string" && value.startsWith("$")) return getByPath(context, value.slice(1));
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => resolveTemplateValue(item, context))
+      .filter((item) => item !== undefined && item !== null && (!Array.isArray(item) || item.length > 0));
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value)
+      .map(([key, item]) => [key, resolveTemplateValue(item, context)])
+      .filter(([, item]) => item !== undefined && item !== null && (!Array.isArray(item) || item.length > 0));
+    return Object.fromEntries(entries);
+  }
+  return value;
+}
+
+function renderManifestQuery(query, context) {
+  if (!query) return undefined;
+  const entries = Object.entries(query)
+    .map(([key, value]) => [key, resolveTemplateValue(value, context)])
+    .filter(([, value]) => value !== undefined && value !== null && String(value) !== "")
+    .map(([key, value]) => [key, String(value)]);
+  return entries.length ? Object.fromEntries(entries) : undefined;
+}
+
+function imageApiRequestContext({ prompt, inputImages = [], size, quality, outputFormat = "png", n = 1 }, source) {
+  return {
+    profile: {
+      model: config.imageModel,
+      baseUrl: source.baseUrl,
+      provider: source.kind || "custom"
+    },
+    prompt: imagePromptWithRewriteGuard(prompt),
+    params: {
+      size,
+      quality: normalizeImageToolQuality(quality),
+      output_format: outputFormat,
+      output_compression: null,
+      moderation: "auto",
+      n
+    },
+    inputImages: {
+      dataUrls: inputImages.map((image) => image.dataUrl).filter(Boolean),
+      count: inputImages.filter((image) => image?.dataUrl).length
+    },
+    mask: {
+      dataUrl: ""
+    }
   };
-  return tryImageProviderPool((source) => openaiImagesGenerationFromSource(payload, { timeoutMs: 420000, source }));
 }
 
-async function openaiImagesGenerationFromSource(payload, { timeoutMs = 420000, source } = {}) {
+async function createManifestMultipartBody(mapping, context) {
+  const formData = new FormData();
+  const body = resolveTemplateValue(mapping.body || {}, context);
+  if (body && typeof body === "object" && !Array.isArray(body)) {
+    for (const [key, value] of Object.entries(body)) {
+      if (value === undefined || value === null) continue;
+      if (Array.isArray(value)) {
+        for (const item of value) formData.append(key, String(item));
+      } else {
+        formData.append(key, String(value));
+      }
+    }
+  }
+
+  const inputDataUrls = context.inputImages?.dataUrls || [];
+  for (const file of mapping.files || []) {
+    if (file.source === "inputImages") {
+      for (let index = 0; index < inputDataUrls.length; index += 1) {
+        const blob = imageDataUrlToBlob(inputDataUrls[index]);
+        const ext = imageExtensionFromMime(blob.type);
+        formData.append(file.field, blob, `input-${index + 1}.${ext}`);
+      }
+    } else if (file.source === "mask" && context.mask?.dataUrl) {
+      const blob = imageDataUrlToBlob(context.mask.dataUrl);
+      formData.append(file.field, blob, "mask.png");
+    }
+  }
+  return formData;
+}
+
+async function fetchImageApiJson({ source, mapping, context, timeoutMs, defaultPayload = null, defaultPath = "" }) {
   if (!source.apiKey) {
     const error = new Error("Missing image provider API key");
     error.status = 503;
     throw error;
   }
 
+  const method = normalizeRequestMethod(mapping?.method, "POST");
+  const contentType = normalizeContentType(mapping?.contentType, "json");
+  const pathname = appendQuery(
+    normalizeProviderApiPath(mapping?.path, defaultPath || providerImageApiPath(source, "generation")),
+    renderManifestQuery(mapping?.query, context)
+  );
+  const headers = { authorization: `Bearer ${source.apiKey}` };
+  let body;
+  if (method !== "GET") {
+    if (contentType === "multipart") {
+      body = await createManifestMultipartBody(mapping, context);
+    } else {
+      headers["content-type"] = "application/json";
+      body = JSON.stringify(mapping ? resolveTemplateValue(mapping.body || {}, context) : defaultPayload);
+    }
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(providerUrl(source, "/v1/images/generations"), {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${source.apiKey}`,
-        "content-type": "application/json"
-      },
-      body: JSON.stringify(payload),
+    const response = await fetch(providerUrl(source, pathname), {
+      method,
+      headers,
+      body,
+      cache: "no-store",
       signal: controller.signal
     });
 
     if (!response.ok) {
       const errorBody = await safeJsonResponse(response);
-      const message = errorBody?.error?.message || errorBody?.message || response.statusText || "Image generation failed";
+      const message = errorBody?.error?.message || errorBody?.message || response.statusText || "Image API request failed";
       const error = new Error(message);
       error.status = response.status;
       error.details = errorBody;
       throw error;
     }
-
-    return {
-      buffer: await imageBufferFromModelBody(await response.json()),
-      thinking: ""
-    };
+    const payload = await response.json();
+    const taskId = mapping?.taskIdPath ? getByPath(payload, mapping.taskIdPath) : "";
+    if (taskId && source.providerManifest?.poll) {
+      return pollManifestImageTask(source, source.providerManifest.poll, String(taskId), controller.signal);
+    }
+    return payload;
   } finally {
     clearTimeout(timer);
   }
+}
+
+function manifestTaskState(payload, poll) {
+  const status = getByPath(payload, poll.statusPath);
+  const value = typeof status === "string" ? status : String(status ?? "");
+  if (poll.successValues.includes(value)) return "success";
+  if (poll.failureValues.includes(value)) return "failure";
+  return "pending";
+}
+
+function buildManifestTaskPath(pathname, taskId) {
+  return pathname
+    .replace(/\{task_id\}/g, encodeURIComponent(taskId))
+    .replace(/\{taskId\}/g, encodeURIComponent(taskId));
+}
+
+async function pollManifestImageTask(source, poll, taskId, signal) {
+  const deadline = Date.now() + 420000;
+  let first = true;
+  while (Date.now() < deadline) {
+    if (!first) await sleep((poll.intervalSeconds || 5) * 1000);
+    first = false;
+    const pathname = appendQuery(buildManifestTaskPath(poll.path, taskId), poll.query);
+    const response = await fetch(providerUrl(source, pathname), {
+      method: normalizeRequestMethod(poll.method, "GET"),
+      headers: { authorization: `Bearer ${source.apiKey}` },
+      cache: "no-store",
+      signal
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(payload?.error?.message || payload?.message || response.statusText || "Image task polling failed");
+      error.status = response.status;
+      error.details = payload;
+      throw error;
+    }
+    const state = manifestTaskState(payload, poll);
+    if (state === "success") return payload;
+    if (state === "failure") {
+      const detail = poll.errorPath ? getByPath(payload, poll.errorPath) : "";
+      const error = new Error(String(detail || "Image task failed"));
+      error.status = 502;
+      error.details = payload;
+      throw error;
+    }
+  }
+  const error = new Error("Image task polling timed out");
+  error.status = 504;
+  throw error;
+}
+
+async function openaiImagesGenerationDirect({ prompt, size, quality }) {
+  return openaiCompatibleImagesDirect({ prompt, inputImages: [], size, quality });
+}
+
+async function openaiCompatibleImagesDirect({ prompt, inputImages = [], size, quality }) {
+  return tryImageProviderPool((source) => openaiCompatibleImagesFromSource({
+    prompt,
+    inputImages,
+    size,
+    quality
+  }, { timeoutMs: 420000, source }));
+}
+
+async function openaiCompatibleImagesFromSource({ prompt, inputImages = [], size, quality }, { timeoutMs = 420000, source } = {}) {
+  const validInputImages = inputImages.filter((image) => image?.dataUrl);
+  if (validInputImages.length) {
+    return openaiImagesEditFromSource({ prompt, inputImages: validInputImages, size, quality }, { timeoutMs, source });
+  }
+
+  const context = imageApiRequestContext({ prompt, inputImages: [], size, quality }, source);
+  const payload = {
+    model: config.imageModel,
+    prompt: context.prompt,
+    n: 1,
+    size,
+    quality: context.params.quality,
+    moderation: "auto",
+    output_format: "png"
+  };
+  return openaiImagesGenerationFromSource(payload, { timeoutMs, source, context });
+}
+
+async function openaiImagesGenerationFromSource(payload, { timeoutMs = 420000, source, context = null } = {}) {
+  const mapping = source.providerManifest?.submit || null;
+  const body = await fetchImageApiJson({
+    source,
+    mapping,
+    context: context || imageApiRequestContext({
+      prompt: payload.prompt,
+      inputImages: [],
+      size: payload.size,
+      quality: payload.quality,
+      outputFormat: payload.output_format || "png",
+      n: payload.n || 1
+    }, source),
+    timeoutMs,
+    defaultPayload: payload,
+    defaultPath: providerImageApiPath(source, "generation")
+  });
+  const resultMapping = mapping?.taskIdPath && source.providerManifest?.poll ? source.providerManifest.poll.result : mapping?.result;
+  const result = await imageResultFromModelBody(body, { source, mapping: resultMapping, fallbackMime: "image/png" });
+  return {
+    ...result,
+    thinking: "",
+    imageApi: mapping ? "custom-images" : "images"
+  };
+}
+
+async function openaiImagesEditFromSource({ prompt, inputImages, size, quality }, { timeoutMs = 420000, source } = {}) {
+  const context = imageApiRequestContext({ prompt, inputImages, size, quality }, source);
+  const mapping = source.providerManifest?.editSubmit || null;
+  const fallbackMapping = mapping || {
+    path: providerImageApiPath(source, "edit"),
+    method: "POST",
+    contentType: "multipart",
+    body: defaultImageGenerationBodyTemplate,
+    files: defaultImageEditFiles,
+    result: defaultImageResultMapping
+  };
+  const body = await fetchImageApiJson({
+    source,
+    mapping: fallbackMapping,
+    context,
+    timeoutMs,
+    defaultPath: providerImageApiPath(source, "edit")
+  });
+  const resultMapping = fallbackMapping.taskIdPath && source.providerManifest?.poll ? source.providerManifest.poll.result : fallbackMapping.result;
+  const result = await imageResultFromModelBody(body, { source, mapping: resultMapping, fallbackMime: "image/png" });
+  return {
+    ...result,
+    thinking: "",
+    imageApi: mapping ? "custom-images-edit" : "images-edit"
+  };
+}
+
+function imageDataUrlToBlob(dataUrl) {
+  const match = String(dataUrl || "").match(/^data:([^;,]+)?(;base64)?,([\s\S]*)$/);
+  if (!match) {
+    const error = new Error("Invalid image data URL");
+    error.status = 400;
+    throw error;
+  }
+
+  const mime = match[1] || "image/png";
+  const isBase64 = Boolean(match[2]);
+  const payload = match[3] || "";
+  const buffer = isBase64
+    ? Buffer.from(payload.replace(/\s/g, ""), "base64")
+    : Buffer.from(decodeURIComponent(payload));
+  return new Blob([buffer], { type: mime });
+}
+
+function imageExtensionFromMime(mime = "") {
+  const normalized = String(mime || "").toLowerCase();
+  if (normalized.includes("jpeg") || normalized.includes("jpg")) return "jpg";
+  if (normalized.includes("webp")) return "webp";
+  if (normalized.includes("gif")) return "gif";
+  return "png";
 }
 
 async function safeJsonResponse(response) {
@@ -1141,17 +1895,131 @@ async function safeJsonResponse(response) {
 }
 
 async function imageBufferFromModelBody(body) {
+  return (await imageResultFromModelBody(body)).buffer;
+}
+
+async function imageResultFromModelBody(body, { mapping = null, fallbackMime = "image/png" } = {}) {
+  const mappedResult = await mappedImageResultFromBody(body, mapping || defaultImageResultMapping, fallbackMime);
+  if (mappedResult) {
+    return {
+      ...mappedResult,
+      revisedPrompt: findRevisedPrompt(body),
+      actualParams: mergeActualImageParams(pickActualImageParams(body), pickActualImageParams(firstImageDataItem(body)))
+    };
+  }
+
   const imageB64 = findImageString(body);
-  if (imageB64) return Buffer.from(stripDataUrlPrefix(imageB64), "base64");
+  if (imageB64) {
+    return {
+      buffer: bufferFromImageValue(imageB64),
+      imageB64: stripDataUrlPrefix(imageB64),
+      revisedPrompt: findRevisedPrompt(body),
+      actualParams: mergeActualImageParams(pickActualImageParams(body), pickActualImageParams(firstImageDataItem(body)))
+    };
+  }
 
   const imageUrl = findImageUrl(body);
   if (imageUrl) {
-    const response = await fetch(imageUrl);
-    if (!response.ok) throw new Error(`Image URL download failed: ${response.status}`);
-    return Buffer.from(await response.arrayBuffer());
+    return {
+      buffer: await downloadImageUrlBuffer(imageUrl),
+      imageUrl,
+      revisedPrompt: findRevisedPrompt(body),
+      actualParams: mergeActualImageParams(pickActualImageParams(body), pickActualImageParams(firstImageDataItem(body)))
+    };
   }
 
   throw new Error("Image model returned no image data");
+}
+
+async function mappedImageResultFromBody(body, mapping, fallbackMime) {
+  for (const pathValue of mapping?.b64JsonPaths || []) {
+    for (const value of getAllByPath(body, pathValue)) {
+      if (typeof value === "string" && value.trim()) {
+        return {
+          buffer: bufferFromImageValue(value, fallbackMime),
+          imageB64: stripDataUrlPrefix(value)
+        };
+      }
+    }
+  }
+
+  for (const pathValue of mapping?.imageUrlPaths || []) {
+    for (const value of getAllByPath(body, pathValue)) {
+      if (typeof value === "string" && value.trim()) {
+        if (value.startsWith("data:")) {
+          return {
+            buffer: bufferFromImageValue(value, fallbackMime),
+            imageUrl: value
+          };
+        }
+        if (/^https?:\/\//i.test(value)) {
+          return {
+            buffer: await downloadImageUrlBuffer(value),
+            imageUrl: value
+          };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function bufferFromImageValue(value, fallbackMime = "image/png") {
+  const text = String(value || "");
+  if (!text.startsWith("data:")) return Buffer.from(stripDataUrlPrefix(text), "base64");
+  const match = text.match(/^data:([^;,]+)?(;base64)?,([\s\S]*)$/);
+  if (!match) return Buffer.from(stripDataUrlPrefix(text), "base64");
+  const payload = match[3] || "";
+  if (match[2]) return Buffer.from(payload.replace(/\s/g, ""), "base64");
+  return Buffer.from(decodeURIComponent(payload));
+}
+
+async function downloadImageUrlBuffer(url) {
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) throw new Error(`Image URL download failed: ${response.status}`);
+  return Buffer.from(await response.arrayBuffer());
+}
+
+function firstImageDataItem(body) {
+  if (Array.isArray(body?.data) && body.data.length) return body.data[0];
+  if (Array.isArray(body?.output)) return body.output.find((item) => item?.type === "image_generation_call") || null;
+  return null;
+}
+
+function pickActualImageParams(source) {
+  if (!source || typeof source !== "object") return undefined;
+  const record = source;
+  const actual = {};
+  if (typeof record.size === "string") actual.size = record.size;
+  if (["auto", "low", "medium", "high"].includes(record.quality)) actual.quality = record.quality;
+  if (["png", "jpeg", "webp"].includes(record.output_format)) actual.output_format = record.output_format;
+  if (typeof record.output_compression === "number") actual.output_compression = record.output_compression;
+  if (["auto", "low"].includes(record.moderation)) actual.moderation = record.moderation;
+  if (typeof record.n === "number") actual.n = record.n;
+  return Object.keys(actual).length ? actual : undefined;
+}
+
+function mergeActualImageParams(...sources) {
+  const merged = Object.assign({}, ...sources.filter((source) => source && Object.keys(source).length));
+  return Object.keys(merged).length ? merged : undefined;
+}
+
+function findRevisedPrompt(value) {
+  if (!value || typeof value !== "object") return "";
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findRevisedPrompt(item);
+      if (found) return found;
+    }
+    return "";
+  }
+  if (typeof value.revised_prompt === "string" && value.revised_prompt.trim()) return value.revised_prompt.trim();
+  if (typeof value.revisedPrompt === "string" && value.revisedPrompt.trim()) return value.revisedPrompt.trim();
+  for (const item of Object.values(value)) {
+    const found = findRevisedPrompt(item);
+    if (found) return found;
+  }
+  return "";
 }
 
 function parseImageFromSseFrame(frame) {
@@ -1485,7 +2353,7 @@ async function generateImage(body) {
     quality: body.quality || "low",
     title: direction.name || brief.projectName || "space concept",
     mode: "plan-render",
-    useReasoning: body.thinkingEnabled !== false
+    useReasoning: body.thinkingEnabled === true
   });
 
   return saveGeneratedImage({
@@ -1508,6 +2376,9 @@ async function generateImage(body) {
       endpoint: generated.endpoint,
       attempt: generated.attempt,
       attempts: generated.attempts,
+      imageApi: generated.imageApi,
+      actualParams: generated.actualParams,
+      revisedPrompt: generated.revisedPrompt,
       workflowId: body.workflowId || null,
       parentImageId: body.parentImageId || null,
       stepMode: body.stepMode || "plan-render",
@@ -1522,6 +2393,7 @@ async function renderFromUploadedImages(body) {
     "plan-axonometric",
     "plan-render",
     "floorplan",
+    "viewpoint",
     "photo",
     "whitemodel",
     "sketch",
@@ -1553,6 +2425,7 @@ async function renderFromUploadedImages(body) {
     brief,
     intent,
     selection: body.selection,
+    viewpoint: body.viewpoint,
     referenceCount: references.length,
     references
   });
@@ -1567,7 +2440,7 @@ async function renderFromUploadedImages(body) {
     quality: body.quality || "low",
     title: `${mode} render`,
     mode,
-    useReasoning: body.thinkingEnabled !== false
+    useReasoning: body.thinkingEnabled === true
   });
 
   return saveGeneratedImage({
@@ -1587,6 +2460,7 @@ async function renderFromUploadedImages(body) {
       prompt: generated.prompt || prompt,
       thinking: generated.thinking,
       selection: body.selection || null,
+      viewpoint: body.viewpoint || null,
       input_count: inputCount,
       created_at: new Date().toISOString()
     },
@@ -1597,10 +2471,14 @@ async function renderFromUploadedImages(body) {
       endpoint: generated.endpoint,
       attempt: generated.attempt,
       attempts: generated.attempts,
+      imageApi: generated.imageApi,
+      actualParams: generated.actualParams,
+      revisedPrompt: generated.revisedPrompt,
       workflowId: body.workflowId || null,
       parentImageId: body.parentImageId || null,
       stepMode: body.stepMode || mode,
-      inputImageType: body.inputImageType || null
+      inputImageType: body.inputImageType || null,
+      viewpoint: body.viewpoint || null
     }
   });
 }
@@ -1614,6 +2492,7 @@ function firstInputLabel(mode) {
     photo: "site photo",
     whitemodel: "white model screenshot",
     sketch: "concept sketch",
+    viewpoint: "spatial source image with a marked camera standing point",
     cadrender: "CAD drawing",
     upscale: "image to enhance",
     detail: "image to enrich",
@@ -1656,6 +2535,10 @@ function designSeriesContextText(context = {}) {
     context.intent,
     context.userPrompt,
     analysis.project_type,
+    analysis.project_type_key,
+    analysis.project_type_visual,
+    ...(Array.isArray(analysis.project_type_evidence) ? analysis.project_type_evidence : []),
+    ...(Array.isArray(analysis.context_conflicts) ? analysis.context_conflicts : []),
     analysis.title,
     analysis.summary,
     analysis.series_strategy,
@@ -1679,7 +2562,56 @@ function designSeriesContextText(context = {}) {
   ].filter(Boolean).join(" ").toLowerCase();
 }
 
+function normalizeDesignSeriesProjectTypeKey(value = "") {
+  const text = String(value || "").toLowerCase();
+  if (!text) return "";
+  if (/office|workplace|workspace|corporate|办公|办公室|办公空间|企业|工区|工位|开放办公|会议室|董事|专注间|电话间/.test(text)) return "office";
+  if (/hospitality|hotel|homestay|guesthouse|guest house|resort|bnb|b&b|民宿|酒店|旅宿|旅馆|宾馆|客房|套房|度假|泡池/.test(text)) return "hospitality";
+  if (/food|beverage|restaurant|cafe|coffee|bar|bistro|bakery|tearoom|餐饮|餐厅|咖啡|酒吧|茶饮|茶室|烘焙|面包店/.test(text)) return "foodbeverage";
+  if (/retail|shop|store|showroom|display|boutique|pop.?up|零售|店铺|商店|展厅|展示|陈列|品牌空间|体验店/.test(text)) return "retail";
+  if (/residential|apartment|villa|home|living room|bedroom|kitchen|住宅|公寓|别墅|家装|居住|客厅|卧室|主卧|厨房|书房/.test(text)) return "residential";
+  if (/generic|通用/.test(text)) return "generic";
+  return "";
+}
+
+function designSeriesProjectTypeLabel(key = "generic") {
+  const labels = {
+    office: "办公/企业接待",
+    hospitality: "民宿/酒店/度假住宿",
+    foodbeverage: "餐饮/咖啡/酒吧",
+    retail: "零售/展厅/品牌空间",
+    residential: "住宅/居住空间",
+    generic: "通用空间项目"
+  };
+  return labels[key] || labels.generic;
+}
+
+function explicitDesignSeriesProjectType(analysis = {}) {
+  const candidates = [
+    analysis.project_type_visual,
+    analysis.visual_project_type,
+    analysis.detected_visual_project_type,
+    analysis.dominant_project_type,
+    analysis.project_type_key,
+    analysis.project_type
+  ];
+  for (const value of candidates) {
+    const key = normalizeDesignSeriesProjectTypeKey(value);
+    if (key && key !== "generic") {
+      return {
+        key,
+        label: designSeriesProjectTypeLabel(key),
+        score: 120,
+        source: value === analysis.project_type ? "analysis" : "visual-analysis"
+      };
+    }
+  }
+  return null;
+}
+
 function detectDesignSeriesProjectType(context = {}) {
+  const explicit = explicitDesignSeriesProjectType(context.analysis || context);
+  if (explicit) return explicit;
   const text = designSeriesContextText(context);
   const hasOfficeProgramCue = [
     "办公空间", "办公室", "开放办公", "办公大堂", "企业大堂", "企业接待", "企业展厅", "工区", "工位", "办公桌", "会议室", "会议桌", "洽谈室", "董事办公室", "总裁办公室", "专注间", "电话间", "茶水间",
@@ -1719,7 +2651,7 @@ function detectDesignSeriesProjectType(context = {}) {
       keywords: ["住宅", "公寓", "别墅", "家装", "居住", "客厅", "餐厨", "厨房", "卧室", "主卧", "书房", "阳台", "residential", "apartment", "villa", "home", "living room", "bedroom", "kitchen"]
     }
   ];
-  let best = { key: "generic", label: "通用空间项目", score: 0 };
+  let best = { key: "generic", label: designSeriesProjectTypeLabel("generic"), score: 0 };
   for (const definition of definitions) {
     const score = definition.keywords.reduce((total, keyword) => total + (text.includes(keyword.toLowerCase()) ? 1 : 0), 0);
     if (score > best.score) best = { key: definition.key, label: definition.label, score };
@@ -1779,7 +2711,13 @@ function designSeriesProjectTypeGuard(projectType = {}) {
     ].join(" ");
   }
   if (key === "hospitality") {
-    return "PROJECT_TYPE_LOCK: hospitality/homestay/hotel. Guestroom/suite scenes are allowed only when this type is detected or explicitly requested. No people or animals in any generated image.";
+    return [
+      "PROJECT_TYPE_LOCK: hospitality/homestay/hotel.",
+      "Visual evidence override: if the uploaded references show guestrooms, beds, bedside lighting, hotel/homestay lobby, resort lounge, reception for guests, courtyard arrival, bath/spa/soaking tub, breakfast/tea/bar amenity or leisure hospitality atmosphere, classify it as hospitality even if a desk, reading table or work corner is visible.",
+      "Hospitality forbidden content: corporate office, open workstations, office desk rows, task-chair work area, boardroom, corporate meeting room, executive office, phone booth, company pantry, office reception or workplace planning package.",
+      "Allowed hospitality spaces: exterior/arrival, lobby/reception, public guest lounge, tea/dining/bar/breakfast amenity, reading/work activity area for guests, guestroom/suite, bath/spa/support, corridor/stair/detail.",
+      "No people or animals in any generated image."
+    ].join(" ");
   }
   if (key === "residential") {
     return "PROJECT_TYPE_LOCK: residential/home. Bedroom scenes are allowed only when this type is detected or explicitly requested. No people or animals in any generated image.";
@@ -1822,6 +2760,15 @@ function designSeriesPresetAnalysis(body = {}, references = [], { fallbackReason
       styleHint ? `User/style context: ${styleHint}` : ""
     ].filter(Boolean).join(" "),
     project_type: projectType.label,
+    project_type_key: projectType.key,
+    project_type_visual: "",
+    project_type_source: "preset-context",
+    project_type_confidence: projectType.score ? Math.min(0.92, 0.58 + projectType.score * 0.08) : 0.45,
+    project_type_evidence: [
+      "思考模式关闭或分析降级时无法单独读取图像语义，按当前文字上下文和内置项目类型词表锁定。",
+      "生成阶段仍会把参考图作为视觉证据交给 Image Gen，并使用项目类型禁区防止办公/酒店串类。"
+    ],
+    context_conflicts: [],
     scene_allocation_strategy: designSeriesSceneAllocationText(count, context),
     suggested_outputs: roles.map((role) => role.title),
     project_dna: "same project identity, same material family, same lighting philosophy, same furniture era, same craft/detail logic and same render finish",
@@ -1869,35 +2816,56 @@ function designSeriesPresetAnalysis(body = {}, references = [], { fallbackReason
 
 function enforceDesignSeriesProjectType(analysis = {}, context = {}) {
   const detected = detectDesignSeriesProjectType({ ...context, analysis });
-  const count = Math.max(1, Math.min(8, Number(context.seriesCount || context.count || analysis.scene_briefs?.length || 4) || 4));
-  const forbiddenByOffice = /卧室|主卧|客房|套房|酒店房|民宿房|床|床头|卫浴|浴缸|泡池|spa|resort|hotel room|guestroom|suite|bedroom|bathtub|bath|pool/i;
-  if (detected.key !== "office") return analysis;
-  const needsOfficeOverride = String(analysis.project_type || "").toLowerCase().includes("hospitality")
-    || String(analysis.project_type || "").includes("酒店")
-    || String(analysis.project_type || "").includes("民宿")
-    || String(analysis.project_type || "").includes("住宅")
-    || (Array.isArray(analysis.scene_briefs) && analysis.scene_briefs.some((scene) => forbiddenByOffice.test([
-      scene.title,
-      scene.field_type,
-      scene.spatial_role,
-      scene.connects_from,
-      scene.connects_to,
-      scene.camera,
-      scene.must_vary,
-      scene.forbidden_repetition
-    ].filter(Boolean).join(" "))));
-  if (!needsOfficeOverride) {
-    return {
-      ...analysis,
-      project_type: detected.label,
-      scene_allocation_strategy: analysis.scene_allocation_strategy || designSeriesSceneAllocationText(count, context)
-    };
-  }
-  const roles = defaultDesignSeriesSceneRoles(count, { ...context, analysis: { ...analysis, project_type: detected.label } }).slice(0, count);
-  return {
+  const count = designSeriesRequestedCount(context.seriesCount || context.count || analysis.scene_briefs?.length || 4);
+  const sceneTexts = Array.isArray(analysis.scene_briefs)
+    ? analysis.scene_briefs.map((scene) => [
+        scene.title,
+        scene.field_type,
+        scene.spatial_role,
+        scene.connects_from,
+        scene.connects_to,
+        scene.camera,
+        scene.must_vary,
+        scene.forbidden_repetition,
+        ...(Array.isArray(scene.must_repeat) ? scene.must_repeat : [])
+      ].filter(Boolean).join(" ").toLowerCase())
+    : [];
+  const duplicateFields = sceneTexts.some((text, index) => text && sceneTexts.indexOf(text) !== index);
+  const missingFields = sceneTexts.length < count;
+  const forbiddenByType = {
+    office: /卧室|主卧|客房|套房|酒店房|民宿房|床|床头|卫浴|浴缸|泡池|spa|resort|hotel room|guestroom|suite|bedroom|bathtub|bath|pool|homestay/i,
+    hospitality: /开放工区|工位|工位区|办公桌排|企业前台|企业接待|董事办公室|总裁办公室|专注间|电话间|boardroom|corporate office|open workspace|workstations|task chairs|office desk rows|executive office|phone booth|workplace planning/i,
+    residential: /开放工区|工位|企业前台|酒店大堂|民宿大堂|客房套房|泡池|boardroom|corporate office|open workspace|workstations|hotel lobby|guestroom suite/i,
+    foodbeverage: /卧室|主卧|客房|套房|开放工区|工位|董事办公室|bedroom|guestroom|suite|open workspace|workstations|executive office/i,
+    retail: /卧室|主卧|客房|套房|开放工区|工位|酒店套房|bedroom|guestroom|suite|open workspace|workstations/i
+  };
+  const normalizedAnalysisKey = normalizeDesignSeriesProjectTypeKey(analysis.project_type);
+  const analysisConflict = normalizedAnalysisKey
+    && detected.key !== "generic"
+    && normalizedAnalysisKey !== detected.key;
+  const hasForbiddenScenes = Boolean(forbiddenByType[detected.key])
+    && sceneTexts.some((text) => forbiddenByType[detected.key].test(text));
+  const needsOverride = detected.key !== "generic"
+    && (analysisConflict || missingFields || duplicateFields || hasForbiddenScenes);
+  const lockedAnalysis = {
     ...analysis,
     project_type: detected.label,
-    scene_allocation_strategy: designSeriesSceneAllocationText(count, { ...context, analysis: { ...analysis, project_type: detected.label } }),
+    project_type_key: detected.key,
+    project_type_source: detected.source || analysis.project_type_source || "context-detection"
+  };
+  if (!needsOverride) {
+    const roles = defaultDesignSeriesSceneRoles(count, { ...context, analysis: lockedAnalysis }).slice(0, count);
+    return {
+      ...lockedAnalysis,
+      scene_allocation_strategy: analysis.scene_allocation_strategy || designSeriesSceneAllocationText(count, { ...context, analysis: lockedAnalysis }),
+      suggested_outputs: roles.map((role) => role.title),
+      spatial_sequence: roles.map((role) => role.title).join(" -> ")
+    };
+  }
+  const roles = defaultDesignSeriesSceneRoles(count, { ...context, analysis: lockedAnalysis }).slice(0, count);
+  return {
+    ...lockedAnalysis,
+    scene_allocation_strategy: designSeriesSceneAllocationText(count, { ...context, analysis: lockedAnalysis }),
     suggested_outputs: roles.map((role) => role.title),
     spatial_sequence: roles.map((role) => role.title).join(" -> "),
     scene_briefs: roles.map((role, index) => ({
@@ -1905,15 +2873,15 @@ function enforceDesignSeriesProjectType(analysis = {}, context = {}) {
       index: index + 1,
       title: role.title,
       must_repeat: [
-        "same office material family",
-        "same workplace lighting philosophy",
-        "same corporate furniture/object era",
+        `same ${detected.label} material family`,
+        `same ${detected.label} lighting philosophy`,
+        "same project furniture/object era",
         "same render finish",
         "no people or animals"
       ],
       forbidden_repetition: [
         role.forbidden_repetition,
-        "No bedrooms, guestrooms, hotel suites, beds, bath/spa/pool, residential private rooms, people, animals or pets."
+        designSeriesProjectTypeGuard(detected)
       ].filter(Boolean).join(" ")
     }))
   };
@@ -1946,13 +2914,20 @@ async function analyzeDesignSeriesReferences(body) {
         "Reference extraction must be precise: extract visible brand elements, color elements, material system, spatial organization, lighting atmosphere, composition rhythm, furniture/workstation/object language, ceiling/wall/floor logic and crafted details.",
         "Thinking-mode emphasis: when reasoning is enabled, keep more of the original reference visual DNA in the project bible and scene briefs, but still extrapolate new connected spaces instead of copying one angle.",
         "Generation settings rule: do not hardcode horizontal, 4:3, 4K, 8 images or any fixed output setting in the analysis or image prompts. Output count, aspect ratio, size/resolution and quality must follow the current UI/API generation settings.",
-        "Project-type classification is mandatory and must be based on visual evidence plus user context. If references show office/workplace cues such as desks, workstations, office chairs, meeting tables, glass partitions, reception desk, corporate lobby, collaboration areas or pantry, project_type must be office/workplace/corporate, not hospitality.",
+        "Project-type classification is mandatory and has two stages.",
+        "Stage 1 IMAGE-ONLY CLASSIFICATION: set project_type_visual by looking only at the uploaded reference images. Ignore previous templates, hidden prompts, brief text and user context for this field.",
+        "Stage 2 CONTEXT MERGE: set project_type after comparing project_type_visual with the brief/user context. If they conflict, visual evidence wins unless the user explicitly writes a different project type in the latest user prompt.",
+        "If references show office/workplace cues such as desk rows, workstations, task chairs, conference tables, glass partitions, corporate reception, meeting rooms, collaboration areas or company pantry, project_type_visual must be office/workplace/corporate, not hospitality.",
+        "If references show hotel/homestay/hospitality cues such as guestrooms, beds, bedside lighting, suite layout, guest lobby, resort lounge, courtyard arrival, bath/spa/soaking tub, breakfast/tea/bar amenity or leisure hospitality staging, project_type_visual must be hospitality/homestay/hotel, not office, even if a writing desk or reading/work corner is visible.",
+        "If project_type_visual conflicts with stale UI templates or old brief text, list that conflict in context_conflicts and keep scene_briefs aligned to project_type_visual.",
         designSeriesSceneAllocationText(body.seriesCount || body.count || 4, {
           brief: body.brief || {},
           intent: body.intent || "",
           userPrompt: body.userPrompt || ""
         }),
         "Scene allocation rule: use the detected project type and requested output count to choose the strongest set of rooms/functions. Do not leave scene_briefs as generic labels when the project type implies specific spaces.",
+        "Unique-scene rule: each scene_brief must represent a different room/function and each scheduled role may appear once only. If image 1 is reception/front desk, no later image may be another reception/front desk. If image 2 is open workspace, no later image may be another open workspace.",
+        "Office count schedule rule: for 4 office images use exactly one each from reception, open workspace/collaboration, meeting/focus, pantry/corridor/detail. For 6 office images use exactly one each from reception, open workspace, collaboration/project discussion, meeting, private/focus room, pantry/corridor/detail. For 8 office images use reception, open workspace, collaboration, meeting, private office, focus room, pantry/lounge, corridor/detail.",
         "Occupancy rule: every scene must be unoccupied. Do not include people, staff, guests, clients, workers, silhouettes, body parts, faces, hands, crowds, animals, pets or lifestyle photography staging.",
         "Office hard rule: when project_type is office/workplace/corporate, scene_briefs must not include bedroom, master bedroom, guestroom, suite, hotel room, bath, spa, soaking tub, resort, homestay or residential private rooms. Use reception, open workspace, collaboration, meeting, private office/focus, pantry/lounge, corridor/support and detail instead.",
         "For hotel/homestay/hospitality, a 4-image set should normally cover lobby/arrival, public living/lounge, master guestroom/suite, and a work/tea/dining/detail support scene. A 6-image set should add exterior/arrival and bath/spa/support. An 8-image set should also cover tea/dining/bar and work/reading/activity as separate scenes.",
@@ -1987,6 +2962,12 @@ async function analyzeDesignSeriesReferences(body) {
             series_strategy: "string",
             suggested_outputs: ["4 to 8 strings"],
             project_type: "string, detected project category such as hospitality/residential/office/retail/foodbeverage/generic",
+            project_type_key: "one of office/hospitality/residential/retail/foodbeverage/generic",
+            project_type_visual: "string, image-only project category based only on uploaded references",
+            project_type_source: "string, visual-evidence/context/user-explicit/fallback",
+            project_type_confidence: "number from 0 to 1",
+            project_type_evidence: ["3 to 6 visible cues from the references that justify project_type_visual"],
+            context_conflicts: ["stale template or brief clues that conflict with the image-only classification, empty if none"],
             scene_allocation_strategy: "string, count-aware room/function schedule for the requested output count",
             project_dna: "string describing the shared project identity across every output",
             spatial_sequence: "string describing how spaces connect from exterior/entry/public/private/detail",
@@ -2061,6 +3042,12 @@ function normalizeDesignSeriesAnalysis(value, references = []) {
     suggested_outputs: asStringArray(value.suggested_outputs).slice(0, 8),
     project_dna: String(value.project_dna || ""),
     project_type: String(value.project_type || value.projectType || ""),
+    project_type_key: normalizeDesignSeriesProjectTypeKey(value.project_type_key || value.projectTypeKey || value.project_type || value.projectType || value.project_type_visual || value.visual_project_type),
+    project_type_visual: String(value.project_type_visual || value.visual_project_type || value.detected_visual_project_type || ""),
+    project_type_source: String(value.project_type_source || value.projectTypeSource || ""),
+    project_type_confidence: Math.max(0, Math.min(1, Number(value.project_type_confidence ?? value.projectTypeConfidence ?? 0) || 0)),
+    project_type_evidence: asStringArray(value.project_type_evidence || value.projectTypeEvidence).slice(0, 8),
+    context_conflicts: asStringArray(value.context_conflicts || value.contextConflicts).slice(0, 8),
     scene_allocation_strategy: String(value.scene_allocation_strategy || value.sceneAllocationStrategy || ""),
     spatial_sequence: String(value.spatial_sequence || ""),
     continuity_rules: asStringArray(value.continuity_rules).slice(0, 8),
@@ -2085,6 +3072,10 @@ function normalizeDesignSeriesAnalysis(value, references = []) {
     fallback_reason: String(value.fallback_reason || value.fallbackReason || ""),
     fallback: Boolean(value.fallback || value.fallback_reason || value.fallbackReason)
   };
+}
+
+function designSeriesRequestedCount(count = 4) {
+  return Math.max(1, Math.min(8, Number(count) || 4));
 }
 
 function defaultDesignSeriesSceneRoles(count = 4, context = {}) {
@@ -2252,15 +3243,49 @@ function defaultDesignSeriesSceneRoles(count = 4, context = {}) {
   return table[planCount] || table[4];
 }
 
+function designSeriesLockedSchedule(count = 4, analysis = {}) {
+  const requestedCount = designSeriesRequestedCount(count);
+  return defaultDesignSeriesSceneRoles(requestedCount, { analysis }).slice(0, requestedCount);
+}
+
+function designSeriesScheduleLine(role, index) {
+  return `${index + 1}. ${role.title} [${role.field_type}] - ${role.spatial_role}`;
+}
+
+function designSeriesScheduleText(count = 4, analysis = {}) {
+  return designSeriesLockedSchedule(count, analysis).map(designSeriesScheduleLine).join(" | ");
+}
+
+function designSeriesOtherSceneTitles(index = 1, count = 4, analysis = {}, direction = "previous") {
+  return designSeriesLockedSchedule(count, analysis)
+    .filter((_, itemIndex) => {
+      const ordinal = itemIndex + 1;
+      if (direction === "previous") return ordinal < index;
+      if (direction === "future") return ordinal > index;
+      return ordinal !== index;
+    })
+    .map((role) => role.title);
+}
+
 function designSeriesSceneBrief(analysis = {}, index = 1, count = 4) {
   const fallbackContext = { analysis };
-  const fallback = defaultDesignSeriesSceneRoles(count, fallbackContext)[Math.max(0, index - 1)] || defaultDesignSeriesSceneRoles(4, fallbackContext)[0];
+  const schedule = designSeriesLockedSchedule(count, analysis);
+  const fallback = schedule[Math.max(0, index - 1)] || defaultDesignSeriesSceneRoles(4, fallbackContext)[0];
   const scene = Array.isArray(analysis.scene_briefs)
     ? analysis.scene_briefs.find((item) => Number(item.index) === Number(index)) || analysis.scene_briefs[index - 1]
     : null;
   const sceneRole = scene?.spatial_role ? `Reference-informed expansion: ${scene.spatial_role}` : "";
   const sceneCamera = scene?.camera ? `Reference-informed camera suggestion: ${scene.camera}` : "";
   const sceneVary = scene?.must_vary ? `Reference-informed variation: ${scene.must_vary}` : "";
+  const otherSceneTitles = designSeriesOtherSceneTitles(index, count, analysis, "all");
+  const previousSceneTitles = designSeriesOtherSceneTitles(index, count, analysis, "previous");
+  const baseForbidden = [
+    fallback.forbidden_repetition,
+    scene?.forbidden_repetition,
+    otherSceneTitles.length ? `Do not generate these other scheduled spaces for image ${index}: ${otherSceneTitles.join(", ")}.` : "",
+    previousSceneTitles.length ? `Already covered earlier in this series and forbidden to repeat now: ${previousSceneTitles.join(", ")}.` : "",
+    "Each scheduled space role may appear only once in the whole design series."
+  ].filter(Boolean).join(" ");
   return {
     ...fallback,
     ...(scene || {}),
@@ -2273,14 +3298,22 @@ function designSeriesSceneBrief(analysis = {}, index = 1, count = 4) {
     camera: [fallback.camera, sceneCamera].filter(Boolean).join("; "),
     must_repeat: Array.isArray(scene?.must_repeat) && scene.must_repeat.length ? scene.must_repeat : [],
     must_vary: [fallback.must_vary, sceneVary].filter(Boolean).join("; "),
-    forbidden_repetition: scene?.forbidden_repetition || "Do not repeat the same room, same camera position, same hero composition, same furniture grouping or same single-angle style variation from other images."
+    forbidden_repetition: baseForbidden || "Do not repeat the same room, same camera position, same hero composition, same furniture grouping or same single-angle style variation from other images."
   };
 }
 
 function designSeriesContinuityContract({ analysis = {}, index = 1, count = 4, sceneBrief = {} } = {}) {
+  const schedule = designSeriesScheduleText(count, analysis);
+  const previousScenes = designSeriesOtherSceneTitles(index, count, analysis, "previous");
+  const otherScenes = designSeriesOtherSceneTitles(index, count, analysis, "all");
   return [
     "DESIGN_SERIES_CONTINUITY_CONTRACT:",
     `- This is image ${index} of ${count} in one deep spatial project series, not an isolated render and not a style variation of one angle.`,
+    `- LOCKED_UNIQUE_SCENE_SCHEDULE: ${schedule}.`,
+    "- Unique-scene rule: each scheduled room/function appears once only. Do not make two images of reception, two images of open workspace, two meeting rooms, or repeated variants of the same area unless the schedule explicitly says so.",
+    `- CURRENT_IMAGE_ONLY: generate image ${index}/${count} as "${sceneBrief.title || ""}". Do not borrow the spatial role from image 1, image 2, the reference image, or any previous output.`,
+    previousScenes.length ? `- ALREADY_COVERED_AND_FORBIDDEN_NOW: ${previousScenes.join("; ")}.` : "- ALREADY_COVERED_AND_FORBIDDEN_NOW: none.",
+    otherScenes.length ? `- OTHER_SCHEDULED_SCENES_NOT_FOR_THIS_IMAGE: ${otherScenes.join("; ")}.` : "",
     "- Deep series definition: unified style across different fields, viewpoints, angles and functional zones. Same design DNA, different spatial role.",
     "- Project-planning rule: infer the whole project from the references, then show the current most useful scene in that project according to the requested count.",
     "- UI settings rule: keep output count, aspect ratio, resolution/size and quality exactly as provided by the current UI/API request; do not add fixed horizontal, 4:3, 4K or 8-image requirements.",
@@ -2305,6 +3338,8 @@ function designSeriesFinalPromptLock({ index = 1, count = 4, sceneBrief = {} } =
   return [
     "DESIGN_SERIES_IMAGE_LOCK:",
     `- This final prompt is for image ${index}/${count}. The generated image must follow this exact scene role and field category.`,
+    `- CURRENT_IMAGE_ONLY: generate only "${sceneBrief.title || "this scheduled scene"}".`,
+    "- One schedule item, one image: do not generate another scheduled scene in this slot, and do not repeat any earlier scene role.",
     "- Respect current generation settings for aspect ratio, image size/resolution, quality and total count. Do not inject horizontal, 4:3, 4K or 8-image constraints unless they came from the current request.",
     `- Scene role: ${sceneBrief.title || "series scene"} / ${sceneBrief.spatial_role || "one distinct space in the same project"}.`,
     `- Field category: ${sceneBrief.field_type || "distinct functional zone"}.`,
@@ -2327,8 +3362,15 @@ async function generateDesignSeries(body) {
     throw error;
   }
 
-  const useReasoning = body.thinkingEnabled !== false;
-  const analysis = body.analysis?.image_prompt
+  const useReasoning = body.thinkingEnabled === true;
+  const promptFusionEnabled = body.promptFusionEnabled !== false;
+  const hasProvidedAnalysis = body.analysis && (
+    body.analysis.image_prompt
+    || body.analysis.project_dna
+    || body.analysis.spatial_sequence
+    || (Array.isArray(body.analysis.scene_briefs) && body.analysis.scene_briefs.length)
+  );
+  const analysis = hasProvidedAnalysis
     ? enforceDesignSeriesProjectType(normalizeDesignSeriesAnalysis(body.analysis, references), {
         brief: body.brief || {},
         intent: body.intent || "",
@@ -2345,6 +3387,9 @@ async function generateDesignSeries(body) {
   const seriesIndex = Math.max(1, Math.min(seriesCount, Number(body.seriesIndex || 1) || 1));
   const sceneBrief = designSeriesSceneBrief(analysis, seriesIndex, seriesCount);
   const detectedProjectType = detectDesignSeriesProjectType({ brief, intent: body.intent || "", userPrompt: body.userPrompt || "", analysis });
+  const lockedSchedule = designSeriesScheduleText(seriesCount, analysis);
+  const previousSceneTitles = designSeriesOtherSceneTitles(seriesIndex, seriesCount, analysis, "previous");
+  const otherSceneTitles = designSeriesOtherSceneTitles(seriesIndex, seriesCount, analysis, "all");
   const prompt = [
     gptImage2PromptFusionGuide({
       mode: "designseries",
@@ -2368,6 +3413,11 @@ async function generateDesignSeries(body) {
     "",
     designSeriesContinuityContract({ analysis, index: seriesIndex, count: seriesCount, sceneBrief }),
     "",
+    `LOCKED_SERIES_SCHEDULE: ${lockedSchedule}`,
+    `CURRENT_IMAGE_ONLY: image ${seriesIndex}/${seriesCount} must be "${sceneBrief.title || ""}" and must not be a repeat of any other scheduled space.`,
+    previousSceneTitles.length ? `ALREADY_COVERED_SCENES_FORBIDDEN_NOW: ${previousSceneTitles.join("; ")}` : "",
+    otherSceneTitles.length ? `DO_NOT_GENERATE_OTHER_SCHEDULED_SCENES_IN_THIS_SLOT: ${otherSceneTitles.join("; ")}` : "",
+    "",
     designSeriesProjectTypeGuard(detectedProjectType),
     "",
     analysis.image_prompt || "Generate a cohesive architecture/interior design series image.",
@@ -2383,6 +3433,10 @@ async function generateDesignSeries(body) {
     `This request represents image ${seriesIndex}/${seriesCount}; follow the scene role and spatial continuity contract above more strongly than generic style words.`,
     "Do not create a multi-panel presentation board, collage, contact sheet, moodboard, split-screen layout, captions or text unless the user explicitly asks for that.",
     "Use the uploaded reference images as design language references, not as content to copy exactly.",
+    `Image-only project type: ${analysis.project_type_visual || "not available from analysis; use the project type lock below and visible reference cues"}`,
+    `Project type source: ${analysis.project_type_source || detectedProjectType.source || "analysis"}`,
+    `Project type evidence: ${(analysis.project_type_evidence || []).join("; ") || "use visible reference-image cues before old templates or stale brief text"}`,
+    (analysis.context_conflicts || []).length ? `Context conflicts to ignore unless explicitly requested: ${analysis.context_conflicts.join("; ")}` : "",
     `Project type: ${analysis.project_type || detectedProjectType.label}`,
     `Scene allocation strategy: ${analysis.scene_allocation_strategy || designSeriesSceneAllocationText(seriesCount, { brief, intent: body.intent || "", userPrompt: body.userPrompt || "", analysis })}`,
     `Series strategy: ${analysis.series_strategy}`,
@@ -2412,8 +3466,11 @@ async function generateDesignSeries(body) {
     title: [analysis.title || "design series", sceneBrief.title].filter(Boolean).join(" / "),
     mode: "designseries",
     preferReferenceEdit: false,
-    finalPromptFooter: designSeriesFinalPromptLock({ index: seriesIndex, count: seriesCount, sceneBrief }),
-    useReasoning
+    finalPromptFooter: [
+      designSeriesProjectTypeGuard(detectedProjectType),
+      designSeriesFinalPromptLock({ index: seriesIndex, count: seriesCount, sceneBrief })
+    ].join("\n\n"),
+    useReasoning: useReasoning && promptFusionEnabled
   });
 
   const render = await saveGeneratedImage({
@@ -2443,6 +3500,9 @@ async function generateDesignSeries(body) {
       endpoint: generated.endpoint,
       attempt: generated.attempt,
       attempts: generated.attempts,
+      imageApi: generated.imageApi,
+      actualParams: generated.actualParams,
+      revisedPrompt: generated.revisedPrompt,
       seriesIndex,
       seriesCount,
       sceneBrief
@@ -2622,6 +3682,11 @@ function auditFinalPromptForMode({ mode, prompt }) {
       ["保留空间关系/选区", /(preserve|保留).{0,100}(spatial|circulation|selected|zone|空间|动线|选区|功能)/i],
       ["前中后景与材料灯光", /(foreground|midground|background|materials|lighting|前景|中景|背景|材料|灯光)/i]
     ],
+    viewpoint: [
+      ["新机位人视角", /(new|marked|camera|standing point|eye-level|新视角|机位|站位|人视角)/i],
+      ["保留原空间设计语言", /(preserve|same|保留).{0,120}(source|spatial|structure|materials|lighting|furniture|原图|空间|结构|材料|灯光|家具)/i],
+      ["不生成UI标记人物", /(no|avoid|不要|禁止).{0,120}(ui|marker|person|human|figure|模型|标记|人物|人)/i]
+    ],
     designseries: [
       ["统一系列DNA", /(series|coherent|same project|design dna|系列|统一|同一项目)/i],
       ["空间衔接/动线关系", /(spatial sequence|walkthrough|adjacency|connects|threshold|corridor|sequence|动线|衔接|相邻|过渡|门厅|走廊)/i],
@@ -2697,16 +3762,41 @@ function hardenFinalPromptForMode({ mode, finalPrompt, promptGuard, audit }) {
 }
 
 async function generateImageWithImageProvider({ prompt, inputImages, size, quality, preferReferenceEdit = true, mode = "" }) {
-  await refreshImageEndpointSpeeds({ force: true });
+  await refreshImageEndpointSpeeds();
 
   const attempts = [];
   const attemptEvents = [];
   const standardSize = closestStandardImageSize(size);
   const skillAttempts = imageGenSkillMaxAttempts();
+  const apiMode = normalizeImageApiMode(config.imageApiMode);
   const addImageGenerationAttempts = (candidateSize) => {
-    for (let attempt = 1; attempt <= skillAttempts; attempt += 1) {
+    if (apiMode !== "responses") {
       attempts.push({
-        name: `Image Gen skill ${candidateSize} (${attempt}/${skillAttempts})`,
+        name: `OpenAI-compatible Images API ${candidateSize}`,
+        run: () => openaiCompatibleImagesDirect({
+          prompt,
+          inputImages: preferReferenceEdit ? inputImages : [],
+          size: candidateSize,
+          quality
+        })
+      });
+    }
+    if (apiMode !== "images") {
+      for (let attempt = 1; attempt <= skillAttempts; attempt += 1) {
+        attempts.push({
+          name: `Responses image_generation tool ${candidateSize} (${attempt}/${skillAttempts})`,
+          run: () => openaiResponsesImageDirect({
+            prompt,
+            inputImages,
+            size: candidateSize,
+            quality,
+            useProviderPool: false
+          })
+        });
+      }
+    } else {
+      attempts.push({
+        name: `Responses image_generation fallback ${candidateSize}`,
         run: () => openaiResponsesImageDirect({
           prompt,
           inputImages,
@@ -2977,6 +4067,13 @@ function renderModeKnowledge(mode) {
       preserve: "Preserve the input image's spatial relationship, selected or inferred target zone, circulation, functional logic, key furniture/display arrangement, room adjacency and scale cues.",
       transform: "Translate only that target zone into a realistic human-eye render with a believable camera position, detailed foreground/midground/background, materials, lighting and presentation quality."
     },
+    viewpoint: {
+      label: "视角转换",
+      purpose: "Treat the input image as an enterable spatial scene; use the user-marked standing point, image-depth coordinate, yaw direction and shift intensity to generate a new eye-level view from that position.",
+      referenceFocus: "Use references only to support material, lighting, furniture, display language and atmosphere; never override the source image's spatial identity, design language, openings, major structure or marker-driven camera logic.",
+      preserve: "Preserve the source image's spatial identity, main structure, openings, material system, lighting direction, furniture/display logic, scale cues and design atmosphere.",
+      transform: "Change camera position and visible field only: infer walkable floor area, eye height, lens, view direction, foreground/midground/background and adjacent-space continuity from x/y/yaw/intensity marker data."
+    },
     photo: {
       label: "现场图转效果图",
       purpose: "Use an existing site photo as the base condition and redesign finishes, lighting, furniture and atmosphere.",
@@ -3106,6 +4203,14 @@ function modeOptimizationPlaybook(mode) {
       "- Preserve room relationships, target-zone location, circulation, adjacency, scale cues and main display/furniture logic.",
       "- Improve success rate by naming camera standing point, view direction, foreground, midground, background, furniture systems, materials, fixtures, lighting and clutter limits.",
       "- The output must make it clear which area of the 3D floor plan it represents; avoid full-plan views and leftover diagram symbols."
+    ],
+    viewpoint: [
+      "Mode optimization - marked viewpoint transformation:",
+      "- Treat the source image as a coherent spatial scene, not as a style-only reference.",
+      "- The marker coordinates define camera standing point; yaw defines left/right viewing direction. The UI marker itself must not appear in the image.",
+      "- Preserve the source structure, openings, material system, lighting direction, furniture/display logic, scale and design atmosphere.",
+      "- Change only camera position and visible field; infer foreground, midground, background and adjacent-space continuity from the marked point.",
+      "- Output a new eye-level view, not the original camera, not a floor plan, not a bird's-eye view and not a model viewport."
     ],
     cad: [
       "Mode optimization - plan image to CAD:",
@@ -3565,6 +4670,9 @@ function requiredVisualControlsForMode(mode) {
   if (mode === "plan-render") {
     return "Required visual controls: target zone selection or inferred functional zone, explicit source-area note, believable eye-level camera standing point, preserved 3D floor-plan adjacency/circulation/scale cues, foreground/midground/background, material and lighting system, and avoid-lines for no full-plan view/no plan symbols/no unclear source zone.";
   }
+  if (mode === "viewpoint") {
+    return "Required visual controls: marked camera standing point coordinates, yaw/view direction, eye-level camera height, changed camera position, preserved source-space structure/materials/lighting/furniture logic, inferred foreground/midground/background and avoid-lines for no UI marker/no visible person/no copied original camera/no bird's-eye view.";
+  }
   if (mode === "cadrender") {
     return "Required visual controls: CAD linework invariants, axes/walls/openings/scale, inferred height, camera, material system, lighting and avoid-lines for no visible CAD strokes/no layout drift.";
   }
@@ -3607,6 +4715,8 @@ function promptEngineV2Contract({ mode, brief = {}, intent = "", referenceCount 
     ? "realistic 3D floor plan"
     : mode === "plan-render"
     ? "final eye-level architecture/interior effect render"
+    : mode === "viewpoint"
+    ? "new eye-level view from the marked camera standing point"
     : mode === "designseries"
     ? "single finished scene belonging to a coherent design series"
     : mode === "custom"
@@ -3751,8 +4861,14 @@ async function saveGeneratedImage({ buffer, slug, meta, extra = {} }) {
   await fs.mkdir(generatedDir, { recursive: true });
   const fileName = `${Date.now()}-${slug}-${randomUUID().slice(0, 8)}.png`;
   const filePath = path.join(generatedDir, fileName);
+  const sidecarMeta = {
+    ...meta,
+    ...(extra.imageApi ? { image_api: extra.imageApi } : {}),
+    ...(extra.actualParams ? { actual_params: extra.actualParams } : {}),
+    ...(extra.revisedPrompt ? { revised_prompt: extra.revisedPrompt } : {})
+  };
   await fs.writeFile(filePath, buffer);
-  await fs.writeFile(filePath.replace(/\.png$/, ".json"), JSON.stringify(meta, null, 2));
+  await fs.writeFile(filePath.replace(/\.png$/, ".json"), JSON.stringify(sidecarMeta, null, 2));
 
   return {
     url: `/generated/${fileName}`,
@@ -3778,6 +4894,9 @@ function outputInstructionForMode(mode) {
   }
   if (mode === "plan-render") {
     return "Output must be a final human-eye architecture/interior effect render derived from the selected or inferred zone of a 3D floor plan or plan-based spatial guide; it must be clear which area it represents; not a diagram, not a floor plan, not a collage.";
+  }
+  if (mode === "viewpoint") {
+    return "Output must be a new eye-level architecture/interior view from the marked camera standing point in the source image: same spatial scene and design language, changed camera position and visible field; not the original camera copied, not a floor plan, not a bird's-eye view, not a UI screenshot and no visible marker/person.";
   }
   if (mode === "materialboard") {
     return "Output must be a visual board/collage with material samples, color swatches, lighting mood and furniture references.";
@@ -3825,6 +4944,7 @@ function creationInstructionForMode(mode) {
   mode = normalizeRenderMode(mode);
   if (mode === "plan-axonometric") return "Create a polished realistic 3D floor plan for a professional spatial designer.";
   if (mode === "plan-render") return "Create a realistic human-eye architecture/interior effect render from the provided 3D floor plan or plan-based spatial guide.";
+  if (mode === "viewpoint") return "Create a new realistic eye-level architecture/interior view from the user-marked camera standing point in the provided spatial source image.";
   if (mode === "materialboard") return "Create a polished visual material and color board for a professional spatial designer.";
   if (mode === "custom") return "Create the most useful visual response for the user's request: spatial render, concept image, design board, material study, mood image, detail view, facade, product scene, edit, outpaint or design series.";
   if (mode === "designseries") return "Create one polished image that clearly belongs to one connected architecture/interior project series, with visible spatial continuity to the other images and a distinct field, function, viewpoint or spatial scale.";
@@ -3849,6 +4969,9 @@ function qualityTargetForMode(mode) {
   }
   if (mode === "plan-render") {
     return "Quality target: final human-eye architecture/interior effect render, faithful to the input 3D floor plan or plan guide, clear target zone, believable camera standing point, believable scale, detailed foreground/midground/background, controlled lighting, no plan-symbol residue and crisp client-presentation finish.";
+  }
+  if (mode === "viewpoint") {
+    return "Quality target: a believable new eye-level view from the marked standing point, same source-space identity and design language, stable perspective, plausible eye height, coherent foreground/midground/background, preserved materials/lighting/furniture logic, no UI marker, no person, no copied original camera and no warped geometry.";
   }
   if (mode === "materialboard") {
     return "Quality target: refined visual material board, coordinated samples, restrained palette, tactile texture evidence, balanced spacing, no labels, no logos and no UI screenshot feel.";
@@ -3889,7 +5012,7 @@ function qualityTargetForMode(mode) {
   return "Quality target: photorealistic architectural visualization, believable material behavior, crisp geometry, controlled scene density, realistic shadows, professional presentation finish.";
 }
 
-function buildRenderPrompt({ mode, brief, intent, selection, referenceCount, references = [] }) {
+function buildRenderPrompt({ mode, brief, intent, selection, viewpoint = null, referenceCount, references = [] }) {
   mode = normalizeRenderMode(mode);
   const modeInfo = renderModeKnowledge(mode);
   const workflowConfig = planWorkflowPromptConfig(mode);
@@ -3975,6 +5098,50 @@ function buildRenderPrompt({ mode, brief, intent, selection, referenceCount, ref
       "Preserve the spatial relationship, target-zone location, circulation, functional logic, main display/furniture arrangement, room adjacency and scale cues from the input image.",
       "Improve success rate by describing the target scene in concrete elements: camera standing point, view direction, foreground, midground, background, furniture systems, display objects, wall/ceiling/floor materials, lighting fixtures, color temperature and clutter limits.",
       "Do not reproduce blueprint lines, plan symbols or a full-plan camera in the final image. The output must be a realistic client-presentation effect render with a clear source zone.",
+      ...common
+    ].join("\n");
+  }
+
+  if (mode === "viewpoint") {
+    const hasPoint = viewpoint && typeof viewpoint === "object";
+    const x = Number(viewpoint?.x);
+    const y = Number(viewpoint?.y);
+    const yaw = Number(viewpoint?.yaw || 0);
+    const intensity = String(viewpoint?.intensity || "medium");
+    const normalizedX = Number.isFinite(x) ? Math.max(0.05, Math.min(0.95, x)) : null;
+    const normalizedY = Number.isFinite(y) ? Math.max(0.08, Math.min(0.94, y)) : null;
+    const normalizedYaw = Number.isFinite(yaw) ? Math.max(-135, Math.min(135, Math.round(yaw))) : 0;
+    const horizontal = normalizedX == null ? "unknown horizontal position" : normalizedX < 0.34 ? "left side of the image" : normalizedX > 0.66 ? "right side of the image" : "center area of the image";
+    const depth = normalizedY == null ? "unknown depth" : normalizedY < 0.34 ? "far/deep part of the scene" : normalizedY > 0.66 ? "near foreground / viewer-side part of the scene" : "middle-depth part of the scene";
+    const direction = normalizedYaw <= -75
+      ? "strongly looking left from the standing point"
+      : normalizedYaw <= -25
+        ? "looking toward the left-front diagonal"
+        : normalizedYaw >= 75
+          ? "strongly looking right from the standing point"
+          : normalizedYaw >= 25
+            ? "looking toward the right-front diagonal"
+            : "looking forward into scene depth";
+    const intensityRule = intensity === "small"
+      ? "Viewpoint shift intensity: small. Stay conservative, keep close to visible source evidence, prioritize spatial/material stability over dramatic change."
+      : intensity === "large"
+        ? "Viewpoint shift intensity: large. Allow a clearly different camera position and plausible reconstruction of hidden side surfaces, but do not alter the source architecture, material system or design identity."
+        : "Viewpoint shift intensity: medium. Create a clearly new view while keeping source-scene identity stable.";
+    const point = hasPoint
+      ? `x=${normalizedX ?? viewpoint.x}, y=${normalizedY ?? viewpoint.y}, yaw=${normalizedYaw} degrees, intensity=${intensity}`
+      : "not provided; infer a useful eye-level standing point from the user's instruction";
+    return [
+      "The first input image is a spatial source image to reinterpret from a new camera position.",
+      `VIEWPOINT_MARKER: ${point}. This marker is a UI control only; never render it, never render a person, mannequin, arrow, dot, label or overlay.`,
+      hasPoint ? `Spatial reading of the marker: standing point is in the ${horizontal}, ${depth}; camera direction is ${direction}.` : "No explicit marker was provided; choose a plausible human standing point and state it internally before prompting image generation.",
+      intensityRule,
+      "Coordinate semantics: x is left-to-right image position, y is image-depth proxy where higher y means nearer/viewer-side and lower y means deeper/farther. Yaw is horizontal view direction relative to the source image axis.",
+      "Treat the input image as a coherent 3D architecture/interior scene that can be entered, not as a flat picture to crop or rotate.",
+      "Infer walkable floor area, camera foot position, eye height around 1.55m, lens between 24-35mm full-frame equivalent, stable vanishing points and what foreground/midground/background would be visible from this location.",
+      "Create a new realistic eye-level view from that standing point with a changed visible field. The output should feel like moving a camera inside the same space, not generating a new unrelated room.",
+      "Preserve the source scene's spatial identity, major structure, openings, materials, lighting direction, furniture/display logic, scale cues and design atmosphere.",
+      "Allow only viewpoint-driven reconstruction: add plausible side faces, foreground objects, thresholds, adjacent rooms, doorways, ceiling/floor continuation and background continuity that would be visible from the marked point.",
+      "Failure modes to avoid: original camera copied, flat crop/zoom, bird's-eye view, floor plan, diagram, model viewport, collage, warped perspective, changed room type, changed openings, extra people, UI markers or marker shadows.",
       ...common
     ].join("\n");
   }
@@ -4154,6 +5321,7 @@ function summarizeTaskInput(body = {}) {
     skill: body.skill || null,
     useCase: body.useCase || null,
     intentKind: body.intentKind || null,
+    viewpoint: body.viewpoint || null,
     primaryRequest: truncateLogText(body.primaryRequest || "", 5000),
     userPrompt: truncateLogText(body.userPrompt || "", 5000),
     intent: truncateLogText(body.intent || body.imagePrompt || body.primaryRequest || "", 5000),
@@ -4195,6 +5363,9 @@ function summarizeTaskResult(result = {}) {
     reasoningModel: render?.reasoningModel || result.reasoningModel || null,
     endpoint: render?.endpoint || result.endpoint || null,
     attempt: render?.attempt || result.attempt || null,
+    imageApi: render?.imageApi || result.imageApi || null,
+    actualParams: render?.actualParams || result.actualParams || null,
+    revisedPrompt: truncateLogText(render?.revisedPrompt || result.revisedPrompt || "", 3000),
     attempts,
     retryCount: attempts.filter((attempt) => attempt?.status === "failed").length,
     prompt: truncateLogText(render?.prompt || result.prompt || "", 12000),
@@ -4375,12 +5546,18 @@ function normalizeRuntimeImageEndpoint(endpoint = {}, existing = null) {
   }
 
   const responsesPath = String(endpoint.responsesPath || endpoint.path || existing?.responsesPath || "/v1/responses").trim();
+  const imageGenerationPath = String(endpoint.imageGenerationPath || endpoint.generationPath || existing?.imageGenerationPath || "/v1/images/generations").trim();
+  const imageEditPath = String(endpoint.imageEditPath || endpoint.editPath || existing?.imageEditPath || "/v1/images/edits").trim();
+  const providerManifest = providerManifestFromInput(endpoint, existing);
   return {
     id: String(existing?.id || endpoint.id || randomUUID()),
     label: String(endpoint.label || endpoint.name || existing?.label || shortRuntimeEndpointLabel(baseUrl)),
     baseUrl,
     apiKey,
-    responsesPath: responsesPath.startsWith("/") ? responsesPath : `/${responsesPath}`,
+    responsesPath: normalizeProviderApiPath(responsesPath, "/v1/responses"),
+    imageGenerationPath: normalizeProviderApiPath(providerManifest?.submit?.path || imageGenerationPath, "/v1/images/generations"),
+    imageEditPath: normalizeProviderApiPath(providerManifest?.editSubmit?.path || imageEditPath, "/v1/images/edits"),
+    providerManifest,
     enabled: parseBooleanEnv(endpoint.enabled, existing?.enabled ?? true),
     createdAt: existing?.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString()
@@ -4395,12 +5572,122 @@ function shortRuntimeEndpointLabel(baseUrl) {
   }
 }
 
+function normalizeRuntimeProvider(provider = {}, existing = null, { kind = "reasoning" } = {}) {
+  const baseUrl = normalizeBaseUrl(provider.baseUrl || existing?.baseUrl || "");
+  if (!baseUrl || !/^https?:\/\//i.test(baseUrl)) {
+    const error = new Error("请输入有效的 API Base URL，例如 https://api.example.com 或 https://api.example.com/v1");
+    error.status = 400;
+    throw error;
+  }
+
+  const apiKey = String(provider.apiKey || provider.key || "").trim() || existing?.apiKey || "";
+  if (!apiKey) {
+    const error = new Error("请输入 API Key。");
+    error.status = 400;
+    throw error;
+  }
+
+  const fallbackModel = kind === "image" ? config.imageModel : config.reasoningModel;
+  const fallbackResponsesPath = kind === "image" ? providerResponsesPath({ baseUrl, responsesPath: config.imageProvider.responsesPath }) : "/v1/responses";
+  const responsesPath = String(provider.responsesPath || provider.path || existing?.responsesPath || fallbackResponsesPath).trim();
+  const normalized = {
+    baseUrl,
+    apiKey,
+    model: String(provider.model || existing?.model || fallbackModel).trim() || fallbackModel,
+    responsesPath: normalizeProviderApiPath(responsesPath, fallbackResponsesPath),
+    updatedAt: new Date().toISOString()
+  };
+  if (kind === "image") {
+    const providerManifest = providerManifestFromInput(provider, existing);
+    normalized.imageGenerationPath = normalizeProviderApiPath(
+      providerManifest?.submit?.path || provider.imageGenerationPath || provider.generationPath || existing?.imageGenerationPath,
+      "/v1/images/generations"
+    );
+    normalized.imageEditPath = normalizeProviderApiPath(
+      providerManifest?.editSubmit?.path || provider.imageEditPath || provider.editPath || existing?.imageEditPath,
+      "/v1/images/edits"
+    );
+    normalized.providerManifest = providerManifest;
+  }
+  return normalized;
+}
+
+function publicRuntimeProvider(provider) {
+  return {
+    configured: Boolean(provider?.apiKey),
+    baseUrl: provider?.baseUrl || "",
+    model: provider?.model || "",
+    responsesPath: provider?.responsesPath || "",
+    imageGenerationPath: provider?.imageGenerationPath || "",
+    imageEditPath: provider?.imageEditPath || "",
+    providerManifest: provider?.providerManifest || null,
+    providerManifestName: provider?.providerManifest?.name || "",
+    keyPreview: provider?.apiKey ? `${provider.apiKey.slice(0, 5)}...${provider.apiKey.slice(-4)}` : "",
+    updatedAt: provider?.updatedAt || ""
+  };
+}
+
+function normalizeRuntimeProviderProfile(profile = {}, existing = null) {
+  const source = { ...(existing || {}), ...(profile || {}) };
+  const id = String(source.id || source.slug || source.name || randomUUID()).trim();
+  const label = String(source.label || source.name || id || "API").trim();
+  const reasoning = normalizeRuntimeProvider(source.reasoning || {}, existing?.reasoning || null, { kind: "reasoning" });
+  const image = normalizeRuntimeProvider(source.image || {}, existing?.image || null, { kind: "image" });
+  return {
+    id,
+    label,
+    active: Boolean(source.active),
+    reasoning,
+    image,
+    createdAt: existing?.createdAt || source.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function publicRuntimeProviderProfile(profile) {
+  return {
+    id: profile.id,
+    label: profile.label,
+    active: Boolean(profile.active),
+    reasoning: publicRuntimeProvider(profile.reasoning),
+    image: publicRuntimeProvider(profile.image),
+    createdAt: profile.createdAt || "",
+    updatedAt: profile.updatedAt || ""
+  };
+}
+
+function applyRuntimeProviders() {
+  const reasoning = runtimeSettings.providers.reasoning;
+  if (reasoning?.apiKey && reasoning.baseUrl) {
+    config.reasoningProvider.baseUrl = reasoning.baseUrl;
+    config.reasoningProvider.apiKey = reasoning.apiKey;
+    config.reasoningProvider.responsesPath = reasoning.responsesPath || config.reasoningProvider.responsesPath;
+    config.reasoningModel = reasoning.model || config.reasoningModel;
+  }
+
+  const image = runtimeSettings.providers.image;
+  if (image?.apiKey && image.baseUrl) {
+    config.imageProvider.baseUrl = image.baseUrl;
+    config.imageProvider.apiKey = image.apiKey;
+    config.imageProvider.responsesPath = image.responsesPath || config.imageProvider.responsesPath;
+    config.imageProvider.imageGenerationPath = image.imageGenerationPath || config.imageProvider.imageGenerationPath;
+    config.imageProvider.imageEditPath = image.imageEditPath || config.imageProvider.imageEditPath;
+    config.imageProvider.providerManifest = image.providerManifest || config.imageProvider.providerManifest;
+    config.imageModel = image.model || config.imageModel;
+    config.imageProvider.baseUrls = uniqueBaseUrls([image.baseUrl, ...config.imageProvider.baseUrls]);
+  }
+}
+
 function publicRuntimeImageEndpoint(endpoint, { includeKeyPreview = false } = {}) {
   return {
     id: endpoint.id,
     label: endpoint.label,
     baseUrl: endpoint.baseUrl,
     responsesPath: endpoint.responsesPath,
+    imageGenerationPath: endpoint.imageGenerationPath,
+    imageEditPath: endpoint.imageEditPath,
+    providerManifest: endpoint.providerManifest || null,
+    providerManifestName: endpoint.providerManifest?.name || "",
     enabled: endpoint.enabled,
     keyConfigured: Boolean(endpoint.apiKey),
     keyPreview: includeKeyPreview && endpoint.apiKey ? `${endpoint.apiKey.slice(0, 5)}...${endpoint.apiKey.slice(-4)}` : "",
@@ -4413,6 +5700,26 @@ async function loadRuntimeSettings() {
   try {
     const raw = await fs.readFile(runtimeSettingsPath, "utf8");
     const parsed = JSON.parse(raw);
+    const providers = parsed.providers && typeof parsed.providers === "object" ? parsed.providers : {};
+    runtimeSettings.providers = { reasoning: null, image: null };
+    for (const kind of ["reasoning", "image"]) {
+      if (!providers[kind]) continue;
+      try {
+        runtimeSettings.providers[kind] = normalizeRuntimeProvider(providers[kind], providers[kind], { kind });
+      } catch {
+        runtimeSettings.providers[kind] = null;
+      }
+    }
+    const profiles = Array.isArray(parsed.providerProfiles) ? parsed.providerProfiles : [];
+    runtimeSettings.providerProfiles = profiles
+      .map((profile) => {
+        try {
+          return normalizeRuntimeProviderProfile(profile, profile);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
     const endpoints = Array.isArray(parsed.imageEndpoints) ? parsed.imageEndpoints : [];
     runtimeSettings.imageEndpoints = endpoints
       .map((endpoint) => {
@@ -4423,8 +5730,11 @@ async function loadRuntimeSettings() {
         }
       })
       .filter(Boolean);
+    applyRuntimeProviders();
   } catch (error) {
     if (error.code !== "ENOENT") console.warn(`[settings] load failed: ${error.message || error}`);
+    runtimeSettings.providers = { reasoning: null, image: null };
+    runtimeSettings.providerProfiles = [];
     runtimeSettings.imageEndpoints = [];
   }
 }
@@ -4442,16 +5752,68 @@ function runtimeSettingsBody(req = null) {
   return {
     ok: true,
     settings: {
+      dataDir: appDataDir,
+      externalDataDir: externalDataDirEnabled,
+      providers: {
+        reasoning: publicRuntimeProvider(runtimeSettings.providers.reasoning),
+        image: publicRuntimeProvider(runtimeSettings.providers.image)
+      },
+      providerProfiles: runtimeSettings.providerProfiles.map(publicRuntimeProviderProfile),
+      providerProbes: {
+        reasoning: publicProviderProbe("reasoning"),
+        image: publicProviderProbe("image")
+      },
       imageEndpoints: runtimeSettings.imageEndpoints.map((endpoint) => publicRuntimeImageEndpoint(endpoint, { includeKeyPreview: owner })),
       activeImageBaseUrl: config.imageProvider.baseUrl,
       imageEndpointHealth: imageEndpointHealthValue,
       recommendedImageEndpoint: imageEndpointRecommendation(imageEndpointHealthValue),
-      imageBackend: "responses-image-generation-tool",
-      imageGenContract: "Custom endpoints still use Responses image_generation through the Image Gen path.",
+      imageBackend: config.imageApiMode === "responses" ? "responses-image-generation-tool" : "openai-compatible-images-api",
+      imageGenContract: config.imageApiMode === "responses"
+        ? "Images are generated through the Responses image_generation tool."
+        : "Images are generated through OpenAI-compatible /images/generations or /images/edits first, with Responses image_generation as fallback.",
       canManageSettings: owner,
       publicApiTokenConfigured: Boolean(config.publicApi.token),
       publicApiCorsOrigin: config.publicApi.corsOrigin || ""
     }
+  };
+}
+
+async function updateRuntimeProvider(kind, body = {}) {
+  if (!["reasoning", "image"].includes(kind)) {
+    const error = new Error("未知 API 类型");
+    error.status = 400;
+    throw error;
+  }
+  const provider = normalizeRuntimeProvider(body, runtimeSettings.providers[kind], { kind });
+  runtimeSettings.providers[kind] = provider;
+  applyRuntimeProviders();
+  await saveRuntimeSettings();
+  return provider;
+}
+
+async function providerProbeBody(body = {}) {
+  const kind = String(body.kind || "").trim();
+  if (!["reasoning", "image"].includes(kind)) {
+    const error = new Error("未知 API 类型");
+    error.status = 400;
+    throw error;
+  }
+  const timeoutMs = kind === "image"
+    ? clampNumber(Number(body.timeoutMs || 120000), 10000, 240000)
+    : clampNumber(Number(body.timeoutMs || 30000), 5000, 60000);
+  const existing = runtimeSettings.providers[kind] || null;
+  const provider = normalizeRuntimeProvider(body, existing, { kind });
+  const probe = await probeProviderConnection(kind, provider, { timeoutMs });
+  const imageEndpointHealthValue = kind === "image" ? imageEndpointHealth() : undefined;
+  return {
+    ok: probe.ok,
+    probe,
+    settings: runtimeSettingsBody().settings,
+    ...(imageEndpointHealthValue ? {
+      imageBaseUrl: config.imageProvider.baseUrl,
+      imageEndpointHealth: imageEndpointHealthValue,
+      recommendedImageEndpoint: imageEndpointRecommendation(imageEndpointHealthValue)
+    } : {})
   };
 }
 
@@ -4674,12 +6036,53 @@ async function runStorageMaintenance(body = {}) {
 async function imageEndpointProbeBody(body = {}) {
   const endpointId = String(body.endpointId || body.id || "").trim();
   const baseUrl = normalizeBaseUrl(body.baseUrl || "");
+  const apiKey = String(body.apiKey || body.key || "").trim();
   const hasTarget = Boolean(endpointId || baseUrl);
   const requestedTimeoutMs = Number(body.timeoutMs || 12000);
   const timeoutMs = clampNumber(Number.isFinite(requestedTimeoutMs) ? requestedTimeoutMs : 12000, 5000, 30000);
   const autoActivate = hasTarget
     ? parseBooleanEnv(body.autoActivate, false)
     : parseBooleanEnv(body.autoActivate, true);
+  if (baseUrl && apiKey) {
+    if (!/^https?:\/\//i.test(baseUrl)) {
+      const error = new Error("请输入有效的生图 API Base URL，例如 https://api.example.com 或 https://api.example.com/v1");
+      error.status = 400;
+      throw error;
+    }
+    const responsesPathValue = String(body.responsesPath || body.path || "/v1/responses").trim();
+    const providerManifest = providerManifestFromInput(body);
+    const source = {
+      baseUrl,
+      apiKey,
+      responsesPath: normalizeProviderApiPath(responsesPathValue, "/v1/responses"),
+      imageGenerationPath: normalizeProviderApiPath(providerManifest?.submit?.path || body.imageGenerationPath || body.generationPath, "/v1/images/generations"),
+      imageEditPath: normalizeProviderApiPath(providerManifest?.editSubmit?.path || body.imageEditPath || body.editPath, "/v1/images/edits"),
+      providerManifest,
+      kind: "runtime-draft",
+      keySource: "draft",
+      label: String(body.label || body.name || shortRuntimeEndpointLabel(baseUrl)).trim()
+    };
+    const draftProbe = await probeImageEndpointSource(source, { timeoutMs });
+    const endpoints = imageEndpointHealth();
+    return {
+      ok: true,
+      imageBaseUrl: config.imageProvider.baseUrl,
+      imageEndpointHealth: endpoints,
+      recommendedImageEndpoint: imageEndpointRecommendation(endpoints),
+      checkedAt: new Date().toISOString(),
+      checkedEndpointId: endpointId || null,
+      checkedBaseUrl: baseUrl,
+      draftProbe: {
+        ...draftProbe,
+        label: source.label,
+        responsesPath: providerResponsesPath(source),
+        imageGenerationPath: providerImageApiPath(source, "generation"),
+        imageEditPath: providerImageApiPath(source, "edit"),
+        providerManifestName: source.providerManifest?.name || "",
+        checkedAt: new Date().toISOString()
+      }
+    };
+  }
   const endpoints = await probeImageEndpoints({ timeoutMs, endpointId, baseUrl, autoActivate });
   return {
     ok: true,
@@ -4766,7 +6169,14 @@ function healthBody() {
     imageQueue: imageGenerationQueueState(),
     reasoningModel: config.reasoningModel,
     imageModel: config.imageModel,
-    imageBackend: "responses-image-generation-tool",
+    imageBackend: config.imageApiMode === "responses" ? "responses-image-generation-tool" : "openai-compatible-images-api",
+    dataDir: appDataDir,
+    externalDataDir: externalDataDirEnabled,
+    runtimeProviders: {
+      reasoning: publicRuntimeProvider(runtimeSettings.providers.reasoning),
+      image: publicRuntimeProvider(runtimeSettings.providers.image)
+    },
+    providerProfiles: runtimeSettings.providerProfiles.map(publicRuntimeProviderProfile),
     publicApi: {
       version: "v1",
       authenticationRequired: Boolean(config.publicApi.token),
@@ -5328,7 +6738,7 @@ function createOpenApiDocument(req) {
             userPrompt: { type: "string" },
             size: { type: "string", default: "1024x1536" },
             quality: { type: "string", enum: ["low", "medium", "high", "auto"], default: "low" },
-            thinkingEnabled: { type: "boolean", default: true }
+            thinkingEnabled: { type: "boolean", default: false }
           },
           additionalProperties: true
         },
@@ -5351,7 +6761,7 @@ function createOpenApiDocument(req) {
             selection: { type: "object", additionalProperties: true },
             size: { type: "string", default: "1024x1536" },
             quality: { type: "string", enum: ["low", "medium", "high", "auto"], default: "low" },
-            thinkingEnabled: { type: "boolean", default: true }
+            thinkingEnabled: { type: "boolean", default: false }
           },
           additionalProperties: true
         },
@@ -5391,7 +6801,7 @@ function createOpenApiDocument(req) {
             seriesCount: { type: "integer", minimum: 1, maximum: 8 },
             size: { type: "string", default: "1024x1536" },
             quality: { type: "string", enum: ["low", "medium", "high", "auto"], default: "low" },
-            thinkingEnabled: { type: "boolean", default: true }
+            thinkingEnabled: { type: "boolean", default: false }
           },
           additionalProperties: true
         },
@@ -5444,6 +6854,9 @@ function createOpenApiDocument(req) {
             baseUrl: { type: "string", description: "可包含端口，例如 http://127.0.0.1:8080 或 https://api.example.com/v1" },
             apiKey: { type: "string" },
             responsesPath: { type: "string", default: "/v1/responses" },
+            imageGenerationPath: { type: "string", default: "/v1/images/generations" },
+            imageEditPath: { type: "string", default: "/v1/images/edits" },
+            providerManifest: { type: "object", additionalProperties: true },
             enabled: { type: "boolean", default: true }
           }
         },
@@ -5454,6 +6867,9 @@ function createOpenApiDocument(req) {
             label: { type: "string" },
             baseUrl: { type: "string" },
             responsesPath: { type: "string" },
+            imageGenerationPath: { type: "string" },
+            imageEditPath: { type: "string" },
+            providerManifestName: { type: "string" },
             enabled: { type: "boolean" },
             keyConfigured: { type: "boolean" },
             keyPreview: { type: "string" }
@@ -5489,6 +6905,12 @@ function createOpenApiDocument(req) {
           properties: {
             endpointId: { type: "string", description: "只检测某个已保存自定义端点。留空时检测所有可用端点。" },
             baseUrl: { type: "string", description: "只检测某个 Base URL，可包含端口。" },
+            apiKey: { type: "string", description: "临时检测未保存端点时使用，不会写入本机设置。" },
+            label: { type: "string", description: "临时检测端点的显示名。" },
+            responsesPath: { type: "string", default: "/v1/responses", description: "临时检测端点的 Responses 路径。" },
+            imageGenerationPath: { type: "string", default: "/v1/images/generations" },
+            imageEditPath: { type: "string", default: "/v1/images/edits" },
+            providerManifest: { type: "object", additionalProperties: true },
             autoActivate: { type: "boolean", default: true, description: "检测后是否按可用性自动切换当前生图端点。单端点检测默认 false。" },
             timeoutMs: { type: "integer", minimum: 5000, maximum: 30000, default: 12000 }
           },
@@ -5518,6 +6940,11 @@ async function serveStatic(req, res) {
 
   const url = new URL(req.url, `http://${req.headers.host}`);
   const requested = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname);
+  if (externalDataDirEnabled && requested.startsWith("/generated/")) {
+    await serveStaticFromDir(req, res, generatedDir, requested.replace(/^\/generated\/?/, ""));
+    return;
+  }
+
   const safePath = path.normalize(requested).replace(/^(\.\.[/\\])+/, "");
   const filePath = path.join(publicDir, safePath);
 
@@ -5549,6 +6976,46 @@ async function serveStatic(req, res) {
     res.writeHead(200, {
       "content-type": contentType,
       "cache-control": cacheControl,
+      "content-length": stat.size,
+      "last-modified": stat.mtime.toUTCString()
+    });
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
+    const stream = createReadStream(filePath);
+    stream.on("error", () => res.destroy());
+    stream.pipe(res);
+  } catch {
+    sendText(res, 404, "Not found");
+  }
+}
+
+async function serveStaticFromDir(req, res, baseDir, requestedPath) {
+  const safePath = path.normalize(decodeURIComponent(requestedPath || "")).replace(/^(\.\.[/\\])+/, "");
+  const filePath = path.join(baseDir, safePath);
+  if (!filePath.startsWith(baseDir)) {
+    sendText(res, 403, "Forbidden");
+    return;
+  }
+
+  try {
+    const stat = await fs.stat(filePath);
+    if (!stat.isFile()) {
+      sendText(res, 404, "Not found");
+      return;
+    }
+    const ext = path.extname(filePath).toLowerCase();
+    const contentType = {
+      ".png": "image/png",
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg",
+      ".webp": "image/webp",
+      ".json": "application/json; charset=utf-8"
+    }[ext] || "application/octet-stream";
+    res.writeHead(200, {
+      "content-type": contentType,
+      "cache-control": "public, max-age=31536000, immutable",
       "content-length": stat.size,
       "last-modified": stat.mtime.toUTCString()
     });
@@ -5640,6 +7107,27 @@ async function handleExternalApi(req, res, routePath) {
 
   if (req.method === "GET" && routePath === "/settings") {
     sendJson(res, 200, runtimeSettingsBody(req));
+    return;
+  }
+
+  if (req.method === "POST" && routePath === "/settings/providers") {
+    if (!isOwnerRequest(req)) {
+      sendOwnerOnly(res);
+      return;
+    }
+    const body = await readJson(req);
+    const provider = await updateRuntimeProvider(String(body.kind || ""), body);
+    sendJson(res, 200, { ok: true, provider: publicRuntimeProvider(provider), settings: runtimeSettingsBody(req).settings });
+    return;
+  }
+
+  if (req.method === "POST" && routePath === "/settings/providers/probe") {
+    if (!isOwnerRequest(req)) {
+      sendOwnerOnly(res);
+      return;
+    }
+    const body = await readJson(req);
+    sendJson(res, 200, await providerProbeBody(body));
     return;
   }
 
@@ -5898,6 +7386,27 @@ async function handleApi(req, res) {
       return;
     }
 
+    if (req.method === "POST" && url.pathname === "/api/settings/providers") {
+      if (!isOwnerRequest(req)) {
+        sendOwnerOnly(res);
+        return;
+      }
+      const body = await readJson(req);
+      const provider = await updateRuntimeProvider(String(body.kind || ""), body);
+      sendJson(res, 200, { ok: true, provider: publicRuntimeProvider(provider), settings: runtimeSettingsBody(req).settings });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/settings/providers/probe") {
+      if (!isOwnerRequest(req)) {
+        sendOwnerOnly(res);
+        return;
+      }
+      const body = await readJson(req);
+      sendJson(res, 200, await providerProbeBody(body));
+      return;
+    }
+
     if (req.method === "GET" && url.pathname === "/api/storage") {
       sendJson(res, 200, { ok: true, summary: await generatedStorageSummary() });
       return;
@@ -6080,7 +7589,7 @@ async function handleApi(req, res) {
   }
 }
 
-const server = createServer(async (req, res) => {
+export const server = createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || `localhost:${config.port}`}`);
   if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
     await handleApi(req, res);
@@ -6088,6 +7597,22 @@ const server = createServer(async (req, res) => {
   }
   await serveStatic(req, res);
 });
+
+export function closeLaoguiServer({ timeoutMs = 3000 } = {}) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      server.closeAllConnections?.();
+      resolve();
+    }, timeoutMs);
+    timer.unref?.();
+
+    server.close(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+    server.closeIdleConnections?.();
+  });
+}
 
 server.listen(config.port, async () => {
   await loadRuntimeSettings().catch((error) => {

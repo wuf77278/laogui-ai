@@ -3,13 +3,59 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "start": "node server.mjs",
     "dev": "node server.mjs",
+    "api": "node scripts/laogui-api.mjs",
+    "desktop": "electron .",
+    "pack:mac": "electron-builder --mac --arm64 --x64",
+    "pack:mac:arm64": "electron-builder --mac --arm64",
+    "pack:mac:x64": "electron-builder --mac --x64",
+    "pack:win": "electron-builder --win --x64",
+    "pack:win:arm64": "electron-builder --win --arm64",
+    "pack:all": "electron-builder --mac --arm64 --x64 --win --x64",
     "check": "node --check server.mjs && node --check public/app.js && node --check scripts/doctor.mjs",
     "doctor": "node scripts/doctor.mjs"
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "cn.laogui.ai",
+    "productName": "老鬼AI",
+    "asar": true,
+    "files": [
+      "server.mjs",
+      "prompt-library.mjs",
+      "electron/**",
+      "public/**",
+      "!public/generated/**",
+      "!public/archive/**",
+      "!**/.DS_Store",
+      "scripts/doctor.mjs",
+      "package.json"
+    ],
+    "extraMetadata": {
+      "main": "electron/main.cjs"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.graphics-design"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "directories": {
+      "output": "release"
+    }
   }
 }
