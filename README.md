@@ -6,9 +6,9 @@
 
 请到 [GitHub Releases](https://github.com/wuf77278/laogui-ai/releases/latest) 下载最新版安装包：
 
-- macOS Apple Silicon：下载 `老鬼AI-0.1.0-arm64.dmg`
-- macOS Intel：下载 `老鬼AI-0.1.0.dmg`
-- Windows 10 / 11：下载 `老鬼AI Setup 0.1.0.exe`
+- macOS Apple Silicon：下载 `LaoguiAI-v0.1.0-mac-arm64.dmg`
+- macOS Intel：下载 `LaoguiAI-v0.1.0-mac-intel.dmg`
+- Windows 10 / 11：下载 `LaoguiAI-v0.1.0-windows-setup.exe`
 
 首次打开后，在右上角“设置”里填入你自己的文本/思考 API 和生图 API。软件会把 API Key 保存在本机运行环境里，不会暴露给浏览器页面。
 
