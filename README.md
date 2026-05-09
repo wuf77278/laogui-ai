@@ -1,17 +1,42 @@
 # 老鬼AI
 
-Local MVP for an AI creative workspace aimed at architecture and spatial designers.
+老鬼AI 是一个面向建筑、室内、民宿和商业空间设计师的本地 AI 创意工作台。它把方案分析、空间推演、参考图理解、提示词生成、设计系列出图和项目画布放在同一个界面里，适合做概念方案、视觉方向、客户提案和批量设计探索。
 
-## Run
+## 下载安装
+
+请到 [GitHub Releases](https://github.com/wuf77278/laogui-ai/releases/latest) 下载最新版安装包：
+
+- macOS Apple Silicon：下载 `老鬼AI-0.1.0-arm64.dmg`
+- macOS Intel：下载 `老鬼AI-0.1.0.dmg`
+- Windows 10 / 11：下载 `老鬼AI Setup 0.1.0.exe`
+
+首次打开后，在右上角“设置”里填入你自己的文本/思考 API 和生图 API。软件会把 API Key 保存在本机运行环境里，不会暴露给浏览器页面。
+
+## 网页使用
+
+老鬼AI 可以作为网页使用，但它不是纯静态网页项目。前端页面需要配套 `server.mjs` 这个 Node 服务，由服务端统一代理模型请求、保存画布状态和管理本地生成结果。
+
+本机网页方式：
 
 ```bash
-cd /Users/Apple_501/Desktop/设计师网站
 cp .env.example .env
-# edit .env and set REASONING_API_KEY + YYBB_API_KEY
+# 编辑 .env，填写 REASONING_API_KEY 和 YYBB_API_KEY
+npm install
 npm start
 ```
 
-Open `http://localhost:4177`.
+然后打开 `http://localhost:4177`。
+
+如果要给团队或客户在线访问，可以部署到支持 Node.js 的平台，例如 Render、Railway、Fly.io、VPS 或内网服务器；GitHub Pages 只能托管静态页面，不适合直接运行这一版完整功能。
+
+## 主要功能
+
+- 空间设计方案生成：根据项目类型、风格、功能和约束生成方向建议。
+- 图片参考理解：上传参考图后分析材质、灯光、空间关系和可复用设计语言。
+- 设计系列出图：围绕同一个项目批量生成统一风格的设计画面。
+- 无限画布工作区：沉淀项目素材、生成结果、提示词和阶段性方案。
+- 本地桌面应用：通过 Electron 在 macOS / Windows 上运行，减少部署门槛。
+- 服务端代理 API：浏览器端不直接接触密钥，适合本机或小团队内网使用。
 
 ## Desktop App
 
