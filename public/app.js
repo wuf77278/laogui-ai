@@ -277,6 +277,9 @@ const friendExperienceModes = new Set([
   "plan-axonometric-view",
   "plan-render",
   "photo",
+  "panorama",
+  "sketch",
+  "styletransfer",
   "designseries"
 ]);
 const hiddenClientModes = new Set(["image-modeling"]);
@@ -597,6 +600,7 @@ const els = {
   saveLocalApiSettingsButton: $("saveLocalApiSettingsButton"),
   probeReasoningApiButton: $("probeReasoningApiButton"),
   probePrimaryImageApiButton: $("probePrimaryImageApiButton"),
+  localApiConnectionStatus: $("localApiConnectionStatus"),
   localApiProbeFeedback: $("localApiProbeFeedback"),
   localApiSettingsSummary: $("localApiSettingsSummary"),
   imageApiLabel: $("imageApiLabel"),
@@ -3564,6 +3568,45 @@ function apiProviderProbeDetail(kind, probe, busy = false) {
   return parts.join(" · ");
 }
 
+function runtimeProviderConnectionDetail(kind, provider = {}, probe = null) {
+  const baseUrl = provider.baseUrl || "";
+  const model = provider.model || (kind === "image" ? "gpt-image-2" : "gpt-5.5");
+  const keyText = provider.configured ? `Key ${provider.keyPreview || "已保存"}` : "未保存 Key";
+  const probeText = probe
+    ? apiProviderProbeDetail(kind, probe, false)
+    : "尚未检测连接";
+  return [
+    baseUrl ? shortEndpoint(baseUrl) : "未填写 Base URL",
+    model,
+    keyText,
+    probeText
+  ].filter(Boolean).join(" · ");
+}
+
+function renderLocalApiConnectionStatus() {
+  if (!els.localApiConnectionStatus) return;
+  const providers = state.runtimeProviders || {};
+  els.localApiConnectionStatus.innerHTML = ["reasoning", "image"].map((kind) => {
+    const provider = providers[kind] || {};
+    const probe = state.providerProbes?.[kind] || null;
+    const configured = Boolean(provider.configured);
+    const statusInfo = probe
+      ? apiProbeStatusInfo(probe, false)
+      : configured
+        ? { label: "已保存，未检测", className: "warning" }
+        : { label: "未配置", className: "unknown" };
+    return `
+      <div class="api-probe-card ${escapeAttr(statusInfo.className)}">
+        <div>
+          <strong>${escapeHtml(apiProviderLabel(kind))} API</strong>
+          <small>${escapeHtml(runtimeProviderConnectionDetail(kind, provider, probe))}</small>
+        </div>
+        <span class="api-endpoint-status ${escapeAttr(statusInfo.className)}">${escapeHtml(statusInfo.label)}</span>
+      </div>
+    `;
+  }).join("");
+}
+
 function renderLocalApiProbeFeedback() {
   if (!els.localApiProbeFeedback) return;
   els.localApiProbeFeedback.innerHTML = ["reasoning", "image"].map((kind) => {
@@ -3651,6 +3694,7 @@ function renderLocalApiSettings(settings = {}) {
       .join("；") + dataDir;
   }
   renderLocalApiProbeFeedback();
+  renderLocalApiConnectionStatus();
 }
 
 async function saveRuntimeProvider(kind, payload) {
@@ -10792,7 +10836,7 @@ function setHomeToolFilter(filter) {
 function applyFriendExperienceUi() {
   document.body.classList.toggle("friend-experience-mode", friendExperienceMode);
   [els.settingsButton, els.workspaceSettingsButton].forEach((button) => {
-    if (button) button.hidden = friendExperienceMode && state.apiReady;
+    if (button) button.hidden = false;
   });
   els.startButtons.forEach((button) => {
     const visible = isFriendVisibleMode(button.dataset.startMode || "custom");

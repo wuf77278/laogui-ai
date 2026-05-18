@@ -373,6 +373,20 @@
               <p>保留现场透视、结构、窗洞和柱网，只更新完成面、家具、灯光、陈列与空间氛围。</p>
               <button class="secondary-button" type="button" data-start-mode="photo">上传现场图</button>
             </article>
+            <article class="home-tool-card" data-home-tool-card data-task-group="edit" data-keywords="风格迁移 风格转换 空间改造 材料语言 软装 风格">
+              <div class="home-tool-icon"><svg><use href="#icon-brush"></use></svg></div>
+              <span>风格 / 迁移</span>
+              <h3>空间图风格迁移</h3>
+              <p>保持原图空间结构、构图、尺度和主要对象位置，只迁移整体风格、材料语言、软装和氛围。</p>
+              <button class="secondary-button" type="button" data-start-mode="styletransfer">迁移风格</button>
+            </article>
+            <article class="home-tool-card" data-home-tool-card data-task-group="edit" data-keywords="全景图 360 环景 equirectangular 空间漫游 民宿 酒店">
+              <div class="home-tool-icon"><svg><use href="#icon-focus"></use></svg></div>
+              <span>全景 / 环景</span>
+              <h3>生成 360 全景图</h3>
+              <p>生成 2:1 环景空间图，保持水平连续、地平线稳定和首尾无缝，适合展示空间氛围。</p>
+              <button class="secondary-button" type="button" data-start-mode="panorama">生成全景图</button>
+            </article>
             <article class="home-tool-card" data-home-tool-card data-task-group="edit" data-keywords="材质替换 墙面 地面 石材 木饰面 家具 软装">
               <div class="home-tool-icon"><svg><use href="#icon-material"></use></svg></div>
               <span>材质 / 软装</span>
@@ -408,12 +422,12 @@
               <p>从最多 8 张参考图提炼项目 DNA，输出不同场域、不同机位、同一设计语言的一组图。</p>
               <button class="secondary-button" type="button" data-start-mode="designseries">生成系列</button>
             </article>
-            <article class="home-tool-card" data-home-tool-card data-task-group="drawing" data-keywords="白模 手稿 模型截图 实景 建筑 室内 景观">
+            <article class="home-tool-card" data-home-tool-card data-task-group="drawing" data-keywords="手稿 草图 线稿 效果图 实景 建筑 室内 景观">
               <div class="home-tool-icon"><svg><use href="#icon-brush"></use></svg></div>
-              <span>白模 / 手稿</span>
-              <h3>白模或手稿转实景</h3>
-              <p>保留白模体块、草图构图和设计意图，补足真实材质、灯光、家具、绿化和尺度细节。</p>
-              <button class="secondary-button" type="button" data-start-mode="whitemodel">转成实景</button>
+              <span>手稿 / 效果图</span>
+              <h3>手稿转空间效果图</h3>
+              <p>保留草图构图、空间体块和设计意图，补足真实材料、灯光、家具、绿化和尺度细节。</p>
+              <button class="secondary-button" type="button" data-start-mode="sketch">转效果图</button>
             </article>
           </div>
           <p id="homeToolEmpty" class="home-tool-empty" hidden>没有匹配的任务。可以换个关键词，比如“民宿”“平面图”“材质”或“系列”。</p>
@@ -1065,6 +1079,7 @@
               </button>
             </div>
             <p class="settings-hint">这些配置只保存在本机用户数据目录，不会写入网页文件或发给浏览器之外的设备。</p>
+            <div id="localApiConnectionStatus" class="api-probe-feedback" aria-live="polite"></div>
             <div class="api-settings-grid">
               <label>
                 思考 Base URL
