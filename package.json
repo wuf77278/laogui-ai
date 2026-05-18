@@ -1,7 +1,10 @@
 {
   "name": "laogui-ai",
   "version": "0.1.0",
-  "private": true,
+  "description": "面向建筑、室内、民宿和商业空间设计师的本地 AI 创意工作台",
+  "private": false,
+  "license": "MIT",
+  "author": "wuf77278",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -9,13 +12,16 @@
     "dev": "node server.mjs",
     "api": "node scripts/laogui-api.mjs",
     "desktop": "electron .",
+    "postinstall": "node scripts/sync-vendor.mjs",
+    "vendor:sync": "node scripts/sync-vendor.mjs",
+    "check:vendor": "node scripts/sync-vendor.mjs --check",
     "pack:mac": "electron-builder --mac --arm64 --x64",
     "pack:mac:arm64": "electron-builder --mac --arm64",
     "pack:mac:x64": "electron-builder --mac --x64",
     "pack:win": "electron-builder --win --x64",
     "pack:win:arm64": "electron-builder --win --arm64",
     "pack:all": "electron-builder --mac --arm64 --x64 --win --x64",
-    "check": "node --check server.mjs && node --check public/app.js && node --check scripts/doctor.mjs",
+    "check": "node --check server.mjs && node --check public/app.js && node --check scripts/doctor.mjs && node --check scripts/sync-vendor.mjs && npm run check:vendor",
     "doctor": "node scripts/doctor.mjs"
   },
   "engines": {
@@ -38,6 +44,7 @@
       "!public/archive/**",
       "!**/.DS_Store",
       "scripts/doctor.mjs",
+      "scripts/sync-vendor.mjs",
       "package.json"
     ],
     "extraMetadata": {
@@ -50,6 +57,7 @@
       "category": "public.app-category.graphics-design"
     },
     "win": {
+      "artifactName": "LaoguiAI-v${version}-windows-${arch}-setup.${ext}",
       "target": [
         "nsis"
       ]
@@ -57,5 +65,9 @@
     "directories": {
       "output": "release"
     }
+  },
+  "dependencies": {
+    "pannellum": "^2.5.7",
+    "three": "^0.160.0"
   }
 }

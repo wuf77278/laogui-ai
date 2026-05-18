@@ -9,10 +9,19 @@
 - 图生图/编辑类提示词需要先写清楚保留项，再写修改项，避免模型把原图重绘成新图。
 - 建筑/室内提示词需要单独控制空间秩序、相机、材质系统、灯光层级、尺度和可建造性。
 
+参考来源：
+
+- [OpenAI GPT Image prompting guide](https://developers.openai.com/cookbook/examples/multimodal/image-gen-models-prompting-guide)
+- [OpenAI Cookbook image generation examples](https://cookbook.openai.com/examples/generate_images_with_gpt_image)
+- [ImgEdify/Awesome-GPT4o-Image-Prompts](https://github.com/ImgEdify/Awesome-GPT4o-Image-Prompts)
+- [wuyoscar/gpt_image_2_skill](https://github.com/wuyoscar/gpt_image_2_skill)
+
 ## 当前库结构
 
 - `communityPromptKernel(mode)`：通用社区提示词方法，强调分段、约束前置、细节层级和编辑保留项。
-- `communityModeControlLines(mode)`：按按钮输出专项规则，比如平面图、3D 平面图、设计系列、材料板和编辑工具。
+- `communityPromptExpansionLines(mode)`：补充开放社区常见输出类型小模式，包括产品图、UI/mockup、海报文字、信息图、角色/系列一致性和多图合成。
+- `communityPromptControlVocabulary(mode)`：统一相机、灯光、材质、色彩、文字和质量控制词，方便 gpt-5.5 把用户口语转成生图可执行约束。
+- `communityModeControlLines(mode)`：按按钮输出专项规则，比如平面图转彩平、彩平转轴测图、轴测图转效果图、设计系列、材料板和编辑工具。
 - `communityPromptBlueprintLines(mode)`：为每个按钮声明输出边界、不可变项、允许变化和失败防护。
 - `communityPromptPreflightLines(mode)`：最终提示词提交给生图模型前的自检规则，防止模式跑偏。
 - `communityPromptLibraryBlock(options)`：组合完整提示词库块，自动插入到 gpt-5.5 的提示词融合流程。
@@ -38,10 +47,19 @@ AVOID
 ## 当前重点
 
 - 平面线稿转彩平：以图片编辑和图纸表达为主，不进入透视渲染语言。
-- 平面图转 3D 平面图：先锁定房间形状、相邻关系、开口和动线，再生成 3D cutaway。
-- 3D 平面图转效果图：先选择具体空间区域和人视角相机，再展开材料、灯光和陈列。
+- 平面图转彩色平面图：先锁定房间形状、相邻关系、开口和动线，再生成彩色平面中间稿。
+- 彩色平面图转轴测图：先保持空间结构不变，再建立高精度轴测透视和体块层次。
+- 轴测图转效果图：先选择具体空间区域和人视角相机，再展开材料、灯光和陈列。
 - 生成设计系列：先定义统一设计 DNA，再按外立面、大堂、卧室、餐厅、卫浴、细节等角色生成。
 - 图片编辑工具：只改指定目标，反复强调构图、几何、物体身份和相机不变。
+
+## v8 社区扩充
+
+- 新增 `OPEN_COMMUNITY_PROMPT_EXPANSION`：把开源提示词库里的常见做法拆成可迁移的模式，而不是复制示例提示词。
+- 新增 `ARTIFACT_MINI_SCHEMAS`：让自定义模式先识别产品图、UI、海报、信息图、角色一致性、多图合成等输出类型，减少所有请求都滑向“室内效果图”的问题。
+- 新增 `CONTROL_VOCABULARY`：把相机、灯光、材质、色彩、文字和质量拆成单独控制轴，便于最终提示词更稳定。
+- 强化 `FINAL_PROMPT_PREFLIGHT`：检查文字密集、UI、产品、海报、图解、合成类请求是否保留了自己的输出语法。
+- 对建筑/室内继续保持几何优先：新增扩展只在适合时启用，平面/CAD/现场图仍以不可变结构和相机边界为最高优先级。
 
 ## v3 优化原则
 

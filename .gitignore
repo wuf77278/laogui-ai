@@ -9,10 +9,15 @@
 logs/
 public/generated/
 public/archive/
+public/vendor/
 archive/
 
 .codex-screens/
+.codex/
 .codex-ui-*.png
+browser-snapshot.txt
+snapshot.txt
+test-*.png
 tmp-*
 *.log
 

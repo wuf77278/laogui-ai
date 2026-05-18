@@ -8,20 +8,18 @@
     <link rel="icon" href="/assets/laogui-ai-favicon.svg" type="image/svg+xml" />
     <script>
       (() => {
-        let theme = "night";
-        try {
-          theme = localStorage.getItem("laogui-theme") === "day" ? "day" : "night";
-        } catch {}
+        const theme = "day";
         document.documentElement.dataset.theme = theme;
-        document.documentElement.style.colorScheme = theme === "day" ? "light" : "dark";
+        document.documentElement.style.colorScheme = "light";
         window.__LAOGUI_INITIAL_THEME__ = theme;
       })();
     </script>
+    <link rel="stylesheet" href="/vendor/pannellum.css" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <script>
-      document.body.dataset.theme = window.__LAOGUI_INITIAL_THEME__ || document.documentElement.dataset.theme || "night";
+      document.body.dataset.theme = "day";
     </script>
     <svg class="icon-sprite" aria-hidden="true">
       <symbol id="icon-spark" viewBox="0 0 24 24">
@@ -53,18 +51,18 @@
         <path d="M8 20H5a1 1 0 0 1-1-1v-3" />
         <circle cx="12" cy="12" r="3" />
       </symbol>
-      <symbol id="icon-viewpoint" viewBox="0 0 24 24">
-        <circle cx="12" cy="5.5" r="2.5" />
-        <path d="M12 8v7" />
-        <path d="M8 12h8" />
-        <path d="M10 15l-2 5" />
-        <path d="M14 15l2 5" />
-        <path d="M17.5 8.5l3 3-3 3" />
-      </symbol>
       <symbol id="icon-history" viewBox="0 0 24 24">
         <path d="M3 12a9 9 0 1 0 3-6.7" />
         <path d="M3 4v5h5" />
         <path d="M12 7v5l3 2" />
+      </symbol>
+      <symbol id="icon-library" viewBox="0 0 24 24">
+        <rect x="4" y="4" width="7" height="7" rx="1.5" />
+        <rect x="13" y="4" width="7" height="7" rx="1.5" />
+        <rect x="4" y="13" width="7" height="7" rx="1.5" />
+        <rect x="13" y="13" width="7" height="7" rx="1.5" />
+        <path d="M6.5 9l1.4-1.5 1.6 1.8" />
+        <path d="M15.5 18l1.4-1.5 1.6 1.8" />
       </symbol>
       <symbol id="icon-status" viewBox="0 0 24 24">
         <path d="M4 13h4l2-6 4 10 2-4h4" />
@@ -121,6 +119,13 @@
         <path d="M7 10l5 5 5-5" />
         <path d="M5 21h14" />
       </symbol>
+      <symbol id="icon-vector" viewBox="0 0 24 24">
+        <path d="M5 19c4-9 10-13 14-14" />
+        <path d="M5 19c3-2 8-3 14-2" />
+        <circle cx="5" cy="19" r="2" />
+        <circle cx="19" cy="5" r="2" />
+        <circle cx="19" cy="17" r="2" />
+      </symbol>
       <symbol id="icon-star" viewBox="0 0 24 24">
         <path d="M12 3l2.7 5.5 6.1.9-4.4 4.3 1 6-5.4-2.9-5.4 2.9 1-6-4.4-4.3 6.1-.9L12 3z" />
       </symbol>
@@ -162,12 +167,27 @@
         <circle cx="12" cy="12" r="3" />
         <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.1a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.6 1z" />
       </symbol>
+      <symbol id="icon-check" viewBox="0 0 24 24">
+        <path d="M20 6L9 17l-5-5" />
+      </symbol>
       <symbol id="icon-box-select" viewBox="0 0 24 24">
         <rect x="5" y="5" width="14" height="14" rx="1" />
         <path d="M3 8V5a2 2 0 0 1 2-2h3" />
         <path d="M16 3h3a2 2 0 0 1 2 2v3" />
         <path d="M21 16v3a2 2 0 0 1-2 2h-3" />
         <path d="M8 21H5a2 2 0 0 1-2-2v-3" />
+      </symbol>
+      <symbol id="icon-crop" viewBox="0 0 24 24">
+        <path d="M7 3v11a3 3 0 0 0 3 3h11" />
+        <path d="M17 21V10a3 3 0 0 0-3-3H3" />
+        <path d="M7 7H4a1 1 0 0 0-1 1v3" />
+        <path d="M17 17h3a1 1 0 0 0 1-1v-3" />
+      </symbol>
+      <symbol id="icon-cube" viewBox="0 0 24 24">
+        <path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z" />
+        <path d="M12 12l8-4.5" />
+        <path d="M12 12v9" />
+        <path d="M12 12L4 7.5" />
       </symbol>
       <symbol id="icon-brush" viewBox="0 0 24 24">
         <path d="M14 5l5 5" />
@@ -225,7 +245,7 @@
           <button id="settingsButton" class="icon-button icon-only" type="button" title="设置" aria-label="设置" aria-controls="appSettingsOverlay" aria-expanded="false">
             <svg><use href="#icon-settings"></use></svg>
           </button>
-          <span id="modelStatus" class="status-pill">连接中</span>
+          <span id="modelStatus" class="status-pill">模型检测中</span>
         </div>
       </header>
 
@@ -233,8 +253,8 @@
         <section class="home-hero">
           <div class="home-hero-copy">
             <p class="eyebrow">AI Space Design Studio</p>
-            <h1>把参考图、平面图和现场图，整理成可提案的空间视觉方案</h1>
-            <p>面向室内、建筑与商业空间设计师：上传素材、补充设计意图，Agent 会先分析空间约束、材料逻辑和镜头策略，再生成效果图、系列图与客户提案素材。</p>
+            <h1>让 AI 先读懂空间，再生成成套设计图</h1>
+            <p>面向室内、建筑与商业空间设计师：上传参考图、平面图或现场图后，Agent 会先判断空间类型、提取材料与灯光系统、锁定动线和结构边界，再生成可提案的效果图、系列图与客户沟通素材。</p>
             <div class="home-hero-actions" aria-label="开始创作">
               <button class="primary-button home-canvas-button" type="button" data-start-mode="custom">
                 <svg><use href="#icon-spark"></use></svg>
@@ -245,10 +265,10 @@
               </button>
             </div>
             <div class="home-studio-pills" aria-label="核心能力">
-              <span>图纸识别</span>
-              <span>材料策略</span>
-              <span>灯光镜头</span>
-              <span>提案输出</span>
+              <span>空间识别</span>
+              <span>系统提炼</span>
+              <span>局部可控</span>
+              <span>成套输出</span>
             </div>
           </div>
           <div class="home-atelier-board" aria-hidden="true">
@@ -267,62 +287,179 @@
             </div>
           </div>
         </section>
-        <section class="function-grid home-entry-grid" aria-label="核心功能">
-          <article class="function-card home-entry-card">
-            <img src="/assets/library/library-contact-sheet.png" width="2048" height="1024" loading="lazy" decoding="async" alt="自由创作参考图集合" />
-            <div>
-              <span class="tag">概念</span>
-              <h2>自由概念提案</h2>
-              <p>用参考图、材料意向和一句 brief 快速生成可汇报的空间视觉方向。</p>
-              <button class="icon-only" type="button" data-start-mode="custom" title="开始概念提案" aria-label="开始概念提案">
-                <svg><use href="#icon-spark"></use></svg>
-              </button>
+        <section class="home-plan-flow" aria-labelledby="homePlanFlowTitle">
+          <div class="home-section-copy">
+            <p class="eyebrow">Floor Plan Workflow</p>
+            <h2 id="homePlanFlowTitle">平面图优先走三段链路</h2>
+            <p>平面图系列会提示这条推荐路径，但不会强制执行：先生成彩色平面图，再生成高精度轴测图，最后在轴测图上框选区域生成效果图。</p>
+          </div>
+          <div class="home-plan-flow-steps" aria-label="平面图推荐链路">
+            <button type="button" data-start-mode="plan-axonometric">
+              <span>1</span>
+              <strong>平面图转彩平</strong>
+              <em>保留图纸硬布局</em>
+            </button>
+            <button type="button" data-start-mode="plan-axonometric-view">
+              <span>2</span>
+              <strong>彩平转轴测图</strong>
+              <em>高精度 3D 透视</em>
+            </button>
+            <button type="button" data-start-mode="plan-render">
+              <span>3</span>
+              <strong>轴测图转效果图</strong>
+              <em>框选区域生成人视角</em>
+            </button>
+          </div>
+        </section>
+        <section class="home-tool-center" aria-labelledby="homeToolCenterTitle">
+          <div class="home-tool-center-head">
+            <div class="home-section-copy">
+              <p class="eyebrow">Design Task Center</p>
+              <h2 id="homeToolCenterTitle">按空间设计任务进入，而不是先理解 AI 工具</h2>
+              <p>把常见工作拆成可直接启动的任务：图纸、现场、参考、材质、灯光、系列和提案输出都从这里进工作台。</p>
             </div>
-          </article>
-          <article class="function-card home-entry-card">
-            <img src="/assets/library/output-client-board.png" width="768" height="768" loading="lazy" decoding="async" alt="平面图工作流" />
-            <div>
-              <span class="tag">图纸</span>
-              <h2>平面图转 3D 方案</h2>
-              <p>保留布局逻辑，把施工图快速转成可继续推敲的人视角空间方案。</p>
-              <button class="icon-only" type="button" data-start-mode="plan-axonometric" title="上传平面图" aria-label="上传平面图">
-                <svg><use href="#icon-upload"></use></svg>
-              </button>
-            </div>
-          </article>
-          <article class="function-card home-entry-card">
-            <img src="/assets/library/scene-hospitality-lounge.png" width="768" height="768" loading="lazy" decoding="async" alt="现场白模手稿转效果图" />
-            <div>
-              <span class="tag">现场</span>
-              <h2>现场图视觉改造</h2>
-              <p>识别现场、白模或手稿边界，在原空间基础上生成专业效果图。</p>
-              <button class="icon-only" type="button" data-start-mode="photo" title="上传现场图" aria-label="上传现场图">
-                <svg><use href="#icon-upload"></use></svg>
-              </button>
-            </div>
-          </article>
-          <article class="function-card home-entry-card">
-            <img src="/assets/library/scene-hospitality-lounge.png" width="768" height="768" loading="lazy" decoding="async" alt="视角转换示例空间" />
-            <div>
-              <span class="tag">视角</span>
-              <h2>拖动机位生成新视角</h2>
-              <p>在画布图面上放置人视角点，让 AI 按站位和朝向重建新的空间画面。</p>
-              <button class="icon-only" type="button" data-start-mode="viewpoint" title="视角转换" aria-label="视角转换">
-                <svg><use href="#icon-viewpoint"></use></svg>
-              </button>
-            </div>
-          </article>
-          <article class="function-card home-entry-card">
-            <img src="/assets/library/material-stone-metal.png" width="768" height="768" loading="lazy" decoding="async" alt="生成设计系列" />
-            <div>
-              <span class="tag">系列</span>
-              <h2>成套方案生成</h2>
-              <p>综合最多 8 张参考图，统一材料、灯光和镜头语言输出一组设计系列。</p>
-              <button class="icon-only" type="button" data-start-mode="designseries" title="生成设计系列" aria-label="生成设计系列">
-                <svg><use href="#icon-reference"></use></svg>
-              </button>
-            </div>
-          </article>
+            <label class="home-tool-search">
+              <span>搜索任务</span>
+              <input id="homeToolSearch" type="search" placeholder="搜索：平面图、民宿、材质、灯光、系列..." autocomplete="off" />
+            </label>
+          </div>
+          <div class="home-tool-filters" aria-label="按工作阶段筛选">
+            <button class="active" type="button" data-home-tool-filter="all" aria-pressed="true">全部</button>
+            <button type="button" data-home-tool-filter="brief" aria-pressed="false">灵感与策略</button>
+            <button type="button" data-home-tool-filter="drawing" aria-pressed="false">图纸与模型</button>
+            <button type="button" data-home-tool-filter="edit" aria-pressed="false">改图与优化</button>
+            <button type="button" data-home-tool-filter="series" aria-pressed="false">成套输出</button>
+          </div>
+          <div id="homeToolGrid" class="home-tool-grid">
+            <article class="home-tool-card" data-home-tool-card data-task-group="brief" data-keywords="参考图 视觉洞察 灵感 概念 提案 空间 材料 灯光">
+              <div class="home-tool-icon"><svg><use href="#icon-reference"></use></svg></div>
+              <span>参考 / 灵感</span>
+              <h3>参考图生成空间方向</h3>
+              <p>上传参考图，让 Agent 先判断它贡献的是空间、材料、灯光还是氛围，再转成可执行设计方向。</p>
+              <button class="secondary-button" type="button" data-start-mode="custom">开始洞察</button>
+            </article>
+            <article class="home-tool-card" data-home-tool-card data-task-group="brief" data-keywords="设计元素 推演 方案推导 概念 设计逻辑 材料 灯光 母题 方案">
+              <div class="home-tool-icon"><svg><use href="#icon-think"></use></svg></div>
+              <span>策略 / 推导</span>
+              <h3>设计元素推演与方案推导</h3>
+              <p>从项目条件、参考图和画布素材里拆出设计元素，推导材料、灯光、动线、母题和多套方案方向。</p>
+              <button class="secondary-button" type="button" data-start-mode="design-derivation">推导方案</button>
+            </article>
+            <article class="home-tool-card" data-home-tool-card data-task-group="drawing" data-keywords="平面图 图纸 户型 CAD 彩平 彩色平面 链路">
+              <div class="home-tool-icon"><svg><use href="#icon-cube"></use></svg></div>
+              <span>图纸 / 彩平</span>
+              <h3>平面图转彩色平面图</h3>
+              <p>把平面图整理成清晰的彩色语义平面，保留墙体、门窗、房间关系、家具脚印和功能分区。</p>
+              <button class="secondary-button" type="button" data-start-mode="plan-axonometric">生成彩平</button>
+            </article>
+            <article class="home-tool-card" data-home-tool-card data-task-group="drawing" data-keywords="彩色平面 轴测图 斜俯视 等轴测 空间结构 体块">
+              <div class="home-tool-icon"><svg><use href="#icon-cube"></use></svg></div>
+              <span>彩平 / 轴测</span>
+              <h3>彩色平面图转轴测图</h3>
+              <p>把彩色平面图转成高精度轴测表达，保留墙体、开口、家具脚印和空间层级，并强化 3D 透视感。</p>
+              <button class="secondary-button" type="button" data-start-mode="plan-axonometric-view">生成轴测图</button>
+            </article>
+            <article class="home-tool-card" data-home-tool-card data-task-group="drawing" data-keywords="轴测图 效果图 人视角 选区 机位 透视">
+              <div class="home-tool-icon"><svg><use href="#icon-image"></use></svg></div>
+              <span>轴测 / 效果图</span>
+              <h3>轴测图转效果图</h3>
+              <p>框选一个功能区，把轴测图翻译成人视角画面，明确镜头、前中后景和材料灯光。</p>
+              <button class="secondary-button" type="button" data-start-mode="plan-render">生成效果图</button>
+            </article>
+            <article class="home-tool-card" data-home-tool-card data-task-group="edit" data-keywords="现场图 照片 改造 旧房 民宿 商业 住宅">
+              <div class="home-tool-icon"><svg><use href="#icon-image"></use></svg></div>
+              <span>现场 / 改造</span>
+              <h3>现场图转空间效果图</h3>
+              <p>保留现场透视、结构、窗洞和柱网，只更新完成面、家具、灯光、陈列与空间氛围。</p>
+              <button class="secondary-button" type="button" data-start-mode="photo">上传现场图</button>
+            </article>
+            <article class="home-tool-card" data-home-tool-card data-task-group="edit" data-keywords="材质替换 墙面 地面 石材 木饰面 家具 软装">
+              <div class="home-tool-icon"><svg><use href="#icon-material"></use></svg></div>
+              <span>材质 / 软装</span>
+              <h3>材质与软装替换</h3>
+              <p>只替换指定区域或材料系统，保留几何、透视、光向、阴影和非目标区域。</p>
+              <button class="secondary-button" type="button" data-start-mode="materialreplace">换材料</button>
+            </article>
+            <article class="home-tool-card" data-home-tool-card data-task-group="edit" data-keywords="灯光 夜景 氛围 色温 曝光 洗墙 重点照明">
+              <div class="home-tool-icon"><svg><use href="#icon-light"></use></svg></div>
+              <span>灯光 / 氛围</span>
+              <h3>灯光氛围调整</h3>
+              <p>不重新设计空间，只改变日景、黄昏、夜景、洗墙和重点照明的层次。</p>
+              <button class="secondary-button" type="button" data-start-mode="lightingadjust">调灯光</button>
+            </article>
+            <article class="home-tool-card" data-home-tool-card data-task-group="edit" data-keywords="调色 曝光 对比 高光 阴影 色温 饱和度 黑白场">
+              <div class="home-tool-icon"><svg><use href="#icon-filter"></use></svg></div>
+              <span>光色 / 后期</span>
+              <h3>图片调色</h3>
+              <p>像修图软件一样调整曝光、对比、高光、阴影、色温、饱和度和清晰度。</p>
+              <button class="secondary-button" type="button" data-start-mode="colorgrade">调色</button>
+            </article>
+            <article class="home-tool-card" data-home-tool-card data-task-group="edit" data-keywords="抠图 去背景 透明PNG 主体识别 图层 分割">
+              <div class="home-tool-icon"><svg><use href="#icon-box-select"></use></svg></div>
+              <span>抠图 / 透明图</span>
+              <h3>智能抠图</h3>
+              <p>先自动识别主体候选图层，点击淡蓝区域确认后输出透明背景 PNG。</p>
+              <button class="secondary-button" type="button" data-start-mode="cutout">抠图</button>
+            </article>
+            <article class="home-tool-card" data-home-tool-card data-task-group="series" data-keywords="成套生成 系列 民宿 酒店 商业 办公 餐厅 客房 提案">
+              <div class="home-tool-icon"><svg><use href="#icon-series"></use></svg></div>
+              <span>项目 / 系列</span>
+              <h3>成套设计系列生成</h3>
+              <p>从最多 8 张参考图提炼项目 DNA，输出不同场域、不同机位、同一设计语言的一组图。</p>
+              <button class="secondary-button" type="button" data-start-mode="designseries">生成系列</button>
+            </article>
+            <article class="home-tool-card" data-home-tool-card data-task-group="drawing" data-keywords="白模 手稿 模型截图 实景 建筑 室内 景观">
+              <div class="home-tool-icon"><svg><use href="#icon-brush"></use></svg></div>
+              <span>白模 / 手稿</span>
+              <h3>白模或手稿转实景</h3>
+              <p>保留白模体块、草图构图和设计意图，补足真实材质、灯光、家具、绿化和尺度细节。</p>
+              <button class="secondary-button" type="button" data-start-mode="whitemodel">转成实景</button>
+            </article>
+          </div>
+          <p id="homeToolEmpty" class="home-tool-empty" hidden>没有匹配的任务。可以换个关键词，比如“民宿”“平面图”“材质”或“系列”。</p>
+        </section>
+        <section class="home-template-runway" aria-labelledby="homeTemplateTitle">
+          <div class="home-section-copy">
+            <p class="eyebrow">Project Starters</p>
+            <h2 id="homeTemplateTitle">常用空间模板，直接带着项目逻辑进画布</h2>
+          </div>
+          <div class="home-template-grid">
+            <button type="button" data-home-template="homestay-lobby">民宿大堂</button>
+            <button type="button" data-home-template="guest-suite">客房套房</button>
+            <button type="button" data-home-template="restaurant">餐厅空间</button>
+            <button type="button" data-home-template="retail-display">商业展示</button>
+            <button type="button" data-home-template="plan-color">平面图上色</button>
+            <button type="button" data-home-template="material-replace">材质替换</button>
+          </div>
+        </section>
+        <section class="home-system-section" aria-labelledby="homeSystemTitle">
+          <div class="home-section-copy">
+            <p class="eyebrow">Spatial System Thinking</p>
+            <h2 id="homeSystemTitle">不是单张图灵感，而是一套可延展的空间系统</h2>
+            <p>把 Lovart 的“系统思维”收窄到空间设计：同一项目里，材料、灯光、动线、镜头和细节母题要能跨大堂、客房、走廊、庭院或办公场景连续成立。</p>
+          </div>
+          <div class="system-card-grid" aria-label="空间系统能力">
+            <article class="system-card">
+              <svg aria-hidden="true"><use href="#icon-reference"></use></svg>
+              <h3>视觉洞察</h3>
+              <p>从参考图里拆出空间秩序、材料家族、家具尺度、灯光氛围和可复用设计语言。</p>
+            </article>
+            <article class="system-card">
+              <svg aria-hidden="true"><use href="#icon-material"></use></svg>
+              <h3>项目 DNA</h3>
+              <p>先建立材料、色彩、灯具、节点和重复母题，再安排每张图承担不同空间角色。</p>
+            </article>
+            <article class="system-card">
+              <svg aria-hidden="true"><use href="#icon-focus"></use></svg>
+              <h3>定点可控</h3>
+              <p>保留结构、动线和非目标区域，只改选区、材质、灯光、软装或指定空间节点。</p>
+            </article>
+            <article class="system-card">
+              <svg aria-hidden="true"><use href="#icon-series"></use></svg>
+              <h3>成套方案</h3>
+              <p>一组图覆盖入口、公共核心、次级空间、过渡区域和材料细节，而不是重复同一角度。</p>
+            </article>
+          </div>
         </section>
       </main>
 
@@ -333,15 +470,25 @@
               <img src="/assets/laogui-ai-logo.svg" alt="" />
             </div>
             <div id="canvasList" class="canvas-list" role="listbox" aria-label="所有画布"></div>
-            <div class="canvas-list-actions" aria-label="画布操作">
-              <button id="newCanvasButton" class="icon-button icon-only" type="button" title="新建画布" aria-label="新建画布">
-                <svg><use href="#icon-plus"></use></svg>
-              </button>
-              <button id="renameCanvasButton" class="icon-button icon-only" type="button" title="重命名当前画布" aria-label="重命名当前画布">
-                <svg><use href="#icon-rename"></use></svg>
-              </button>
-              <button id="deleteCanvasButton" class="icon-button icon-only" type="button" title="删除当前画布" aria-label="删除当前画布">
+            <div class="canvas-list-footer">
+              <button id="clearAllCanvasesButton" class="secondary-button canvas-list-clear-button" type="button" title="清空所有画布" aria-label="清空所有画布">
                 <svg><use href="#icon-trash"></use></svg>
+                <span>清空全部</span>
+              </button>
+              <div class="canvas-list-actions" aria-label="画布操作">
+                <button id="newCanvasButton" class="icon-button icon-only" type="button" title="新建画布" aria-label="新建画布">
+                  <svg><use href="#icon-plus"></use></svg>
+                </button>
+                <button id="renameCanvasButton" class="icon-button icon-only" type="button" title="重命名当前画布" aria-label="重命名当前画布">
+                  <svg><use href="#icon-rename"></use></svg>
+                </button>
+                <button id="deleteCanvasButton" class="icon-button icon-only" type="button" title="删除当前画布" aria-label="删除当前画布">
+                  <svg><use href="#icon-trash"></use></svg>
+                </button>
+              </div>
+              <button id="toggleCanvasListButton" class="secondary-button canvas-list-toggle-button" type="button" title="收起画布栏" aria-label="收起画布栏" aria-controls="canvasListPanel" aria-expanded="true" aria-pressed="false">
+                <svg><use href="#icon-panel-hide"></use></svg>
+                <span>收起侧栏</span>
               </button>
             </div>
           </aside>
@@ -360,8 +507,8 @@
               <button id="canvasFocusResultsButton" class="icon-button icon-only" type="button" title="聚焦结果" aria-label="聚焦结果">
                 <svg><use href="#icon-image"></use></svg>
               </button>
-              <button id="workspaceHistoryButton" class="icon-button icon-only" type="button" title="历史" aria-label="历史" aria-controls="workspaceHistoryPanel" aria-expanded="false">
-                <svg><use href="#icon-history"></use></svg>
+              <button id="workspaceHistoryButton" class="icon-button icon-only" type="button" title="方案资产库" aria-label="方案资产库" aria-controls="assetLibraryView">
+                <svg><use href="#icon-library"></use></svg>
               </button>
               <button id="workspaceStatusButton" class="icon-button icon-only" type="button" title="状态" aria-label="状态" aria-controls="workspaceStatusPanel" aria-expanded="false">
                 <svg><use href="#icon-status"></use></svg>
@@ -384,8 +531,8 @@
           <section id="workspaceHistoryPanel" class="workspace-history-panel" hidden aria-hidden="true" tabindex="-1">
             <div class="workspace-history-head">
               <div>
-                <p class="eyebrow">History</p>
-                <h3>之前生成的历史记录</h3>
+                <p class="eyebrow">Project Vault</p>
+                <h3>方案资产库</h3>
               </div>
               <div>
                 <button id="workspaceHistoryRefreshButton" class="text-button icon-only" type="button" title="刷新" aria-label="刷新">
@@ -396,8 +543,14 @@
                 </button>
               </div>
             </div>
+            <div class="project-library-tabs" role="tablist" aria-label="方案资产库分类">
+              <button type="button" class="active" data-project-library-filter="images" aria-pressed="true">普通图</button>
+              <button type="button" data-project-library-filter="panorama" aria-pressed="false">全景图</button>
+              <button type="button" data-project-library-filter="cad" aria-pressed="false" hidden>3D / CAD</button>
+              <button type="button" data-project-library-filter="favorites" aria-pressed="false">收藏</button>
+            </div>
             <div id="workspaceHistoryList" class="workspace-history-list">
-              <p class="muted">正在读取历史记录。</p>
+              <p class="muted">正在读取方案资产库。</p>
             </div>
           </section>
           <section id="workspaceStatusPanel" class="workspace-status-panel" hidden aria-hidden="true" tabindex="-1">
@@ -463,11 +616,11 @@
             <p>输入项目条件后生成设计方向。</p>
           </div>
           <div id="infiniteCanvas" class="infinite-canvas" aria-label="设计画布">
-            <div id="canvasViewport" class="canvas-viewport">
-              <svg id="canvasLinks" class="canvas-links" viewBox="0 0 3200 2900" aria-hidden="true"></svg>
-              <div id="canvasNodes" class="canvas-nodes"></div>
-            </div>
-            <button id="canvasMinimap" class="canvas-minimap" type="button" title="点击聚焦全部内容" aria-label="画布小地图"></button>
+              <div id="canvasViewport" class="canvas-viewport">
+                <svg id="canvasLinks" class="canvas-links" viewBox="0 0 4200 3200" aria-hidden="true"></svg>
+                <div id="canvasNodes" class="canvas-nodes"></div>
+              </div>
+              <button id="canvasMinimap" class="canvas-minimap" type="button" title="点击聚焦全部内容" aria-label="画布小地图"></button>
             <section id="canvasFloatingComposer" class="canvas-floating-composer" aria-label="画布创作面板">
               <div class="canvas-floating-head">
                 <div class="canvas-floating-title">
@@ -488,12 +641,14 @@
                   能力
                   <select id="floatingModeSelect" aria-label="画布能力选择">
                     <option value="custom">自定义</option>
-                    <option value="plan-axonometric">平面图转3D</option>
-                    <option value="plan-render">3D平面转效果图</option>
-                    <option value="viewpoint">视角转换</option>
+                    <option value="plan-axonometric">平面图转彩平</option>
+                    <option value="plan-axonometric-view">彩平转轴测图</option>
+                    <option value="plan-render">轴测图转效果图</option>
+                    <option value="design-derivation">设计元素推演</option>
                     <option value="designseries">生成设计系列</option>
                     <option value="photo">现场图转效果图</option>
                     <option value="whitemodel">白模润色</option>
+                    <option value="panorama">全景图生成</option>
                     <option value="sketch">手稿生成实景</option>
                     <option value="materialreplace">材质替换</option>
                     <option value="lightingadjust">灯光调整</option>
@@ -520,6 +675,7 @@
                   <option value="4:5">4:5</option>
                   <option value="3:4">3:4</option>
                   <option value="2:3">2:3</option>
+                  <option value="2:1">2:1</option>
                   <option value="9:16">9:16</option>
                   <option value="4:3">4:3</option>
                   <option value="3:2">3:2</option>
@@ -540,6 +696,9 @@
               <div class="canvas-floating-actions">
                 <button id="floatingThinkingModeButton" class="secondary-button icon-only thinking-mode-button" type="button" title="思考模式已关闭" aria-label="思考模式已关闭" aria-pressed="false">
                   <svg><use href="#icon-think"></use></svg>
+                </button>
+                <button id="floatingNewCanvasButton" class="secondary-button icon-only" type="button" title="新建画布" aria-label="新建画布">
+                  <svg><use href="#icon-plus"></use></svg>
                 </button>
                 <button id="floatingGenerateButton" class="primary-button icon-only" type="button" title="生成图片" aria-label="生成图片">
                   <svg><use href="#icon-spark"></use></svg>
@@ -585,7 +744,10 @@
                 <svg><use href="#icon-export"></use></svg>
               </a>
             </div>
-            <img id="renderResultImage" alt="生成效果图" />
+            <div id="renderResultStage" class="render-result-stage">
+              <img id="renderResultImage" alt="生成效果图" />
+              <div id="renderResultPanorama" class="render-result-panorama" hidden></div>
+            </div>
           </section>
           <div id="directionGrid" class="direction-grid compact-directions"></div>
         </section>
@@ -607,12 +769,14 @@
                 </summary>
                 <div class="mode-tabs" role="tablist" aria-label="工作流">
                   <button class="mode-tab active" type="button" role="tab" data-mode="custom" aria-selected="true" aria-pressed="true">自定义</button>
-                  <button class="mode-tab" type="button" role="tab" data-mode="plan-axonometric" aria-selected="false" aria-pressed="false" tabindex="-1">平面图转3D</button>
-                  <button class="mode-tab" type="button" role="tab" data-mode="plan-render" aria-selected="false" aria-pressed="false" tabindex="-1">3D平面转效果图</button>
-                  <button class="mode-tab" type="button" role="tab" data-mode="viewpoint" aria-selected="false" aria-pressed="false" tabindex="-1">视角转换</button>
+                  <button class="mode-tab" type="button" role="tab" data-mode="plan-axonometric" aria-selected="false" aria-pressed="false" tabindex="-1">平面图转彩平</button>
+                  <button class="mode-tab" type="button" role="tab" data-mode="plan-axonometric-view" aria-selected="false" aria-pressed="false" tabindex="-1">彩平转轴测图</button>
+                  <button class="mode-tab" type="button" role="tab" data-mode="plan-render" aria-selected="false" aria-pressed="false" tabindex="-1">轴测图转效果图</button>
+                  <button class="mode-tab" type="button" role="tab" data-mode="design-derivation" aria-selected="false" aria-pressed="false" tabindex="-1">设计推导</button>
                   <button class="mode-tab" type="button" role="tab" data-mode="designseries" aria-selected="false" aria-pressed="false" tabindex="-1">生成设计系列</button>
                   <button class="mode-tab" type="button" role="tab" data-mode="photo" aria-selected="false" aria-pressed="false" tabindex="-1">现场图转效果图</button>
                   <button class="mode-tab" type="button" role="tab" data-mode="whitemodel" aria-selected="false" aria-pressed="false" tabindex="-1">白模润色</button>
+                  <button class="mode-tab" type="button" role="tab" data-mode="panorama" aria-selected="false" aria-pressed="false" tabindex="-1">全景图生成</button>
                   <button class="mode-tab" type="button" role="tab" data-mode="sketch" aria-selected="false" aria-pressed="false" tabindex="-1">手稿生成实景</button>
                   <button class="mode-tab" type="button" role="tab" data-mode="materialreplace" aria-selected="false" aria-pressed="false" tabindex="-1">材质替换</button>
                   <button class="mode-tab" type="button" role="tab" data-mode="lightingadjust" aria-selected="false" aria-pressed="false" tabindex="-1">灯光调整</button>
@@ -626,7 +790,7 @@
                 <input id="primaryImageInput" type="file" accept="image/*" />
                 <span class="upload-plus">+</span>
                 <strong id="primaryUploadLabel">上传底图 / 图纸</strong>
-                <span>支持平面图、现场照、白模或手稿；可框选关键区域并控制结构保留程度。</span>
+                <span>支持平面图、现场照、模型截图或手稿；可框选关键区域并控制结构保留程度。</span>
               </label>
               <label class="agent-upload-card secondary-upload">
                 <input id="referenceImageInput" type="file" accept="image/*" multiple />
@@ -634,7 +798,13 @@
                 <strong id="referenceUploadLabel">参考图 / 材料板（最多 8 张）</strong>
                 <span>追加氛围、材料、灯光或竞品参考，Agent 会综合提炼可执行的设计语言。</span>
               </label>
+              <section id="planAngleSyncBlock" class="plan-angle-sync-block" hidden aria-live="polite"></section>
             </div>
+            <div id="uploadStatusBar" class="upload-status-bar" hidden aria-live="polite">
+              <span id="uploadStatusState" class="status-pill">待上传</span>
+              <p id="uploadStatusText">上传图片后会显示读取、压缩和识别状态。</p>
+            </div>
+            <section id="imageModelingFlowBlock" class="image-modeling-flow-block" hidden aria-live="polite"></section>
             <div id="uploadPreviewBlock" class="upload-block" hidden>
               <div class="plan-preview-shell">
                 <button id="removePrimaryImageButton" class="upload-remove-button" type="button" title="删除原图" aria-label="删除原图" hidden>
@@ -645,6 +815,28 @@
               </div>
               <div id="referenceStrip" class="reference-strip"></div>
             </div>
+            <section id="imageModelingSubjectPanel" class="modeling-subject-panel" hidden>
+              <div class="modeling-subject-head">
+                <span id="imageModelingSubjectStatus" class="status-pill">未识别</span>
+                <strong id="imageModelingSubjectTitle">先识别主体</strong>
+              </div>
+              <p id="imageModelingSubjectSummary">推荐先生成白底图，再生成 CAD 结构参考图，最后导出 DXF / SVG。</p>
+              <div id="imageModelingLayerList" class="modeling-layer-list"></div>
+              <div class="modeling-subject-actions">
+                <button id="imageModelingAnalyzeButton" class="secondary-button" type="button">
+                  <svg><use href="#icon-vector"></use></svg>
+                  1 生成白底图
+                </button>
+                <button id="imageModelingConfirmButton" class="secondary-button" type="button" disabled>
+                  <svg><use href="#icon-vector"></use></svg>
+                  可选扩图
+                </button>
+                <button id="imageModelingCadReferenceButton" class="secondary-button" type="button">
+                  <svg><use href="#icon-vector"></use></svg>
+                  2 生成CAD参考图
+                </button>
+              </div>
+            </section>
             <details class="agent-drawer agent-advanced">
               <summary>更多设置</summary>
               <div class="agent-advanced-block">
@@ -731,6 +923,7 @@
                     <option value="4:5">4:5 海报</option>
                     <option value="3:4">3:4 竖图</option>
                     <option value="2:3">2:3 竖图</option>
+                    <option value="2:1">2:1 全景</option>
                     <option value="9:16">9:16 竖屏</option>
                     <option value="4:3">4:3 横图</option>
                     <option value="3:2">3:2 横图</option>
@@ -770,6 +963,9 @@
                 <button id="thinkingModeButton" class="secondary-button thinking-mode-button" type="button" title="思考模式已关闭" aria-label="思考模式：关，已关闭" aria-pressed="false">
                   思考模式：关
                 </button>
+                <button id="agentNewCanvasButton" class="secondary-button icon-only" type="button" title="新建画布" aria-label="新建画布">
+                  <svg><use href="#icon-plus"></use></svg>
+                </button>
                 <button id="canvasGenerateButton" class="primary-button" type="button" title="生成图片" aria-label="生成图片">
                   生成图片
                 </button>
@@ -787,18 +983,45 @@
               </div>
             </div>
             <details class="agent-drawer">
-              <summary>输出管理</summary>
+              <summary>下载管理</summary>
               <div class="output-manager-actions">
-                <input id="outputManagerSearch" type="search" placeholder="搜索作品" aria-label="搜索当前画布作品" />
-                <button id="outputFavoritesOnlyButton" class="secondary-button icon-only" type="button" title="只看收藏" aria-label="只看收藏" aria-pressed="false"><svg><use href="#icon-star"></use></svg></button>
-                <button id="exportOutputsButton" class="secondary-button icon-only" type="button" title="下载筛选结果" aria-label="下载筛选结果"><svg><use href="#icon-export"></use></svg></button>
+                <input id="outputManagerSearch" type="search" placeholder="搜索下载项" aria-label="搜索当前画布下载项" />
+                <button id="exportOutputsButton" class="secondary-button icon-only" type="button" title="批量下载筛选结果" aria-label="批量下载筛选结果"><svg><use href="#icon-export"></use></svg></button>
               </div>
               <div id="outputManagerList" class="output-manager-list">
-                <p class="muted">生成图片后可在这里下载。</p>
+                <p class="muted">生成图片后可在这里预览、下载或导出 SVG 矢量图。</p>
               </div>
             </details>
           </section>
         </aside>
+      </main>
+
+      <main id="assetLibraryView" class="asset-library-view" hidden tabindex="-1">
+        <section class="asset-library-hero" aria-labelledby="assetLibraryTitle">
+          <div>
+            <p class="eyebrow">Project Vault</p>
+            <h1 id="assetLibraryTitle">方案资产库</h1>
+            <div id="assetLibraryStats" class="asset-library-stats" aria-label="资产统计"></div>
+          </div>
+          <div class="asset-library-toolbar">
+            <button id="assetLibraryBackButton" class="secondary-button" type="button">返回工作台</button>
+            <button id="assetLibraryDownloadAllButton" class="icon-button icon-only" type="button" title="下载全部创作图" aria-label="下载全部创作图">
+              <svg><use href="#icon-export"></use></svg>
+            </button>
+            <button id="assetLibraryRefreshButton" class="icon-button icon-only" type="button" title="刷新" aria-label="刷新">
+              <svg><use href="#icon-refresh"></use></svg>
+            </button>
+          </div>
+        </section>
+        <section class="asset-library-content" aria-live="polite">
+          <div class="asset-library-content-head">
+            <h2>全部创作图</h2>
+            <span id="assetLibraryCount">0 张创作图</span>
+          </div>
+          <div id="assetLibraryList" class="asset-library-grid">
+            <p class="muted">正在读取方案资产库。</p>
+          </div>
+        </section>
       </main>
     </div>
 
@@ -815,15 +1038,6 @@
           </button>
         </header>
         <div class="app-settings-body">
-          <section class="app-settings-block" aria-labelledby="themeSettingsTitle">
-            <div class="settings-title-row">
-              <span id="themeSettingsTitle" class="agent-skill-title">界面设置</span>
-            </div>
-            <div class="theme-toggle" role="group" aria-label="界面颜色">
-              <button id="themeNightButton" class="active" type="button" data-theme-choice="night" aria-pressed="true">夜间</button>
-              <button id="themeDayButton" type="button" data-theme-choice="day" aria-pressed="false">白天</button>
-            </div>
-          </section>
           <section class="app-settings-block" aria-labelledby="storageSettingsTitle">
             <div class="settings-title-row">
               <span id="storageSettingsTitle" class="agent-skill-title">存储维护</span>
@@ -991,6 +1205,7 @@
                   <option value="4:5">4:5</option>
                   <option value="3:4">3:4</option>
                   <option value="2:3">2:3</option>
+                  <option value="2:1">2:1</option>
                   <option value="9:16">9:16</option>
                   <option value="4:3">4:3</option>
                   <option value="3:2">3:2</option>
@@ -1015,6 +1230,7 @@
     </section>
 
     <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+    <script src="/vendor/pannellum.js"></script>
     <script src="/app.js" type="module"></script>
   </body>
 </html>

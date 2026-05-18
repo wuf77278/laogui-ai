@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import { gzipSync } from "node:zlib";
 import {
   communityPromptBlueprintLines,
   communityPromptCompactRules,
@@ -166,8 +167,10 @@ const config = {
   imageGenerationQueueTimeoutMs: boundedIntegerEnv(["IMAGE_GENERATION_QUEUE_TIMEOUT_SECONDS", "LAOGUI_IMAGE_QUEUE_TIMEOUT_SECONDS"], 600, 10, 3600) * 1000,
   publicApi: {
     token: process.env.LAOGUI_API_TOKEN || process.env.API_ACCESS_TOKEN || "",
-    corsOrigin: process.env.API_CORS_ORIGIN || ""
-  }
+    corsOrigin: process.env.API_CORS_ORIGIN || "",
+    allowUnauthenticatedRemote: parseBooleanEnv(process.env.LAOGUI_ALLOW_UNAUTHENTICATED_REMOTE || process.env.API_ALLOW_UNAUTHENTICATED_REMOTE, false)
+  },
+  host: normalizeBaseUrl(process.env.HOST || process.env.LAOGUI_HOST || "127.0.0.1")
 };
 
 const imageEndpointStats = new Map();
@@ -191,6 +194,20 @@ const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store"
 };
+const TEXT_COMPRESSION_MIN_BYTES = 1024;
+const COMPRESSIBLE_STATIC_EXTENSIONS = new Set([
+  ".html",
+  ".css",
+  ".js",
+  ".json",
+  ".svg",
+  ".gltf",
+  ".dxf",
+  ".scad",
+  ".step",
+  ".py",
+  ".txt"
+]);
 
 function loadDotEnv(filePath) {
   if (!existsSync(filePath)) return;
@@ -206,14 +223,165 @@ function loadDotEnv(filePath) {
   }
 }
 
+function responseRequest(res) {
+  return res.laoguiRequest || null;
+}
+
+function requestAcceptsGzip(req) {
+  return /\bgzip\b|\*/i.test(readHeader(req || {}, "accept-encoding"));
+}
+
+function mergeVary(existing, value) {
+  const current = String(existing || "").trim();
+  if (!current) return value;
+  if (current === "*") return current;
+  const lower = current.split(",").map((item) => item.trim().toLowerCase());
+  return lower.includes(value.toLowerCase()) ? current : `${current}, ${value}`;
+}
+
+function isCompressibleResponse(contentType = "") {
+  const type = String(contentType).split(";")[0].trim().toLowerCase();
+  return type.startsWith("text/")
+    || type === "application/json"
+    || type === "application/javascript"
+    || type === "text/javascript"
+    || type === "image/svg+xml"
+    || type === "model/gltf+json"
+    || type === "application/dxf"
+    || type === "model/step";
+}
+
+function sendBuffered(res, status, body, headers = {}) {
+  const buffer = Buffer.isBuffer(body) ? body : Buffer.from(String(body));
+  const responseHeaders = { ...headers };
+  const req = responseRequest(res);
+  const contentType = responseHeaders["content-type"] || responseHeaders["Content-Type"] || "";
+  let payload = buffer;
+
+  if (
+    req
+    && buffer.length >= TEXT_COMPRESSION_MIN_BYTES
+    && requestAcceptsGzip(req)
+    && isCompressibleResponse(contentType)
+  ) {
+    payload = gzipSync(buffer, { level: 6 });
+    responseHeaders["content-encoding"] = "gzip";
+    responseHeaders.vary = mergeVary(responseHeaders.vary, "Accept-Encoding");
+  }
+
+  responseHeaders["content-length"] = payload.length;
+  res.writeHead(status, responseHeaders);
+  res.end(payload);
+}
+
 function sendJson(res, status, body) {
-  res.writeHead(status, jsonHeaders);
-  res.end(JSON.stringify(body));
+  sendBuffered(res, status, JSON.stringify(body), jsonHeaders);
 }
 
 function sendText(res, status, body, contentType = "text/plain; charset=utf-8") {
-  res.writeHead(status, { "content-type": contentType });
-  res.end(body);
+  sendBuffered(res, status, body, { "content-type": contentType });
+}
+
+function staticEtag(stat) {
+  return `W/"${Math.round(stat.size).toString(16)}-${Math.round(stat.mtimeMs).toString(16)}"`;
+}
+
+function staticNotModified(req, stat, etag) {
+  const ifNoneMatch = String(readHeader(req, "if-none-match") || "").trim();
+  if (ifNoneMatch) {
+    const tags = ifNoneMatch.split(",").map((item) => item.trim());
+    if (tags.includes("*") || tags.includes(etag)) return true;
+  }
+
+  const ifModifiedSince = String(readHeader(req, "if-modified-since") || "").trim();
+  if (ifModifiedSince) {
+    const since = Date.parse(ifModifiedSince);
+    if (Number.isFinite(since) && stat.mtimeMs <= since) return true;
+  }
+
+  return false;
+}
+
+function staticCacheControl(ext) {
+  return [".html", ".css", ".js"].includes(ext)
+    ? "no-cache, max-age=0, must-revalidate"
+    : "public, max-age=31536000, immutable";
+}
+
+async function writeStaticResponse(req, res, filePath, stat, contentType, { compressible = false } = {}) {
+  const ext = path.extname(filePath).toLowerCase();
+  const etag = staticEtag(stat);
+  const headers = {
+    "content-type": contentType,
+    "cache-control": staticCacheControl(ext),
+    "last-modified": stat.mtime.toUTCString(),
+    etag
+  };
+
+  if (staticNotModified(req, stat, etag)) {
+    res.writeHead(304, headers);
+    res.end();
+    return;
+  }
+
+  if (req.method === "HEAD") {
+    res.writeHead(200, {
+      ...headers,
+      "content-length": stat.size
+    });
+    res.end();
+    return;
+  }
+
+  if (compressible && stat.size >= TEXT_COMPRESSION_MIN_BYTES && requestAcceptsGzip(req)) {
+    const raw = await fs.readFile(filePath);
+    const payload = gzipSync(raw, { level: 6 });
+    res.writeHead(200, {
+      ...headers,
+      "content-encoding": "gzip",
+      "content-length": payload.length,
+      vary: mergeVary(headers.vary, "Accept-Encoding")
+    });
+    res.end(payload);
+    return;
+  }
+
+  res.writeHead(200, {
+    ...headers,
+    "content-length": stat.size
+  });
+  const stream = createReadStream(filePath);
+  stream.on("error", () => res.destroy());
+  stream.pipe(res);
+}
+
+function httpError(status, message) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+}
+
+function decodeUrlPath(value = "") {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw httpError(400, "Malformed URL path");
+  }
+}
+
+function staticFilePath(baseDir, requestedPath = "") {
+  const decodedPath = decodeUrlPath(requestedPath);
+  const relativePath = path.normalize(decodedPath.replace(/^[/\\]+/, ""));
+  if (!relativePath || relativePath === "." || relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+    throw httpError(403, "Forbidden");
+  }
+
+  const filePath = path.join(baseDir, relativePath);
+  const relativeToBase = path.relative(baseDir, filePath);
+  if (relativeToBase.startsWith("..") || path.isAbsolute(relativeToBase)) {
+    throw httpError(403, "Forbidden");
+  }
+  return filePath;
 }
 
 function setApiCorsHeaders(req, res) {
@@ -240,13 +408,13 @@ function setApiCorsHeaders(req, res) {
 }
 
 function readHeader(req, name) {
-  const value = req.headers[name.toLowerCase()];
+  const value = req?.headers?.[name.toLowerCase()];
   return Array.isArray(value) ? value[0] : value || "";
 }
 
 function externalApiAuthorized(req) {
   const token = config.publicApi.token;
-  if (!token) return true;
+  if (!token) return isOwnerRequest(req) || config.publicApi.allowUnauthenticatedRemote;
   const authorization = readHeader(req, "authorization");
   const bearer = authorization.match(/^Bearer\s+(.+)$/i)?.[1] || "";
   const apiKey = readHeader(req, "x-laogui-api-key") || readHeader(req, "x-api-key");
@@ -1877,6 +2045,10 @@ function imageDataUrlToBlob(dataUrl) {
   return new Blob([buffer], { type: mime });
 }
 
+function imageBufferToDataUrl(buffer, mime = "image/png") {
+  return `data:${mime};base64,${Buffer.from(buffer || []).toString("base64")}`;
+}
+
 function imageExtensionFromMime(mime = "") {
   const normalized = String(mime || "").toLowerCase();
   if (normalized.includes("jpeg") || normalized.includes("jpg")) return "jpg";
@@ -1978,6 +2150,20 @@ async function downloadImageUrlBuffer(url) {
   const response = await fetch(url, { cache: "no-store" });
   if (!response.ok) throw new Error(`Image URL download failed: ${response.status}`);
   return Buffer.from(await response.arrayBuffer());
+}
+
+async function downloadImageUrlResult(url) {
+  const parsed = new URL(url);
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error("Only HTTP(S) image URLs can be downloaded");
+  }
+  const response = await fetch(parsed.href, { cache: "no-store" });
+  if (!response.ok) throw new Error(`Image URL download failed: ${response.status}`);
+  const type = String(response.headers.get("content-type") || "application/octet-stream").split(";")[0];
+  return {
+    buffer: Buffer.from(await response.arrayBuffer()),
+    type: type || "application/octet-stream"
+  };
 }
 
 function firstImageDataItem(body) {
@@ -2225,10 +2411,53 @@ function parseModelJson(text) {
     .trim();
   try {
     return JSON.parse(cleaned);
-  } catch {
+  } catch (error) {
     const jsonText = extractFirstJsonObject(cleaned);
-    if (!jsonText) throw new Error("gpt-5.5 did not return JSON");
-    return JSON.parse(jsonText);
+    if (!jsonText) {
+      const next = new Error("gpt-5.5 did not return JSON");
+      next.rawText = truncateLogText(cleaned, 12000);
+      throw next;
+    }
+    try {
+      return JSON.parse(jsonText);
+    } catch (innerError) {
+      const next = new Error(`gpt-5.5 returned invalid JSON: ${innerError.message || error.message || innerError}`);
+      next.rawText = truncateLogText(jsonText, 12000);
+      throw next;
+    }
+  }
+}
+
+async function parseModelJsonWithRepair(text, purpose = "model output JSON") {
+  try {
+    return parseModelJson(text);
+  } catch (error) {
+    const rawText = String(error.rawText || text || "").trim();
+    if (!rawText) throw error;
+    const payload = {
+      model: config.reasoningModel,
+      input: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: [
+                "Repair the following assistant output into one valid JSON object.",
+                `Purpose: ${purpose}.`,
+                "Do not add new facts. Preserve keys and values as much as possible.",
+                "Use double-quoted JSON strings only. Escape line breaks inside strings. Remove comments, markdown, trailing commas, and unfinished fragments.",
+                "Return valid JSON only.",
+                rawText
+              ].join("\n\n")
+            }
+          ]
+        }
+      ],
+      max_output_tokens: 5200
+    };
+    const repaired = await openaiResponsesTextStream(payload, { timeoutMs: 120000, provider: "reasoning" });
+    return parseModelJson(repaired);
   }
 }
 
@@ -2321,6 +2550,3866 @@ function asStringArray(value) {
   return value.map((item) => String(item)).filter(Boolean);
 }
 
+const whiteModelObjectTypes = new Set([
+  "floor",
+  "wall",
+  "ceiling",
+  "column",
+  "beam",
+  "opening",
+  "stair",
+  "box",
+  "counter",
+  "table",
+  "seat",
+  "shelf",
+  "fixture",
+  "plant",
+  "generic"
+]);
+
+const model3DShapeTypes = new Set(["box", "cylinder", "sphere", "plane"]);
+
+const whiteModelMaterialPalette = {
+  floor: "#b89f7a",
+  wall: "#eadfce",
+  ceiling: "#f0eadf",
+  column: "#c9c1b4",
+  beam: "#9a8064",
+  opening: "#86b9cf",
+  stair: "#b8a083",
+  box: "#b78b65",
+  counter: "#7f654f",
+  table: "#8b6f55",
+  seat: "#586f7c",
+  shelf: "#8a715c",
+  fixture: "#d4a94f",
+  plant: "#5c8f5c",
+  generic: "#a99986"
+};
+
+const whiteModelLayerDefinitions = [
+  ["shell", "空间壳体"],
+  ["openings", "门窗开口"],
+  ["structure", "结构构件"],
+  ["fixed_furniture", "固定家具"],
+  ["loose_furniture", "活动家具"],
+  ["lighting", "灯光设备"],
+  ["context", "绿植/环境"]
+];
+
+const whiteModelLayerKeys = new Set(whiteModelLayerDefinitions.map(([key]) => key));
+
+function asFiniteNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function normalizeVector(value, fallback, { min = -100, max = 100 } = {}) {
+  const source = Array.isArray(value) ? value : [];
+  return fallback.map((fallbackValue, index) => clampNumber(asFiniteNumber(source[index], fallbackValue), min, max));
+}
+
+function whiteModelLayerForObject(type, item = {}) {
+  const explicit = String(item?.layer || item?.category || "").trim().toLowerCase();
+  if (whiteModelLayerKeys.has(explicit)) return explicit;
+  const text = `${item?.id || ""} ${item?.label || ""} ${item?.name || ""} ${item?.material || ""} ${item?.note || ""}`.toLowerCase();
+  if (/(window|door|opening|glass|门|窗|开口|玻璃|入口)/i.test(text)) return "openings";
+  if (/(roof|eave|gable|canopy|parapet|chimney|屋顶|屋面|檐|山墙|雨棚|女儿墙|烟囱)/i.test(text)) return "structure";
+  if (/(stair|step|column|beam|post|plinth|base|slab|terrace|balcony|cornice|retaining|台阶|楼梯|柱|梁|立柱|基座|勒脚|台基|楼板|露台|阳台|檐口|挡墙)/i.test(text)) return "structure";
+  if (/(building|facade|façade|front wall|side wall|rear wall|mass|volume|wing|envelope|exterior wall|建筑|立面|外墙|侧墙|后墙|主楼体|体量|翼体|围护)/i.test(text)) return "shell";
+  if (/(site|ground|landscape|tree|plant|场地|地面|景观|绿化|树|植栽)/i.test(text)) return "context";
+  if (["floor", "wall", "ceiling"].includes(type)) return "shell";
+  if (type === "opening") return "openings";
+  if (["column", "beam", "stair"].includes(type)) return "structure";
+  if (type === "plant") return "context";
+  if (type === "fixture" && /(light|lamp|pendant|sconce|spot|track|灯|吊灯|壁灯|射灯|灯带)/i.test(text)) return "lighting";
+  if (["counter", "shelf", "fixture"].includes(type)) return "fixed_furniture";
+  if (["table", "seat", "box"].includes(type)) return "loose_furniture";
+  return "fixed_furniture";
+}
+
+function normalizeWhiteModelObject(item, index) {
+  const rawType = String(item?.type || "").trim().toLowerCase();
+  const type = whiteModelObjectTypes.has(rawType) ? rawType : "generic";
+  const rawShape = String(item?.shape || item?.primitive || "").trim().toLowerCase();
+  const shape = model3DShapeTypes.has(rawShape)
+    ? rawShape
+    : type === "column" || type === "plant"
+      ? "cylinder"
+      : "box";
+  const sizeFallback = type === "floor"
+    ? [8, 6, 0.08]
+    : type === "wall"
+      ? [4, 0.18, 3]
+      : type === "column"
+        ? [0.35, 0.35, 3]
+        : [1, 1, 1];
+  const sizeMin = type === "generic" ? 0.003 : type === "fixture" || type === "plant" ? 0.01 : 0.03;
+  const size = normalizeVector(item?.size, sizeFallback, { min: sizeMin, max: 80 });
+  const position = normalizeVector(item?.position, [0, size[2] / 2, 0], { min: -80, max: 80 });
+  const rotation = normalizeVector(item?.rotation, [0, 0, 0], { min: -360, max: 360 });
+  const color = isHex(item?.color) ? item.color : whiteModelMaterialPalette[type] || whiteModelMaterialPalette.generic;
+  const material = String(item?.material || "").slice(0, 40);
+  return {
+    id: slugify(item?.id || item?.label || `${type}-${index + 1}`),
+    type,
+    shape,
+    label: String(item?.label || item?.name || `${type} ${index + 1}`).slice(0, 40),
+    size: size.map((value) => Number(value.toFixed(3))),
+    position: position.map((value) => Number(value.toFixed(3))),
+    rotation: rotation.map((value) => Number(value.toFixed(3))),
+    color,
+    layer: whiteModelLayerForObject(type, item),
+    material,
+    roughness: clampNumber(asFiniteNumber(item?.roughness, 0.68), 0.05, 1),
+    metalness: clampNumber(asFiniteNumber(item?.metalness, type === "fixture" ? 0.35 : 0.02), 0, 1),
+    opacity: clampNumber(asFiniteNumber(item?.opacity, type === "opening" ? 0.42 : 1), 0.18, 1),
+    note: String(item?.note || "").slice(0, 180)
+  };
+}
+
+function uniqueWhiteModelObjects(objects) {
+  const counts = new Map();
+  return objects.map((object, index) => {
+    const base = slugify(object.id || object.label || `${object.type}-${index + 1}`) || `${object.type}-${index + 1}`;
+    const seen = counts.get(base) || 0;
+    counts.set(base, seen + 1);
+    return {
+      ...object,
+      id: seen ? `${base}-${seen + 1}` : base,
+      layer: whiteModelLayerKeys.has(object.layer) ? object.layer : whiteModelLayerForObject(object.type, object)
+    };
+  });
+}
+
+function whiteModelBounds(objects) {
+  if (!objects.length) return { width: 8, depth: 6, height: 3 };
+  const xs = [];
+  const ys = [];
+  const zs = [];
+  objects.forEach((object) => {
+    const [w, d, h] = object.size;
+    const [x, y, z] = object.position;
+    xs.push(x - w / 2, x + w / 2);
+    ys.push(y - h / 2, y + h / 2);
+    zs.push(z - d / 2, z + d / 2);
+  });
+  return {
+    width: Number((Math.max(...xs) - Math.min(...xs)).toFixed(3)),
+    depth: Number((Math.max(...zs) - Math.min(...zs)).toFixed(3)),
+    height: Number((Math.max(...ys) - Math.min(...ys)).toFixed(3))
+  };
+}
+
+function whiteModelPrimaryFloor(objects) {
+  return objects
+    .filter((object) => object.type === "floor")
+    .sort((a, b) => (b.size?.[0] || 0) * (b.size?.[1] || 0) - (a.size?.[0] || 0) * (a.size?.[1] || 0))[0] || null;
+}
+
+function addWhiteModelFallbackObject(objects, object) {
+  objects.push(normalizeWhiteModelObject({
+    ...object,
+    note: object.note || "Completeness fallback inferred from overall spatial envelope."
+  }, objects.length));
+}
+
+function whiteModelHasObjectText(objects = [], pattern) {
+  return objects.some((object) => pattern.test(whiteModelObjectSearchText(object)));
+}
+
+function completeWhiteModelEnvelope(objects, sourceType = "") {
+  const normalizedSource = String(sourceType || "").toLowerCase();
+  if (/(object|product|architecture)/.test(normalizedSource)) return objects;
+  const floor = whiteModelPrimaryFloor(objects) || { size: [8, 6, 0.08], position: [0, 0.04, 0] };
+  const [width = 8, depth = 6] = floor.size || [];
+  const [cx = 0, , cz = 0] = floor.position || [];
+  const wallHeight = Math.max(2.7, Math.min(5.2, Math.max(width, depth) * 0.42));
+  const wallThickness = 0.16;
+  const hasRearWall = whiteModelHasObjectText(objects, /(rear|back|后墙|主墙|背景墙|墙面)/i);
+  const hasLeftWall = whiteModelHasObjectText(objects, /(left|side wall|左墙|左侧墙|侧墙)/i);
+  const hasRightWall = whiteModelHasObjectText(objects, /(right|side wall|右墙|右侧墙|侧墙)/i);
+  const wallCount = objects.filter((object) => object.type === "wall").length;
+  const hasCeiling = objects.some((object) => object.type === "ceiling");
+  const hasOpening = objects.some((object) => object.type === "opening");
+  const hasLighting = objects.some((object) => object.layer === "lighting");
+
+  if (!hasRearWall || wallCount < 1) {
+    addWhiteModelFallbackObject(objects, {
+      type: "wall",
+      layer: "shell",
+      label: "inferred rear wall",
+      size: [width, wallThickness, wallHeight],
+      position: [cx, wallHeight / 2, cz - depth / 2],
+      color: whiteModelMaterialPalette.wall,
+      material: "inferred plaster or painted wall"
+    });
+  }
+  if (!hasLeftWall || wallCount < 2) {
+    addWhiteModelFallbackObject(objects, {
+      type: "wall",
+      layer: "shell",
+      label: "inferred left wall",
+      size: [wallThickness, depth, wallHeight],
+      position: [cx - width / 2, wallHeight / 2, cz],
+      color: whiteModelMaterialPalette.wall,
+      material: "inferred plaster or painted wall"
+    });
+  }
+  if (!hasRightWall || wallCount < 3) {
+    addWhiteModelFallbackObject(objects, {
+      type: "wall",
+      layer: "shell",
+      label: "inferred right wall",
+      size: [wallThickness, depth, wallHeight],
+      position: [cx + width / 2, wallHeight / 2, cz],
+      color: whiteModelMaterialPalette.wall,
+      material: "inferred plaster or painted wall"
+    });
+  }
+
+  if (!hasCeiling && !normalizedSource.includes("floor-plan")) {
+    addWhiteModelFallbackObject(objects, {
+      type: "ceiling",
+      layer: "shell",
+      label: "inferred ceiling plane",
+      size: [width, depth, 0.08],
+      position: [cx, wallHeight + 0.04, cz],
+      color: whiteModelMaterialPalette.ceiling,
+      material: "inferred ceiling finish",
+      opacity: 0.78
+    });
+  }
+
+  if (!hasOpening && !normalizedSource.includes("object")) {
+    addWhiteModelFallbackObject(objects, {
+      type: "opening",
+      layer: "openings",
+      label: "inferred main window or opening",
+      size: [Math.max(1.2, width * 0.36), 0.05, Math.max(1.6, wallHeight * 0.62)],
+      position: [cx, wallHeight * 0.48, cz - depth / 2 - 0.02],
+      color: whiteModelMaterialPalette.opening,
+      material: "translucent inferred glass or opening",
+      opacity: 0.32
+    });
+  }
+
+  if (!hasLighting && !normalizedSource.includes("floor-plan")) {
+    addWhiteModelFallbackObject(objects, {
+      type: "fixture",
+      shape: "cylinder",
+      layer: "lighting",
+      label: "inferred ceiling light",
+      size: [0.42, 0.42, 0.12],
+      position: [cx, Math.max(2.35, wallHeight - 0.18), cz],
+      color: whiteModelMaterialPalette.fixture,
+      material: "warm ceiling light",
+      roughness: 0.35,
+      metalness: 0.25
+    });
+  }
+
+  return objects;
+}
+
+function ensureInteriorModelDetail(objects = [], sourceType = "", { modelingAnalysis = {}, brief = {}, intent = "" } = {}) {
+  if (!/interior|room|space|floor-plan|室内|空间|房间/i.test(String(sourceType || ""))) return objects;
+  const floor = whiteModelPrimaryFloor(objects) || { size: [7.2, 5.2, 0.08], position: [0, 0.04, 0] };
+  const [width = 7.2, depth = 5.2] = floor.size || [];
+  const [cx = 0, , cz = 0] = floor.position || [];
+  const text = imageModelingSubjectText(modelingAnalysis, brief, intent, objects);
+  const wallHeight = Math.max(2.7, Math.min(4.6, Math.max(width, depth) * 0.42));
+  const additions = [];
+  const add = (object) => additions.push(object);
+  const has = (pattern) => whiteModelHasObjectText(objects, pattern) || additions.some((object) => pattern.test(whiteModelObjectSearchText(object)));
+
+  if (!has(/ceiling|天花|吊顶|顶面/i)) {
+    add({ id: "interior-ceiling-edge", type: "ceiling", layer: "shell", label: "室内顶面", size: [width, depth, 0.07], position: [cx, wallHeight + 0.035, cz], color: whiteModelMaterialPalette.ceiling, material: "ceiling plane", opacity: 0.48 });
+  }
+  if (!has(/baseboard|skirting|踢脚|墙脚/i)) {
+    add({ id: "rear-wall-skirting", type: "beam", layer: "structure", label: "后墙踢脚线", size: [width * 0.92, 0.045, 0.09], position: [cx, 0.16, cz - depth / 2 + 0.03], color: "#9a8064", material: "skirting line" });
+    add({ id: "left-wall-skirting", type: "beam", layer: "structure", label: "左墙踢脚线", size: [0.045, depth * 0.84, 0.09], position: [cx - width / 2 + 0.03, 0.16, cz], color: "#9a8064", material: "skirting line" });
+  }
+  if (!has(/window|opening|door|glass|门|窗|开口|玻璃/i)) {
+    add({ id: "reference-main-window", type: "opening", layer: "openings", label: "参考图主开口/窗", size: [Math.max(1.4, width * 0.34), 0.05, Math.max(1.4, wallHeight * 0.52)], position: [cx + width * 0.18, wallHeight * 0.54, cz - depth / 2 - 0.035], color: whiteModelMaterialPalette.opening, material: "inferred glass/opening", opacity: 0.34 });
+    add({ id: "reference-window-frame-top", type: "beam", layer: "structure", label: "开口上框", size: [Math.max(1.5, width * 0.36), 0.06, 0.08], position: [cx + width * 0.18, wallHeight * 0.82, cz - depth / 2 - 0.055], color: "#5e5850", material: "window frame" });
+    add({ id: "reference-window-frame-side", type: "beam", layer: "structure", label: "开口侧框", size: [0.07, 0.06, Math.max(1.25, wallHeight * 0.48)], position: [cx + width * 0.01, wallHeight * 0.54, cz - depth / 2 - 0.055], color: "#5e5850", material: "window frame" });
+  }
+  if (!has(/counter|cabinet|island|bar|柜|台|吧台|橱|前台|收银/i)) {
+    add({ id: "reference-cabinet-run", type: "counter", layer: "fixed_furniture", label: "参考图柜体/吧台", size: [Math.max(2.0, width * 0.34), 0.58, 0.9], position: [cx - width * 0.22, 0.45, cz - depth * 0.18], color: whiteModelMaterialPalette.counter, material: "visible/inferred millwork" });
+    add({ id: "reference-countertop", type: "counter", layer: "fixed_furniture", label: "柜体台面", size: [Math.max(2.05, width * 0.35), 0.64, 0.08], position: [cx - width * 0.22, 0.94, cz - depth * 0.18], color: "#b8a083", material: "countertop" });
+  }
+  if (!has(/table|desk|coffee|餐桌|桌|茶几|书桌/i)) {
+    add({ id: "reference-table-top", type: "table", layer: "loose_furniture", label: "参考图桌面", size: [1.32, 0.86, 0.08], position: [cx + width * 0.12, 0.72, cz + depth * 0.1], color: whiteModelMaterialPalette.table, material: "tabletop" });
+    [[-0.5, -0.28], [0.5, -0.28], [-0.5, 0.28], [0.5, 0.28]].forEach(([ox, oz], index) => {
+      add({ id: `reference-table-leg-${index + 1}`, type: "column", shape: "cylinder", layer: "loose_furniture", label: `桌腿 ${index + 1}`, size: [0.06, 0.06, 0.68], position: [cx + width * 0.12 + ox, 0.34, cz + depth * 0.1 + oz], color: "#5d4a3b", material: "table leg" });
+    });
+  }
+  if (!has(/sofa|chair|seat|bench|椅|沙发|座|卡座|凳/i)) {
+    add({ id: "reference-seat-base", type: "seat", layer: "loose_furniture", label: "参考图座椅坐垫", size: [1.05, 0.78, 0.22], position: [cx - width * 0.08, 0.44, cz + depth * 0.34], color: whiteModelMaterialPalette.seat, material: "seat cushion" });
+    add({ id: "reference-seat-back", type: "seat", layer: "loose_furniture", label: "参考图座椅靠背", size: [1.05, 0.12, 0.62], position: [cx - width * 0.08, 0.78, cz + depth * 0.72], color: whiteModelMaterialPalette.seat, material: "seat back" });
+    add({ id: "reference-seat-side", type: "seat", layer: "loose_furniture", label: "参考图座椅侧扶手", size: [0.12, 0.66, 0.46], position: [cx - width * 0.08 - 0.58, 0.62, cz + depth * 0.36], color: whiteModelMaterialPalette.seat, material: "seat side" });
+  }
+  if (!has(/shelf|storage|display|架|柜|陈列|展示|收纳/i) && /(shelf|storage|display|架|柜|陈列|展示|收纳|retail|store|门店|展厅)/i.test(text)) {
+    add({ id: "reference-wall-shelf-body", type: "shelf", layer: "fixed_furniture", label: "墙面陈列/收纳", size: [Math.max(1.4, width * 0.24), 0.32, 1.65], position: [cx + width * 0.24, 0.98, cz - depth * 0.42], color: whiteModelMaterialPalette.shelf, material: "shelving" });
+    add({ id: "reference-wall-shelf-tier", type: "shelf", layer: "fixed_furniture", label: "陈列层板", size: [Math.max(1.35, width * 0.23), 0.36, 0.06], position: [cx + width * 0.24, 1.25, cz - depth * 0.42], color: "#a98f75", material: "shelf tier" });
+  }
+  if (!has(/light|lamp|pendant|track|灯|吊灯|灯带|射灯/i)) {
+    add({ id: "reference-light-strip", type: "fixture", layer: "lighting", label: "顶面灯带/线性灯", size: [Math.max(2.0, width * 0.38), 0.06, 0.06], position: [cx, Math.max(2.45, wallHeight - 0.12), cz - depth * 0.08], color: whiteModelMaterialPalette.fixture, material: "warm linear light", roughness: 0.28, metalness: 0.2 });
+    add({ id: "reference-ceiling-spot", type: "fixture", shape: "cylinder", layer: "lighting", label: "顶面射灯", size: [0.22, 0.22, 0.08], position: [cx + width * 0.2, Math.max(2.45, wallHeight - 0.1), cz + depth * 0.08], color: whiteModelMaterialPalette.fixture, material: "ceiling spotlight", roughness: 0.28, metalness: 0.2 });
+  }
+  const minimumInteriorObjects = 24;
+  const needed = Math.max(0, minimumInteriorObjects - objects.length);
+  const selectedAdditions = additions.slice(0, Math.max(needed, objects.length < 18 ? additions.length : needed));
+  if (!selectedAdditions.length) return objects;
+  return uniqueWhiteModelObjects([
+    ...objects,
+    ...selectedAdditions.map((object, index) => normalizeWhiteModelObject(object, objects.length + index))
+  ]).slice(0, 96);
+}
+
+function whiteModelObjectSearchText(object = {}) {
+  return [
+    object.id,
+    object.label,
+    object.type,
+    object.shape,
+    object.layer,
+    object.material,
+    object.note
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function whiteModelObjectVolume(object = {}) {
+  const [width = 0, depth = 0, height = 0] = object.size || [];
+  return Math.max(0, width) * Math.max(0, depth) * Math.max(0, height);
+}
+
+function primaryObjectPhotoBody(objects = []) {
+  const candidates = objects
+    .filter((object) => object.shape === "sphere" && !/(stem|stalk|peduncle|果梗|柄|dimple|depression|果窝|凹陷)/i.test(whiteModelObjectSearchText(object)))
+    .sort((a, b) => {
+      const aText = whiteModelObjectSearchText(a);
+      const bText = whiteModelObjectSearchText(b);
+      const aBoost = /(main|body|subject|主体|果身|苹果)/i.test(aText) ? 1 : 0;
+      const bBoost = /(main|body|subject|主体|果身|苹果)/i.test(bText) ? 1 : 0;
+      return bBoost - aBoost || whiteModelObjectVolume(b) - whiteModelObjectVolume(a);
+    });
+  return candidates[0] || objects.slice().sort((a, b) => whiteModelObjectVolume(b) - whiteModelObjectVolume(a))[0] || null;
+}
+
+function sizedNumber(value) {
+  return Number(Number(value).toFixed(3));
+}
+
+function refineObjectPhotoWhiteModelObjects(objects = [], sourceType = "") {
+  if (!/(object|product)/i.test(sourceType)) return objects;
+  const body = primaryObjectPhotoBody(objects);
+  if (!body?.size || !body?.position) return objects;
+  const [bodyWidth = 1, bodyDepth = bodyWidth, bodyHeight = bodyWidth] = body.size;
+  const [bodyX = 0, bodyY = bodyHeight / 2, bodyZ = 0] = body.position;
+  const bodyTop = bodyY + bodyHeight / 2;
+  const bodyBottom = bodyY - bodyHeight / 2;
+  const lateral = Math.max(0.02, Math.min(bodyWidth, bodyDepth));
+
+  return objects.map((object) => {
+    const text = whiteModelObjectSearchText(object);
+    const next = { ...object };
+    if (/(stem|stalk|peduncle|果梗|苹果柄)/i.test(text)) {
+      const stemDiameter = clampNumber(lateral * 0.12, 0.006, lateral * 0.18);
+      const stemHeight = clampNumber(bodyHeight * 0.42, bodyHeight * 0.24, bodyHeight * 0.62);
+      next.shape = "cylinder";
+      next.size = [sizedNumber(stemDiameter), sizedNumber(stemDiameter), sizedNumber(stemHeight)];
+      next.position = [
+        sizedNumber(object.position?.[0] ?? bodyX),
+        sizedNumber(bodyTop + stemHeight / 2 - bodyHeight * 0.03),
+        sizedNumber(object.position?.[2] ?? bodyZ)
+      ];
+      next.color = isHex(next.color) ? next.color : "#7a3f16";
+      return next;
+    }
+    if (/(dimple|depression|果窝|凹陷|top-depression)/i.test(text)) {
+      const dimpleHeight = clampNumber(bodyHeight * 0.045, 0.004, bodyHeight * 0.09);
+      next.size = [
+        sizedNumber(lateral * 0.34),
+        sizedNumber(lateral * 0.3),
+        sizedNumber(dimpleHeight)
+      ];
+      next.position = [
+        sizedNumber(object.position?.[0] ?? bodyX),
+        sizedNumber(bodyTop - bodyHeight * 0.08),
+        sizedNumber(object.position?.[2] ?? bodyZ)
+      ];
+      return next;
+    }
+    if (/(yellow|green|黄绿|过渡区|top-yellow)/i.test(text)) {
+      const zoneHeight = clampNumber(bodyHeight * 0.035, 0.003, bodyHeight * 0.07);
+      next.size = [
+        sizedNumber(lateral * 0.38),
+        sizedNumber(lateral * 0.34),
+        sizedNumber(zoneHeight)
+      ];
+      next.position = [
+        sizedNumber(object.position?.[0] ?? bodyX),
+        sizedNumber(bodyTop - bodyHeight * 0.055),
+        sizedNumber(object.position?.[2] ?? bodyZ)
+      ];
+      return next;
+    }
+    if (/(bottom|contact|flatten|底部|接触|压平)/i.test(text)) {
+      const contactHeight = clampNumber(bodyHeight * 0.06, 0.004, bodyHeight * 0.12);
+      next.size = [
+        sizedNumber(lateral * 0.58),
+        sizedNumber(lateral * 0.5),
+        sizedNumber(contactHeight)
+      ];
+      next.position = [
+        sizedNumber(object.position?.[0] ?? bodyX),
+        sizedNumber(bodyBottom + contactHeight / 2),
+        sizedNumber(object.position?.[2] ?? bodyZ)
+      ];
+      return next;
+    }
+    return next;
+  });
+}
+
+function imageModelingSubjectText(...items) {
+  return items
+    .flatMap((item) => {
+      if (!item) return [];
+      if (Array.isArray(item)) return item.map((value) => imageModelingSubjectText(value));
+      if (typeof item === "object") {
+        const compact = [
+          item.subject,
+          item.title,
+          item.summary,
+          item.label,
+          item.role,
+          item.material,
+          item.primitiveHint,
+          item.notes,
+          item.silhouette,
+          item.viewAngle,
+          ...(Array.isArray(item.geometryHints) ? item.geometryHints : []),
+          ...(Array.isArray(item.characteristicFeatures) ? item.characteristicFeatures : []),
+          ...(Array.isArray(item.materialZones) ? item.materialZones : []),
+          ...(Array.isArray(item.nonGeometry) ? item.nonGeometry : []),
+          ...(Array.isArray(item.layers) ? item.layers.map((layer) => imageModelingSubjectText(layer)) : []),
+          item.visualProfile ? imageModelingSubjectText(item.visualProfile) : "",
+          ...(Array.isArray(item.excludedRegions) ? item.excludedRegions : [])
+        ];
+        return compact;
+      }
+      return [item];
+    })
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function objectPhotoLooksLikeApple(sourceType = "", ...items) {
+  if (!/(object|product)/i.test(sourceType)) return false;
+  const text = imageModelingSubjectText(...items);
+  if (/(iphone|ipad|macbook|电脑|手机|公司|logo|标志)/i.test(text)) return false;
+  return /(红苹果|苹果|apple|red apple|fruit|果实)/i.test(text);
+}
+
+function architectureExteriorLooksLikeBuilding(sourceType = "", ...items) {
+  const text = imageModelingSubjectText(...items);
+  if (/(interior|room|室内|房间|大堂|办公室|展厅|客厅|卧室)/i.test(text) && !/(exterior|facade|façade|front elevation|building exterior|外观|外立面|立面|建筑外部)/i.test(text)) {
+    return false;
+  }
+  return /(architecture-photo|building-exterior|facade|façade|front elevation|exterior|building|house|villa|church|museum|tower|apartment|建筑|建筑外观|外观|外立面|立面|楼体|房屋|住宅|别墅|教堂|博物馆|公寓|塔楼)/i.test(`${sourceType} ${text}`);
+}
+
+function architectureDimensionSwapReason(object = {}) {
+  const [width = 0, depth = 0, height = 0] = object.size || [];
+  const [, y = height / 2] = object.position || [];
+  if (![width, depth, height, y].every(Number.isFinite)) return "";
+  const text = whiteModelObjectSearchText(object);
+  const currentBottom = y - height / 2;
+  const swappedBottom = y - depth / 2;
+  const isOpeningOrPanel = object.type === "opening"
+    || object.layer === "openings"
+    || /(window|door|glass|railing|panel|cladding|facade|mullion|shutter|门|窗|玻璃|栏杆|面板|饰面|立面|百叶)/i.test(text);
+  const isVerticalMember = object.type === "column"
+    || /(column|post|pier|mullion|柱|立柱|墙垛|栏杆柱)/i.test(text);
+  const isThinHorizontal = /(roof|slope|slab|floor|terrace|balcony|eave|ridge|cornice|beam|step|stair|plinth|base|屋顶|屋面|坡面|楼板|露台|阳台|檐|屋脊|檐口|梁|台阶|楼梯|基座|台基|勒脚)/i.test(text);
+  const isMass = /(building|mass|volume|wing|level|story|main body|主体|主楼体|楼体|体量|翼体|层|别墅)/i.test(text);
+  const isWallPanel = object.type === "wall" || /(wall|retaining|facade|墙|挡墙|立面)/i.test(text);
+
+  if (isVerticalMember && depth > Math.max(width, height, 0.08) * 1.6 && depth > 0.45) return "vertical-member";
+  if (isOpeningOrPanel && height <= 0.24 && depth > Math.max(0.42, height * 3)) return "vertical-opening-panel";
+  if (isOpeningOrPanel && width <= 0.24 && depth > 0.45 && height > depth * 1.25) return "side-opening-panel";
+  if (isWallPanel && height < 0.75 && depth > Math.max(0.72, height * 1.8)) return "vertical-wall-panel";
+  if (isThinHorizontal && depth <= 0.9 && height > Math.max(0.9, depth * 2.2)) return "thin-horizontal-slab";
+  if (isMass && depth >= 1.2 && depth <= 5.4 && height > depth * 1.65) return "story-mass-height-depth-order";
+  if (height > depth * 1.6 && currentBottom < -0.2 && swappedBottom >= -0.2 && depth >= 0.08) return "below-ground-height-depth-order";
+  return "";
+}
+
+function repairArchitectureObjectDimensions(object = {}) {
+  const reason = architectureDimensionSwapReason(object);
+  if (!reason) return object;
+  const [width = 1, depth = 1, height = 1] = object.size || [];
+  return {
+    ...object,
+    size: [sizedNumber(width), sizedNumber(height), sizedNumber(depth)],
+    note: String(object.note || "").includes("轴向纠偏")
+      ? object.note
+      : String(`${object.note || ""}${object.note ? " " : ""}轴向纠偏：识别到模型输出更像 [宽,高,深]，已转换为 [宽,深,高]。`).slice(0, 180)
+  };
+}
+
+function architectureExteriorFootprint(objects = []) {
+  const xs = [];
+  const zs = [];
+  objects.forEach((object) => {
+    const text = whiteModelObjectSearchText(object);
+    if (object.type === "floor" || (object.layer === "context" && /(site|ground|场地|地面)/i.test(text))) return;
+    const [width = 0, depth = 0] = object.size || [];
+    const [x = 0, , z = 0] = object.position || [];
+    if (!Number.isFinite(width) || !Number.isFinite(depth) || !Number.isFinite(x) || !Number.isFinite(z)) return;
+    xs.push(x - width / 2, x + width / 2);
+    zs.push(z - depth / 2, z + depth / 2);
+  });
+  if (!xs.length || !zs.length) return null;
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minZ = Math.min(...zs);
+  const maxZ = Math.max(...zs);
+  return {
+    minX,
+    maxX,
+    minZ,
+    maxZ,
+    width: maxX - minX,
+    depth: maxZ - minZ,
+    centerX: (minX + maxX) / 2,
+    centerZ: (minZ + maxZ) / 2
+  };
+}
+
+function ensureArchitectureSiteBaseCoversModel(objects = []) {
+  const footprint = architectureExteriorFootprint(objects);
+  if (!footprint) return objects;
+  const pad = clampNumber(Math.max(1.2, Math.max(footprint.width, footprint.depth) * 0.08), 1.2, 4.2);
+  const targetWidth = sizedNumber(footprint.width + pad * 2);
+  const targetDepth = sizedNumber(footprint.depth + pad * 2);
+  const siteIndex = objects.findIndex((object) => {
+    const text = whiteModelObjectSearchText(object);
+    return object.type === "floor" || (object.layer === "context" && /(site|ground|base|场地|地面|基底)/i.test(text));
+  });
+  const sitePatch = {
+    size: [targetWidth, targetDepth, 0.08],
+    position: [sizedNumber(footprint.centerX), 0.04, sizedNumber(footprint.centerZ)],
+    layer: "context",
+    material: "neutral site slab",
+    note: "自动按建筑投影放大场地基底，避免主体悬空或超出底板。"
+  };
+  if (siteIndex >= 0) {
+    return objects.map((object, index) => index === siteIndex
+      ? {
+          ...object,
+          ...sitePatch,
+          type: "floor",
+          shape: "box",
+          label: object.label || "建筑场地基底",
+          color: isHex(object.color) ? object.color : "#9a9588"
+        }
+      : object);
+  }
+  return [
+    normalizeWhiteModelObject({
+      id: "architecture-site-base",
+      type: "floor",
+      shape: "box",
+      label: "建筑场地基底",
+      color: "#9a9588",
+      ...sitePatch
+    }, 0),
+    ...objects
+  ];
+}
+
+function repairArchitectureExteriorModelObjects(objects = [], sourceType = "", ...items) {
+  if (!architectureExteriorLooksLikeBuilding(sourceType, ...items, objects)) return objects;
+  const repaired = objects.map(repairArchitectureObjectDimensions);
+  return ensureArchitectureSiteBaseCoversModel(repaired);
+}
+
+function architectureGeometrySanityReport(objects = []) {
+  const roofObjects = objects.filter((object) => /(roof|slope|eave|ridge|屋顶|屋面|坡面|檐|屋脊)/i.test(whiteModelObjectSearchText(object)));
+  const openings = objects.filter((object) => object.type === "opening" || object.layer === "openings");
+  const solidObjects = objects.filter((object) => {
+    const text = whiteModelObjectSearchText(object);
+    return object.type !== "floor"
+      && object.layer !== "openings"
+      && !/(roof|eave|ridge|屋顶|屋面|檐|屋脊)/i.test(text);
+  });
+  const belowGround = solidObjects.filter((object) => {
+    const [, y = 0] = object.position || [];
+    const [, , height = 0] = object.size || [];
+    return y - height / 2 < -0.25;
+  });
+  const verticalOpenings = openings.filter((object) => {
+    const [, depth = 0, height = 0] = object.size || [];
+    return height >= 0.45 && height > depth * 1.6;
+  });
+  const thinRoofs = roofObjects.filter((object) => {
+    const [, depth = 0, height = 0] = object.size || [];
+    const text = whiteModelObjectSearchText(object);
+    return height <= 0.9 || /eave|ridge|檐|屋脊/.test(text) || height <= Math.max(0.35, depth * 0.22);
+  });
+  const grounded = belowGround.length === 0;
+  const openingsOk = !openings.length || verticalOpenings.length >= Math.min(4, Math.ceil(openings.length * 0.55));
+  const roofsOk = !roofObjects.length || thinRoofs.length >= Math.ceil(roofObjects.length * 0.55);
+  return {
+    passed: grounded && openingsOk && roofsOk,
+    grounded,
+    openingsOk,
+    roofsOk,
+    belowGroundCount: belowGround.length,
+    verticalOpeningCount: verticalOpenings.length,
+    openingCount: openings.length,
+    thinRoofCount: thinRoofs.length,
+    roofCount: roofObjects.length
+  };
+}
+
+function architectureDimensionProfile(modelingAnalysis = {}) {
+  const bounds = modelingAnalysis?.targetBounds || {};
+  const aspect = clampNumber(
+    Number(bounds.width || 0.78) / Math.max(Number(bounds.height || 0.62), 0.001),
+    0.45,
+    2.6
+  );
+  const text = imageModelingSubjectText(modelingAnalysis);
+  let floorCount = /(five|5|五层|五楼)/i.test(text) ? 5
+    : /(four|4|四层|四楼)/i.test(text) ? 4
+      : /(three|3|三层|三楼)/i.test(text) ? 3
+        : /(one|1|一层|单层|single.?story)/i.test(text) ? 1
+          : 2;
+  if (/(tower|high.?rise|高层|塔楼)/i.test(text)) floorCount = Math.max(floorCount, 5);
+  const width = floorCount >= 5 ? 18 : 12;
+  const wallHeight = clampNumber(floorCount * 3.1, 3.2, 18);
+  const depth = clampNumber(width * (aspect > 1.35 ? 0.42 : 0.52), 4.2, 9.5);
+  const roofHeight = /(flat roof|parapet|modern|幕墙|女儿墙|平屋顶|现代)/i.test(text) ? 0.45 : 1.4;
+  const columns = clampNumber(Math.round(width / 2.4), 3, 7);
+  return { width, depth, wallHeight, roofHeight, floorCount, columns };
+}
+
+function architectureTemplateObject({ id, label, type = "box", shape = "box", size, position, rotation = [0, 0, 0], color, material, layer, note, opacity = 1 }) {
+  return {
+    id,
+    type,
+    shape,
+    label,
+    size: size.map(sizedNumber),
+    position: position.map(sizedNumber),
+    rotation,
+    color,
+    layer,
+    material,
+    roughness: 0.72,
+    metalness: 0.02,
+    opacity,
+    note
+  };
+}
+
+function buildArchitectureExteriorFallbackObjects(modelingAnalysis = {}) {
+  const { width: w, depth: d, wallHeight: h, roofHeight, floorCount, columns } = architectureDimensionProfile(modelingAnalysis);
+  const frontZ = -d / 2 - 0.04;
+  const backZ = d / 2 + 0.04;
+  const roofY = h + roofHeight * 0.45;
+  const text = imageModelingSubjectText(modelingAnalysis);
+  const flatRoof = /(flat roof|parapet|modern|幕墙|女儿墙|平屋顶|现代)/i.test(text);
+  const objects = [
+    architectureTemplateObject({
+      id: "site-base",
+      label: "建筑场地基底",
+      type: "floor",
+      size: [w + 4.5, d + 4.2, 0.08],
+      position: [0, 0.04, 0.35],
+      color: "#9a9588",
+      layer: "context",
+      material: "neutral site slab",
+      note: "用于承托整栋建筑，不把道路、树木和天空作为主体几何。"
+    }),
+    architectureTemplateObject({
+      id: "main-building-volume",
+      label: "整栋建筑主楼体",
+      type: "box",
+      size: [w, d, h],
+      position: [0, h / 2 + 0.08, 0],
+      color: "#b28b68",
+      layer: "shell",
+      material: "masonry or plaster facade",
+      note: "根据正面照片推断的完整建筑深度体量。"
+    }),
+    architectureTemplateObject({
+      id: "front-facade-plane",
+      label: "正立面墙面",
+      type: "wall",
+      size: [w + 0.08, 0.12, h],
+      position: [0, h / 2 + 0.1, frontZ],
+      color: "#c59672",
+      layer: "shell",
+      material: "front facade finish",
+      note: "可见正立面，门窗贴附在这一面。"
+    }),
+    architectureTemplateObject({
+      id: "left-side-wall",
+      label: "左侧墙体推断",
+      type: "wall",
+      size: [0.14, d, h],
+      position: [-w / 2 - 0.04, h / 2 + 0.1, 0],
+      color: "#9f7b5f",
+      layer: "shell",
+      material: "inferred side facade",
+      note: "单张正面照片推断出的侧墙深度。"
+    }),
+    architectureTemplateObject({
+      id: "right-side-wall",
+      label: "右侧墙体推断",
+      type: "wall",
+      size: [0.14, d, h],
+      position: [w / 2 + 0.04, h / 2 + 0.1, 0],
+      color: "#9f7b5f",
+      layer: "shell",
+      material: "inferred side facade",
+      note: "单张正面照片推断出的侧墙深度。"
+    }),
+    architectureTemplateObject({
+      id: "rear-mass-marker",
+      label: "背立面推断面",
+      type: "wall",
+      size: [w, 0.1, h * 0.94],
+      position: [0, h * 0.47 + 0.1, backZ],
+      color: "#8c735c",
+      layer: "shell",
+      material: "inferred rear facade",
+      opacity: 0.72,
+      note: "背面不可见，作为 CAD 白模的体量闭合。"
+    }),
+    architectureTemplateObject({
+      id: "entry-door",
+      label: "主入口门洞",
+      type: "opening",
+      size: [1.35, 0.08, 2.1],
+      position: [0, 1.12, frontZ - 0.05],
+      color: "#2f4858",
+      layer: "openings",
+      material: "dark entry glazing or door",
+      opacity: 0.62,
+      note: "入口是整栋建筑的尺度参照。"
+    }),
+    architectureTemplateObject({
+      id: "entry-steps",
+      label: "入口台阶",
+      type: "stair",
+      size: [2.6, 1.25, 0.28],
+      position: [0, 0.22, frontZ - 0.75],
+      color: "#8f897f",
+      layer: "structure",
+      material: "stone entry steps",
+      note: "用低矮盒体表达入口高差。"
+    })
+  ];
+
+  if (flatRoof) {
+    objects.push(
+      architectureTemplateObject({
+        id: "flat-roof-slab",
+        label: "平屋顶板",
+        type: "beam",
+        size: [w + 0.55, d + 0.45, 0.22],
+        position: [0, h + 0.22, 0],
+        color: "#7f7b72",
+        layer: "structure",
+        material: "flat roof slab",
+        note: "现代建筑或平屋顶的顶部收口。"
+      }),
+      architectureTemplateObject({
+        id: "roof-parapet",
+        label: "女儿墙收边",
+        type: "beam",
+        size: [w + 0.65, 0.18, 0.55],
+        position: [0, h + 0.55, frontZ],
+        color: "#6f6a62",
+        layer: "structure",
+        material: "parapet cap",
+        note: "顶部轮廓控制，避免只有一个盒子。"
+      })
+    );
+  } else {
+    objects.push(
+      architectureTemplateObject({
+        id: "left-sloped-roof-plane",
+        label: "左坡屋面",
+        type: "beam",
+        size: [w * 0.58, d + 0.7, 0.24],
+        position: [-w * 0.24, roofY, 0],
+        rotation: [0, 0, 18],
+        color: "#5f5146",
+        layer: "structure",
+        material: "dark pitched roof",
+        note: "用倾斜盒体近似坡屋顶一侧。"
+      }),
+      architectureTemplateObject({
+        id: "right-sloped-roof-plane",
+        label: "右坡屋面",
+        type: "beam",
+        size: [w * 0.58, d + 0.7, 0.24],
+        position: [w * 0.24, roofY, 0],
+        rotation: [0, 0, -18],
+        color: "#55483f",
+        layer: "structure",
+        material: "dark pitched roof",
+        note: "用倾斜盒体近似坡屋顶另一侧。"
+      }),
+      architectureTemplateObject({
+        id: "roof-ridge",
+        label: "屋脊线",
+        type: "beam",
+        size: [0.22, d + 0.82, 0.2],
+        position: [0, h + roofHeight + 0.05, 0],
+        color: "#403833",
+        layer: "structure",
+        material: "roof ridge",
+        note: "保持屋顶有可读的最高线。"
+      })
+    );
+  }
+
+  objects.push(
+    architectureTemplateObject({
+      id: "front-eave-band",
+      label: "正立面檐口线",
+      type: "beam",
+      size: [w + 0.55, 0.18, 0.18],
+      position: [0, h + 0.05, frontZ - 0.12],
+      color: "#6c6258",
+      layer: "structure",
+      material: "eave or cornice band",
+      note: "立面顶部水平收口。"
+    }),
+    architectureTemplateObject({
+      id: "base-plinth",
+      label: "建筑勒脚基座",
+      type: "beam",
+      size: [w + 0.18, 0.18, 0.42],
+      position: [0, 0.31, frontZ - 0.08],
+      color: "#756d64",
+      layer: "structure",
+      material: "stone or darker base plinth",
+      note: "底部勒脚让整栋建筑不是悬浮盒体。"
+    })
+  );
+
+  const windowWidth = clampNumber(w / (columns * 3.1), 0.78, 1.18);
+  const windowHeight = clampNumber(h / (floorCount * 4.2), 0.85, 1.25);
+  const floorStep = h / Math.max(floorCount, 1);
+  const usableWidth = w * 0.78;
+  for (let floor = 0; floor < floorCount; floor += 1) {
+    const y = 1.55 + floor * floorStep;
+    for (let column = 0; column < columns; column += 1) {
+      const x = columns === 1 ? 0 : -usableWidth / 2 + (usableWidth * column) / (columns - 1);
+      if (floor === 0 && Math.abs(x) < windowWidth * 0.8) continue;
+      objects.push(architectureTemplateObject({
+        id: `front-window-${floor + 1}-${column + 1}`,
+        label: `正立面窗 ${floor + 1}-${column + 1}`,
+        type: "opening",
+        size: [windowWidth, 0.07, windowHeight],
+        position: [x, y, frontZ - 0.06],
+        color: "#5d8792",
+        layer: "openings",
+        material: "blue gray glass",
+        opacity: 0.56,
+        note: "按立面节奏推断的规则窗洞。"
+      }));
+      objects.push(architectureTemplateObject({
+        id: `front-window-sill-${floor + 1}-${column + 1}`,
+        label: `窗台线 ${floor + 1}-${column + 1}`,
+        type: "beam",
+        size: [windowWidth + 0.28, 0.08, 0.08],
+        position: [x, y - windowHeight / 2 - 0.12, frontZ - 0.09],
+        color: "#e1d3bd",
+        layer: "structure",
+        material: "light sill trim",
+        note: "窗洞的水平细节，便于设计师理解立面比例。"
+      }));
+    }
+  }
+
+  const sideWindowRows = Math.min(2, floorCount);
+  for (let floor = 0; floor < sideWindowRows; floor += 1) {
+    const y = 1.55 + floor * floorStep;
+    [-1, 1].forEach((side) => {
+      objects.push(architectureTemplateObject({
+        id: `${side < 0 ? "left" : "right"}-side-window-${floor + 1}`,
+        label: `${side < 0 ? "左" : "右"}侧窗 ${floor + 1}`,
+        type: "opening",
+        size: [0.08, 0.92, windowHeight * 0.86],
+        position: [side * (w / 2 + 0.08), y, -d * 0.15],
+        color: "#4f7680",
+        layer: "openings",
+        material: "side inferred glass",
+        opacity: 0.5,
+        note: "侧立面窗口由正面节奏推断。"
+      }));
+    });
+  }
+
+  return objects;
+}
+
+function architectureExteriorModelNeedsDetail(objects = [], sourceType = "", ...items) {
+  if (!architectureExteriorLooksLikeBuilding(sourceType, ...items, objects)) return false;
+  const hasMass = objects.some((object) => /(building|main|mass|volume|facade|楼体|主楼体|体量|立面|外墙)/i.test(whiteModelObjectSearchText(object)) || ["wall", "box"].includes(object.type));
+  const hasOpenings = objects.filter((object) => object.layer === "openings" || object.type === "opening").length >= 3;
+  const hasRoofOrTop = objects.some((object) => /(roof|eave|gable|parapet|屋顶|屋面|檐|女儿墙|屋脊)/i.test(whiteModelObjectSearchText(object)));
+  return objects.length < 18 || !hasMass || !hasOpenings || !hasRoofOrTop;
+}
+
+function ensureArchitectureExteriorModelDetail(objects = [], sourceType = "", { source = {}, parsed = {}, modelingAnalysis = {}, intent = "", primaryImage = null } = {}) {
+  if (!architectureExteriorModelNeedsDetail(objects, sourceType, source, parsed, modelingAnalysis, intent, primaryImage?.name)) return objects;
+  return buildArchitectureExteriorFallbackObjects(modelingAnalysis).map(normalizeWhiteModelObject);
+}
+
+function appleDimensionProfile(modelingAnalysis = {}) {
+  const bounds = modelingAnalysis?.targetBounds || {};
+  const aspect = clampNumber(
+    Number(bounds.width || 0.72) / Math.max(Number(bounds.height || 0.84), 0.001),
+    0.68,
+    1.12
+  );
+  const fruitHeight = 0.096;
+  const width = clampNumber(fruitHeight * aspect * 1.04, 0.078, 0.112);
+  const depth = clampNumber(width * 0.94, 0.072, 0.108);
+  return { width, depth, fruitHeight };
+}
+
+function appleTemplateObject({ id, label, shape = "sphere", size, position, rotation = [0, 0, 0], color, material, note, opacity = 1 }) {
+  return {
+    id,
+    type: "generic",
+    shape,
+    label,
+    size: size.map(sizedNumber),
+    position: position.map(sizedNumber),
+    rotation,
+    color,
+    layer: "fixed_furniture",
+    material,
+    roughness: 0.72,
+    metalness: 0.01,
+    opacity,
+    note
+  };
+}
+
+function buildAppleWhiteModelObjects(modelingAnalysis = {}) {
+  const { width: w, depth: d, fruitHeight: h } = appleDimensionProfile(modelingAnalysis);
+  const top = h;
+  const stemHeight = clampNumber(h * 0.34, 0.024, 0.04);
+  return [
+    appleTemplateObject({
+      id: "apple-main-envelope",
+      label: "苹果整体椭球轮廓",
+      size: [w, d, h * 0.96],
+      position: [0, h * 0.48, 0],
+      color: "#b72a22",
+      material: "red apple skin",
+      note: "主体外轮廓：近似椭球，不使用矩形体块。"
+    }),
+    appleTemplateObject({
+      id: "apple-left-shoulder",
+      label: "左上肩部鼓包",
+      size: [w * 0.52, d * 0.48, h * 0.32],
+      position: [-w * 0.18, h * 0.75, d * 0.02],
+      color: "#cf352a",
+      material: "red apple shoulder",
+      note: "补出顶部不对称肩部，让轮廓不像普通圆球。"
+    }),
+    appleTemplateObject({
+      id: "apple-right-shoulder",
+      label: "右上肩部鼓包",
+      size: [w * 0.54, d * 0.48, h * 0.31],
+      position: [w * 0.16, h * 0.73, -d * 0.01],
+      color: "#9f211e",
+      material: "darker red apple shoulder",
+      note: "轻微不对称，模拟照片中苹果自然偏心。"
+    }),
+    appleTemplateObject({
+      id: "apple-lower-belly",
+      label: "下腹圆钝体量",
+      size: [w * 0.78, d * 0.72, h * 0.36],
+      position: [0, h * 0.28, 0],
+      color: "#c9342b",
+      material: "rounded lower apple body",
+      note: "底部圆钝并稍微压低。"
+    }),
+    appleTemplateObject({
+      id: "apple-front-bulge",
+      label: "正面可见鼓面",
+      size: [w * 0.78, d * 0.28, h * 0.62],
+      position: [0, h * 0.49, d * 0.28],
+      color: "#d84335",
+      material: "front visible apple skin",
+      note: "从单张照片推断的正面曲率。"
+    }),
+    appleTemplateObject({
+      id: "apple-rear-bulge",
+      label: "背面推断体量",
+      size: [w * 0.72, d * 0.22, h * 0.56],
+      position: [0, h * 0.49, -d * 0.26],
+      color: "#8f211d",
+      material: "inferred rear apple skin",
+      note: "背面不可见，按对称但略收的苹果体量推断。"
+    }),
+    appleTemplateObject({
+      id: "apple-top-dimple",
+      label: "顶部果窝凹陷标记",
+      shape: "cylinder",
+      size: [w * 0.36, d * 0.31, h * 0.05],
+      position: [0, top - h * 0.08, 0],
+      color: "#6e2d20",
+      material: "recessed red-brown top dimple",
+      note: "CAD 预览用薄圆盘标出凹陷区域，后续 STEP 可替换为布尔扣减。"
+    }),
+    appleTemplateObject({
+      id: "apple-yellow-green-transition",
+      label: "果梗周围黄绿过渡",
+      shape: "cylinder",
+      size: [w * 0.26, d * 0.22, h * 0.028],
+      position: [w * 0.03, top - h * 0.045, -d * 0.02],
+      color: "#9b8f42",
+      material: "yellow green apple skin near stem",
+      note: "保留照片中果梗附近的颜色分区，但不把高光当几何。"
+    }),
+    appleTemplateObject({
+      id: "apple-stem-cap",
+      label: "果梗根部收口",
+      shape: "cylinder",
+      size: [w * 0.16, d * 0.13, h * 0.035],
+      position: [w * 0.04, top - h * 0.025, -d * 0.03],
+      color: "#4f2b19",
+      material: "stem socket",
+      note: "果梗连接处的收口。"
+    }),
+    appleTemplateObject({
+      id: "apple-stem",
+      label: "倾斜果梗",
+      shape: "cylinder",
+      size: [w * 0.085, w * 0.075, stemHeight],
+      position: [w * 0.065, top + stemHeight / 2 - h * 0.035, -d * 0.05],
+      rotation: [14, 0, 18],
+      color: "#6a4122",
+      material: "brown apple stem",
+      note: "顶部真实附属结构，按照片透视做轻微倾斜。"
+    }),
+    appleTemplateObject({
+      id: "apple-bottom-flattening",
+      label: "底部轻微压平",
+      shape: "cylinder",
+      size: [w * 0.52, d * 0.44, h * 0.055],
+      position: [0, h * 0.03, 0],
+      color: "#84231f",
+      material: "flattened lower skin",
+      opacity: 0.86,
+      note: "用于表达苹果底部不是完美球面。"
+    }),
+    appleTemplateObject({
+      id: "apple-bottom-dimple",
+      label: "底部果脐",
+      shape: "cylinder",
+      size: [w * 0.24, d * 0.2, h * 0.022],
+      position: [0, h * 0.012, 0],
+      color: "#581d1a",
+      material: "bottom calyx dimple",
+      opacity: 0.82,
+      note: "底部小凹点，提升物体识别度。"
+    })
+  ];
+}
+
+function commonObjectTemplateSceneFromAnalysis(modelingAnalysis = {}, { intent = "", primaryImage = null } = {}) {
+  const sourceType = modelingAnalysis.sourceType || "object-photo";
+  if (!objectPhotoLooksLikeApple(sourceType, modelingAnalysis, intent, primaryImage?.name)) return null;
+  return {
+    title: "红苹果参数白模",
+    sourceType: "object-photo",
+    commonObjectTemplate: "red-apple",
+    units: "meters",
+    summary: "已按单个红苹果生成参数化白模：保留椭球果身、非对称肩部、顶部果窝、果梗、底部压平与果脐；白底、阴影、高光和摄影留白不建模。",
+    confidence: Math.max(0.78, Number(modelingAnalysis.confidence || 0.78) || 0.78),
+    assumptions: ["单张图片无法获取背面轮廓，背面体量按苹果常见对称关系推断。", "顶部和底部凹陷先用薄圆盘标记，后续可在 CAD 中改成布尔扣减。"],
+    limitations: ["不是摄影测量网格，细微果皮纹理和高光不会转成几何。"],
+    spacePlan: {
+      roomType: "object-photo",
+      envelope: "single apple object envelope",
+      keyZones: ["果身", "顶部果窝", "果梗", "底部果脐"],
+      circulation: "",
+      scaleAssumptions: ["苹果直径约 80-110mm，单位按米保存，导出时转换为毫米。"],
+      modelingStrategy: "multi-ellipsoid body + cylinder dimple/stem markers; CAD-friendly primitives"
+    },
+    objects: buildAppleWhiteModelObjects(modelingAnalysis)
+  };
+}
+
+function knownObjectTemplateAnalysis(modelingAnalysis = {}, { intent = "", primaryImage = null } = {}) {
+  if (objectPhotoLooksLikeApple(modelingAnalysis.sourceType || "", modelingAnalysis, intent, primaryImage?.name)) {
+    return modelingAnalysis;
+  }
+  if (!objectPhotoLooksLikeApple("object-photo", modelingAnalysis, intent, primaryImage?.name)) return null;
+  return {
+    ...modelingAnalysis,
+    subject: modelingAnalysis.subject || "红苹果",
+    sourceType: "object-photo",
+    summary: modelingAnalysis.summary || "按单个苹果产品/物体照片处理，排除背景、阴影和摄影高光。"
+  };
+}
+
+function fallbackInteriorModelDimensions(text = "") {
+  if (/(lobby|hotel|hospitality|民宿|酒店|大堂|接待|公共)/i.test(text)) return { width: 9.2, depth: 6.4, height: 3.4 };
+  if (/(office|workplace|办公|会议|工位)/i.test(text)) return { width: 8.4, depth: 5.6, height: 3.1 };
+  if (/(retail|store|shop|display|展厅|门店|零售|商业|陈列)/i.test(text)) return { width: 8.8, depth: 5.8, height: 3.3 };
+  if (/(kitchen|dining|cafe|餐|厨|咖啡|吧台)/i.test(text)) return { width: 6.8, depth: 4.8, height: 3.0 };
+  if (/(bedroom|suite|客房|卧室|套房)/i.test(text)) return { width: 5.6, depth: 4.4, height: 2.9 };
+  return { width: 7.2, depth: 5.2, height: 3.0 };
+}
+
+function shouldFallbackToSpatialWhiteModel(modelingAnalysis = {}, { brief = {}, intent = "", primaryImage = null } = {}) {
+  const sourceType = String(modelingAnalysis.sourceType || modelingAnalysis.source_type || "").toLowerCase();
+  const briefText = [
+    brief.projectName,
+    brief.spaceType,
+    brief.projectType,
+    brief.functions,
+    brief.style,
+    brief.preserveNotes
+  ].filter(Boolean).join(" ");
+  const text = imageModelingSubjectText(modelingAnalysis, briefText, intent, primaryImage?.name);
+  const spatialText = `${sourceType} ${text}`;
+  const looksLikeSpatial = /(interior|room|space|floor[-_\s]?plan|plan[-_\s]?reference|architecture|building|facade|lobby|hotel|retail|office|cafe|restaurant|residential|commercial|室内|空间|房间|客厅|卧室|餐厅|厨房|平面|户型|建筑|立面|外立面|大堂|酒店|民宿|门店|商店|零售|办公|咖啡|餐饮|商业)/i.test(spatialText);
+  const explicitlyObjectOnly = /(object|product)/i.test(sourceType) && !looksLikeSpatial;
+  return looksLikeSpatial && !explicitlyObjectOnly;
+}
+
+function shouldFallbackToSpatialImageModelingRequest(body = {}, providedAnalysis = {}, { brief = {}, intent = "", primaryImage = null } = {}) {
+  if (shouldFallbackToSpatialWhiteModel(providedAnalysis, { brief, intent, primaryImage })) return true;
+  const hasCadReference = Boolean(
+    providedAnalysis?.cadReferenceImage ||
+    providedAnalysis?.cad_reference_image ||
+    providedAnalysis?.modelingCadPrepass?.image ||
+    providedAnalysis?.modeling_cad_prepass?.image
+  );
+  if (hasCadReference) return true;
+  return shouldFallbackToSpatialWhiteModel({
+    sourceType: primaryImage?.sourceType || body.primaryImage?.sourceType || body.sourceType || "",
+    subject: body.subject || "",
+    summary: body.summary || ""
+  }, { brief, intent, primaryImage });
+}
+
+function fallbackSpatialImageModelingAnalysis({ body = {}, brief = {}, intent = "", primaryImage = null, providedAnalysis = null, error = null } = {}) {
+  const text = imageModelingSubjectText(providedAnalysis, brief, intent, primaryImage?.name);
+  const sourceType = /(building|facade|architecture|建筑|立面|外立面)/i.test(text)
+    ? "architecture-photo"
+    : /(floor[-_\s]?plan|plan[-_\s]?reference|平面|户型)/i.test(text)
+      ? "floor-plan-reference"
+      : "interior-photo";
+  const layers = Array.isArray(providedAnalysis?.layers) && providedAnalysis.layers.length
+    ? providedAnalysis.layers
+    : [
+        { id: "spatial-shell", label: "空间壳体/主要墙面", role: "interior shell envelope", includeInModel: true, priority: 1, primitiveHint: "box", material: "wall finish", notes: "端点超时兜底识别" },
+        { id: "main-opening", label: "主要门窗/玻璃开口", role: "opening", includeInModel: true, priority: 2, primitiveHint: "box", material: "glass/opening", notes: "按参考图位置后续可手动校正" },
+        { id: "main-counter", label: "主要柜台/固定柜体", role: "counter or cabinet", includeInModel: true, priority: 3, primitiveHint: "box", material: "millwork", notes: "按室内常见尺度生成" },
+        { id: "central-table", label: "中央桌面", role: "table", includeInModel: true, priority: 4, primitiveHint: "box", material: "tabletop", notes: "按室内常见尺度生成" },
+        { id: "main-seat", label: "主要座椅/沙发", role: "seat or sofa", includeInModel: true, priority: 5, primitiveHint: "box", material: "upholstery", notes: "按室内常见尺度生成" },
+        { id: "wall-shelf", label: "墙面收纳/陈列", role: "shelf display storage", includeInModel: true, priority: 6, primitiveHint: "box", material: "shelving", notes: "按室内常见尺度生成" },
+        { id: "ceiling-feature", label: "顶面/灯带构件", role: "beam ceiling feature light", includeInModel: true, priority: 7, primitiveHint: "box", material: "ceiling/light", notes: "按室内常见尺度生成" }
+      ];
+  return normalizeImageModelingAnalysis({
+    ...(providedAnalysis || {}),
+    subject: providedAnalysis?.subject || brief.projectName || primaryImage?.name || "室内空间",
+    sourceType: /^(object|product|image-reference)?$/i.test(String(providedAnalysis?.sourceType || "")) ? sourceType : providedAnalysis?.sourceType || sourceType,
+    summary: providedAnalysis?.summary || `reasoning 端点未完成分析：${reasoningFallbackReason(error)}。已生成空间类兜底分析用于继续 3D 建模。`,
+    confidence: Math.min(0.58, Number(providedAnalysis?.confidence || 0.58) || 0.58),
+    completeness: {
+      isComplete: true,
+      score: 0.58,
+      label: "兜底可建模",
+      missingParts: [],
+      edgeContact: [],
+      recommendation: "端点超时，先生成可编辑基础模型；后续通过选择对象校正尺寸、位置和角度。",
+      reason: reasoningFallbackReason(error)
+    },
+    targetBounds: providedAnalysis?.targetBounds || { x: 0.08, y: 0.08, width: 0.84, height: 0.84 },
+    targetShape: providedAnalysis?.targetShape || {
+      type: "polygon",
+      points: [[0.08, 0.88], [0.2, 0.18], [0.78, 0.12], [0.92, 0.88]],
+      note: "fallback spatial envelope, not a precise silhouette"
+    },
+    modelingScope: providedAnalysis?.modelingScope || "fallback interior/architectural space envelope and major editable layers",
+    scaleStrategy: providedAnalysis?.scaleStrategy || "meters, approximate room envelope inferred from single image",
+    primitiveStrategy: providedAnalysis?.primitiveStrategy || "floor/walls/openings/furniture as editable boxes and cylinders",
+    visualProfile: providedAnalysis?.visualProfile || {
+      silhouette: "fallback spatial envelope",
+      viewAngle: "single image perspective",
+      characteristicFeatures: ["floor plate", "walls", "main openings", "major furniture"],
+      materialZones: [],
+      nonGeometry: ["photo shadows", "highlights", "texture noise"]
+    },
+    depthRelations: asStringArray(providedAnalysis?.depthRelations).length ? providedAnalysis.depthRelations : ["depth inferred from single image"],
+    excludedRegions: asStringArray(providedAnalysis?.excludedRegions).length ? providedAnalysis.excludedRegions : ["photo shadows", "specular highlights", "background noise"],
+    layers,
+    fallbackAnalysis: true,
+    fallbackReason: reasoningFallbackReason(error)
+  }, body);
+}
+
+function fallbackInteriorObjectFromLayer(layer = {}, index = 0, dims = fallbackInteriorModelDimensions()) {
+  const text = imageModelingSubjectText(layer);
+  const material = String(layer.material || layer.role || layer.label || "").slice(0, 40);
+  const x = [-0.28, 0.18, -0.08, 0.34, -0.36, 0.38][index % 6] * dims.width;
+  const z = [-0.22, 0.1, 0.28, -0.04, 0.34, -0.32][index % 6] * dims.depth;
+  if (/(wall|envelope|shell|facade|墙|围护|壳体|立面)/i.test(text)) {
+    return {
+      type: "wall",
+      shape: "box",
+      label: layer.label || "主要墙面/空间壳体",
+      size: [Math.max(2.4, dims.width * 0.62), 0.12, dims.height],
+      position: [x * 0.35, dims.height / 2, -dims.depth / 2],
+      color: whiteModelMaterialPalette.wall,
+      material: material || "inferred wall finish"
+    };
+  }
+  if (/(ceiling|天花|吊顶|顶面)/i.test(text)) {
+    return {
+      type: "ceiling",
+      shape: "box",
+      label: layer.label || "顶面/吊顶",
+      size: [Math.max(2.4, dims.width * 0.5), Math.max(1.2, dims.depth * 0.34), 0.08],
+      position: [x * 0.25, dims.height - 0.04, z * 0.25],
+      color: whiteModelMaterialPalette.ceiling,
+      material: material || "inferred ceiling"
+    };
+  }
+  if (/(window|door|opening|glass|门|窗|开口|玻璃|推拉门)/i.test(text)) {
+    return {
+      type: "opening",
+      shape: "box",
+      label: layer.label || "主要门窗开口",
+      size: [Math.max(1.2, dims.width * 0.28), 0.05, Math.max(1.4, dims.height * 0.52)],
+      position: [Math.max(-dims.width * 0.25, Math.min(dims.width * 0.25, x)), dims.height * 0.52, -dims.depth / 2 - 0.03],
+      color: whiteModelMaterialPalette.opening,
+      material: material || "glass/opening",
+      opacity: 0.36
+    };
+  }
+  if (/(counter|cabinet|island|bar|reception|柜|台|吧台|橱|前台|收银)/i.test(text)) {
+    return {
+      type: "counter",
+      shape: "box",
+      label: layer.label || "主要柜台/固定柜体",
+      size: [Math.max(1.4, dims.width * 0.26), 0.58, 0.92],
+      position: [x, 0.46, Math.max(-dims.depth * 0.32, Math.min(dims.depth * 0.3, z))],
+      color: whiteModelMaterialPalette.counter,
+      material: material || "inferred millwork"
+    };
+  }
+  if (/(shelf|storage|display|bookcase|架|柜|陈列|展示|收纳)/i.test(text)) {
+    return {
+      type: "shelf",
+      shape: "box",
+      label: layer.label || "主要收纳/陈列体",
+      size: [Math.max(1.2, dims.width * 0.22), 0.38, Math.max(1.5, dims.height * 0.62)],
+      position: [x, Math.max(0.75, dims.height * 0.31), -dims.depth * 0.42],
+      color: whiteModelMaterialPalette.shelf,
+      material: material || "inferred shelving"
+    };
+  }
+  if (/(sofa|chair|seat|bench|椅|沙发|座|卡座|凳)/i.test(text)) {
+    return {
+      type: "seat",
+      shape: "box",
+      label: layer.label || "主要座椅",
+      size: [1.05, 0.82, 0.72],
+      position: [x, 0.36, z],
+      color: whiteModelMaterialPalette.seat,
+      material: material || "inferred upholstery"
+    };
+  }
+  if (/(table|desk|coffee|餐桌|桌|茶几|书桌)/i.test(text)) {
+    return {
+      type: "table",
+      shape: "box",
+      label: layer.label || "主要桌面",
+      size: [1.35, 0.86, 0.42],
+      position: [x, 0.21, z],
+      color: whiteModelMaterialPalette.table,
+      material: material || "inferred tabletop"
+    };
+  }
+  if (/(column|post|pillar|柱|立柱)/i.test(text)) {
+    return {
+      type: "column",
+      shape: "cylinder",
+      label: layer.label || "结构柱",
+      size: [0.36, 0.36, dims.height],
+      position: [x, dims.height / 2, z],
+      color: whiteModelMaterialPalette.column,
+      material: material || "inferred column"
+    };
+  }
+  if (/(beam|梁|吊顶|ceiling feature)/i.test(text)) {
+    return {
+      type: "beam",
+      shape: "box",
+      label: layer.label || "梁/吊顶构件",
+      size: [Math.max(1.8, dims.width * 0.34), 0.22, 0.24],
+      position: [x, dims.height - 0.22, z],
+      color: whiteModelMaterialPalette.beam,
+      material: material || "inferred ceiling structure"
+    };
+  }
+  if (/(light|lamp|pendant|track|灯|吊灯|灯带|射灯)/i.test(text)) {
+    return {
+      type: "fixture",
+      shape: "cylinder",
+      label: layer.label || "主要灯具",
+      size: [0.42, 0.42, 0.18],
+      position: [x, dims.height - 0.22, z],
+      color: whiteModelMaterialPalette.fixture,
+      material: material || "warm light"
+    };
+  }
+  return null;
+}
+
+function fallbackInteriorWhiteModelSceneFromAnalysis(modelingAnalysis = {}, { brief = {}, intent = "", primaryImage = null, cadReferenceMeta = null, error = null } = {}) {
+  const text = imageModelingSubjectText(modelingAnalysis, brief, intent, primaryImage?.name);
+  const dims = fallbackInteriorModelDimensions(text);
+  const layers = Array.isArray(modelingAnalysis.layers)
+    ? modelingAnalysis.layers.filter((layer) => layer?.includeInModel !== false).slice(0, 16)
+    : [];
+  const objects = [
+    {
+      id: "fallback-floor-plate",
+      type: "floor",
+      shape: "box",
+      label: "空间地面基底",
+      size: [dims.width, dims.depth, 0.08],
+      position: [0, 0.04, 0],
+      color: whiteModelMaterialPalette.floor,
+      material: "inferred floor finish",
+      note: "端点超时兜底：按室内空间包络生成。"
+    },
+    {
+      id: "fallback-back-wall",
+      type: "wall",
+      shape: "box",
+      label: "后侧主墙面",
+      size: [dims.width, 0.12, dims.height],
+      position: [0, dims.height / 2, -dims.depth / 2],
+      color: whiteModelMaterialPalette.wall,
+      material: "inferred wall finish",
+      opacity: 0.88
+    },
+    {
+      id: "fallback-left-wall",
+      type: "wall",
+      shape: "box",
+      label: "左侧墙面",
+      size: [0.12, dims.depth, dims.height],
+      position: [-dims.width / 2, dims.height / 2, 0],
+      color: whiteModelMaterialPalette.wall,
+      material: "inferred side wall",
+      opacity: 0.58
+    },
+    {
+      id: "fallback-right-wall",
+      type: "wall",
+      shape: "box",
+      label: "右侧墙面",
+      size: [0.12, dims.depth, dims.height],
+      position: [dims.width / 2, dims.height / 2, 0],
+      color: whiteModelMaterialPalette.wall,
+      material: "inferred side wall",
+      opacity: 0.42
+    }
+  ];
+  layers
+    .map((layer, index) => fallbackInteriorObjectFromLayer(layer, index, dims))
+    .filter(Boolean)
+    .forEach((object) => objects.push(object));
+  if (objects.length < 6) {
+    objects.push(
+      { type: "counter", shape: "box", label: "主要固定柜体", size: [2.2, 0.56, 0.9], position: [-dims.width * 0.24, 0.45, -dims.depth * 0.18], color: whiteModelMaterialPalette.counter, material: "inferred millwork" },
+      { type: "table", shape: "box", label: "中央桌面", size: [1.35, 0.9, 0.42], position: [0.35, 0.21, 0.18], color: whiteModelMaterialPalette.table, material: "inferred table" },
+      { type: "seat", shape: "box", label: "座椅/沙发体块", size: [1.08, 0.82, 0.72], position: [-0.9, 0.36, 0.72], color: whiteModelMaterialPalette.seat, material: "inferred seating" },
+      { type: "shelf", shape: "box", label: "墙面收纳/陈列", size: [1.7, 0.34, 1.65], position: [dims.width * 0.22, 0.825, -dims.depth * 0.42], color: whiteModelMaterialPalette.shelf, material: "inferred shelving" }
+    );
+  }
+  return {
+    title: `${brief.projectName || primaryImage?.name || "室内空间"} · 兜底3D模型`,
+    sourceType: modelingAnalysis.sourceType || "interior-photo",
+    units: "meters",
+    summary: `reasoning 端点超时/中止，已先根据${cadReferenceMeta ? "CAD结构参考图和" : ""}图片分析生成可编辑基础室内模型；可继续拖拽校正位置、尺寸和角度后导出。`,
+    confidence: 0.54,
+    assumptions: [
+      "这是端点超时后的本地参数化兜底模型，不是完整 AI 推理结果。",
+      "单张室内图背面、遮挡区域和真实尺寸需要人工复核。"
+    ],
+    limitations: [
+      `原始建模请求未完成：${reasoningFallbackReason(error)}`,
+      "细部造型、复杂异形构件和精确家具尺寸需要继续编辑。"
+    ],
+    spacePlan: {
+      roomType: modelingAnalysis.sourceType || "interior-photo",
+      envelope: `${dims.width}m x ${dims.depth}m x ${dims.height}m inferred editable interior envelope`,
+      keyZones: asStringArray(modelingAnalysis.layers?.map?.((layer) => layer.label || layer.role)).slice(0, 8),
+      circulation: "fallback circulation inferred from visible interior perspective",
+      scaleAssumptions: ["meters, approximate room envelope", "major objects are CAD-friendly primitives"],
+      modelingStrategy: "fallback envelope + layer-derived boxes/cylinders; user-editable in viewer"
+    },
+    objects
+  };
+}
+
+function objectPhotoModelNeedsDetail(objects = [], sourceType = "", ...items) {
+  if (!/(object|product)/i.test(sourceType)) return false;
+  const text = imageModelingSubjectText(...items, objects);
+  const hasPrimaryBody = objects.some((object) => /(主体|main|body|果身|苹果|product)/i.test(whiteModelObjectSearchText(object)));
+  const hasAttachedDetail = /(stem|stalk|peduncle|handle|leg|果梗|柄|支脚|把手|凹陷|dimple|opening)/i.test(text);
+  return objects.length < 8 || !hasPrimaryBody || !hasAttachedDetail;
+}
+
+function ensureObjectPhotoModelDetail(objects = [], sourceType = "", { source = {}, parsed = {}, modelingAnalysis = {}, intent = "", primaryImage = null } = {}) {
+  if (!/(object|product)/i.test(sourceType)) return objects;
+  if (objectPhotoLooksLikeApple(sourceType, source, parsed, modelingAnalysis, intent, primaryImage?.name)) {
+    const hasStem = objects.some((object) => /(stem|stalk|peduncle|果梗|苹果柄)/i.test(whiteModelObjectSearchText(object)));
+    const hasDimple = objects.some((object) => /(dimple|depression|果窝|果脐|凹陷)/i.test(whiteModelObjectSearchText(object)));
+    if (objects.length < 10 || !hasStem || !hasDimple) {
+      return buildAppleWhiteModelObjects(modelingAnalysis).map(normalizeWhiteModelObject);
+    }
+  }
+  if (!objectPhotoModelNeedsDetail(objects, sourceType, source, parsed, modelingAnalysis, intent)) return objects;
+  const body = primaryObjectPhotoBody(objects);
+  if (!body?.size || !body?.position) return objects;
+  const [w = 1, d = 1, h = 1] = body.size;
+  const [x = 0, y = h / 2, z = 0] = body.position;
+  const top = y + h / 2;
+  const bottom = y - h / 2;
+  const additions = [
+    {
+      type: body.type || "generic",
+      shape: "sphere",
+      label: "front curvature detail",
+      size: [w * 0.72, d * 0.28, h * 0.62],
+      position: [x, y, z + d * 0.28],
+      color: body.color,
+      layer: body.layer,
+      material: body.material || "front visible surface",
+      note: "自动补充：单张物体照的正面曲率表达。"
+    },
+    {
+      type: body.type || "generic",
+      shape: "sphere",
+      label: "rear inferred curvature",
+      size: [w * 0.68, d * 0.22, h * 0.56],
+      position: [x, y, z - d * 0.25],
+      color: body.color,
+      layer: body.layer,
+      material: body.material || "inferred rear surface",
+      opacity: 0.88,
+      note: "自动补充：背面不可见，按主体轮廓推断。"
+    },
+    {
+      type: body.type || "generic",
+      shape: "sphere",
+      label: "top contour control",
+      size: [w * 0.5, d * 0.48, h * 0.18],
+      position: [x, top - h * 0.08, z],
+      color: body.color,
+      layer: body.layer,
+      material: body.material || "upper contour",
+      note: "自动补充：避免物体顶部过于简单。"
+    },
+    {
+      type: body.type || "generic",
+      shape: "cylinder",
+      label: "bottom contact control",
+      size: [w * 0.48, d * 0.42, h * 0.05],
+      position: [x, bottom + h * 0.025, z],
+      color: body.color,
+      layer: body.layer,
+      material: body.material || "bottom contact",
+      opacity: 0.82,
+      note: "自动补充：底部接触面/压平关系。"
+    }
+  ].map((object, index) => normalizeWhiteModelObject(object, objects.length + index));
+  return uniqueWhiteModelObjects([...objects, ...additions]).slice(0, 96);
+}
+
+function whiteModelLayerCounts(objects) {
+  const counts = Object.fromEntries(whiteModelLayerDefinitions.map(([key]) => [key, 0]));
+  objects.forEach((object) => {
+    const layer = whiteModelLayerKeys.has(object.layer) ? object.layer : whiteModelLayerForObject(object.type, object);
+    counts[layer] = (counts[layer] || 0) + 1;
+  });
+  return counts;
+}
+
+function whiteModelCompletenessReport(objects, sourceType = "") {
+  const normalizedSource = String(sourceType || "").toLowerCase();
+  const counts = whiteModelLayerCounts(objects);
+  const materialCount = new Set(objects.map((object) => String(object.material || object.color || "")).filter(Boolean)).size;
+  const architectureInput = architectureExteriorLooksLikeBuilding(sourceType, objects);
+  const spatialInput = !/(object|product)/.test(normalizedSource);
+  const interiorInput = /interior|room|space|室内|空间|房间/i.test(normalizedSource) && !architectureInput;
+  const hasText = (pattern) => objects.some((object) => pattern.test(whiteModelObjectSearchText(object)));
+  const openingCount = objects.filter((object) => object.layer === "openings" || object.type === "opening").length;
+  const architectureGeometry = architectureInput ? architectureGeometrySanityReport(objects) : { passed: true };
+  const checks = architectureInput
+    ? [
+      { id: "building_mass", label: "整栋建筑体量", weight: 18, passed: counts.shell >= 3 || hasText(/building|facade|mass|volume|建筑|楼体|体量|立面|外墙/i) },
+      { id: "roof_top", label: "屋顶/顶部收口", weight: 14, passed: counts.structure >= 2 && hasText(/roof|eave|gable|parapet|屋顶|屋面|檐|女儿墙|屋脊/i) },
+      { id: "openings", label: "立面门窗", weight: 16, passed: openingCount >= 4 },
+      { id: "entry_base", label: "入口/台基", weight: 10, passed: hasText(/door|entry|stair|step|plinth|base|门|入口|台阶|基座|勒脚|台基/i) },
+      { id: "depth", label: "侧墙/深度推断", weight: 10, passed: hasText(/side|rear|depth|侧墙|后墙|背立面|深度/i) || counts.shell >= 4 },
+      { id: "facade_rhythm", label: "立面节奏", weight: 10, passed: openingCount >= 8 || objects.length >= 24 },
+      { id: "geometry_axes", label: "尺寸轴向/落地关系", weight: 14, passed: architectureGeometry.passed },
+      { id: "materials", label: "材质/颜色区分", weight: 8, passed: materialCount >= 4 },
+      { id: "density", label: "对象密度", weight: 10, passed: objects.length >= 18 }
+    ]
+    : [
+      { id: "shell", label: "地墙顶/空间壳体", weight: 22, passed: spatialInput ? counts.shell >= 3 : true },
+      { id: "openings", label: "门窗/开口", weight: spatialInput ? 14 : 4, passed: !spatialInput || counts.openings >= 1 },
+      { id: "structure", label: "柱梁/楼梯/结构", weight: 8, passed: spatialInput ? (counts.structure >= 1 || objects.length >= 16) : true },
+      { id: "fixed_furniture", label: "固定家具/柜体", weight: 12, passed: counts.fixed_furniture >= 1 || !spatialInput },
+      { id: "loose_furniture", label: "活动家具", weight: 14, passed: counts.loose_furniture >= 2 || !spatialInput },
+      { id: "lighting", label: "灯光设备", weight: 10, passed: spatialInput ? (counts.lighting >= 1 || normalizedSource.includes("floor-plan")) : true },
+      { id: "context", label: "绿植/环境线索", weight: 6, passed: spatialInput ? (counts.context >= 1 || normalizedSource.includes("floor-plan")) : true },
+      { id: "materials", label: "材质/颜色区分", weight: 8, passed: materialCount >= 5 },
+      { id: "density", label: "对象密度", weight: 6, passed: objects.length >= (interiorInput ? 24 : spatialInput ? 18 : 8) }
+    ];
+  const totalWeight = checks.reduce((sum, check) => sum + check.weight, 0);
+  const passedWeight = checks.reduce((sum, check) => sum + (check.passed ? check.weight : 0), 0);
+  const score = totalWeight ? Math.round((passedWeight / totalWeight) * 100) : 0;
+  const missing = checks.filter((check) => !check.passed).map((check) => check.label);
+  return {
+    score,
+    label: score >= 86 ? "完整" : score >= 70 ? "可用" : "偏简略",
+    missing,
+    layerCounts: counts,
+    checks: checks.map((check) => ({
+      id: check.id,
+      label: check.label,
+      passed: Boolean(check.passed)
+    }))
+  };
+}
+
+function normalizeWhiteModelSpacePlan(source = {}, parsed = {}) {
+  const plan = source.spacePlan || parsed.spacePlan || {};
+  return {
+    roomType: String(plan.roomType || plan.room_type || source.sourceType || "unknown").slice(0, 80),
+    envelope: String(plan.envelope || "").slice(0, 220),
+    keyZones: asStringArray(plan.keyZones || plan.key_zones).slice(0, 8),
+    circulation: String(plan.circulation || "").slice(0, 220),
+    scaleAssumptions: asStringArray(plan.scaleAssumptions || plan.scale_assumptions).slice(0, 6),
+    modelingStrategy: String(plan.modelingStrategy || plan.modeling_strategy || "").slice(0, 260)
+  };
+}
+
+function normalizeWhiteModelPreviewCamera(source = {}, sourceType = "") {
+  const camera = source.previewCamera || source.preview_camera || source.camera || {};
+  const normalizeCameraVector = (value, fallback) => {
+    if (!Array.isArray(value)) return fallback;
+    return fallback.map((fallbackValue, index) => {
+      const number = Number(value[index]);
+      return Number.isFinite(number) ? Number(number.toFixed(3)) : fallbackValue;
+    });
+  };
+  const interior = /interior|room|space|室内|空间|房间/i.test(String(sourceType || source.sourceType || ""));
+  const fallbackPosition = interior ? [2.2, 1.55, 3.2] : [6, 4.5, 6];
+  const fallbackTarget = interior ? [0, 1.32, -1.2] : [0, 1.2, 0];
+  return {
+    mode: String(camera.mode || (interior ? "interior" : "orbit")).slice(0, 40),
+    position: normalizeCameraVector(camera.position || camera.eye || camera.cameraPosition, fallbackPosition),
+    target: normalizeCameraVector(camera.target || camera.lookAt || camera.look_at, fallbackTarget),
+    note: String(camera.note || "").slice(0, 180)
+  };
+}
+
+function normalizeWhiteModelScene(parsed, { brief = {}, intent = "", primaryImage = null, modelingAnalysis = null } = {}) {
+  const source = parsed?.whiteModelScene || parsed?.scene || parsed || {};
+  const sourceType = String(source.sourceType || source.source_type || "image-to-colored-3d-model").slice(0, 60);
+  const objectInput = /(object|product)/i.test(sourceType);
+  const architectureExteriorInput = architectureExteriorLooksLikeBuilding(sourceType, source, modelingAnalysis, intent, primaryImage?.name);
+  const commonObjectTemplate = String(source.commonObjectTemplate || source.common_object_template || "").trim();
+  let objects = Array.isArray(source.objects) ? source.objects : [];
+  objects = objects.slice(0, 96).map(normalizeWhiteModelObject);
+  if (!objectInput && !objects.some((object) => object.type === "floor")) {
+    objects.unshift(normalizeWhiteModelObject({
+      type: "floor",
+      layer: architectureExteriorInput ? "context" : "shell",
+      label: architectureExteriorInput ? "site base" : "floor plate",
+      size: [8, 6, 0.08],
+      position: [0, 0.04, 0],
+      color: whiteModelMaterialPalette.floor
+    }, 0));
+  }
+  objects = completeWhiteModelEnvelope(objects, sourceType);
+  objects = ensureInteriorModelDetail(objects, sourceType, { modelingAnalysis, brief, intent });
+  if (architectureExteriorInput) {
+    objects = repairArchitectureExteriorModelObjects(objects, sourceType, source, parsed, modelingAnalysis, intent, primaryImage?.name);
+  }
+  if (!commonObjectTemplate) {
+    objects = refineObjectPhotoWhiteModelObjects(objects, sourceType);
+    objects = ensureObjectPhotoModelDetail(objects, sourceType, {
+      source,
+      parsed,
+      modelingAnalysis,
+      intent,
+      primaryImage
+    });
+  }
+  if (!commonObjectTemplate && architectureExteriorInput) {
+    objects = ensureArchitectureExteriorModelDetail(objects, sourceType, {
+      source,
+      parsed,
+      modelingAnalysis,
+      intent,
+      primaryImage
+    });
+    objects = repairArchitectureExteriorModelObjects(objects, sourceType, source, parsed, modelingAnalysis, intent, primaryImage?.name);
+  }
+  if (!objectInput && objects.length < 2) {
+    objects.push(
+      normalizeWhiteModelObject({ type: "wall", layer: "shell", label: "back wall", size: [8, 0.18, 3], position: [0, 1.5, -3] }, 1),
+      normalizeWhiteModelObject({ type: "wall", layer: "shell", label: "side wall", size: [0.18, 6, 3], position: [-4, 1.5, 0] }, 2)
+    );
+  } else if (objectInput && !objects.length) {
+    objects.push(normalizeWhiteModelObject({
+      type: "generic",
+      shape: "box",
+      label: "main subject placeholder",
+      size: [1, 1, 1],
+      position: [0, 0.5, 0],
+      material: "inferred main object"
+    }, 0));
+  }
+  objects = uniqueWhiteModelObjects(objects).slice(0, 96);
+  const completeness = whiteModelCompletenessReport(objects, sourceType);
+  const title = String(source.title || parsed?.title || brief.projectName || primaryImage?.name || "已移除模型").slice(0, 80);
+  return {
+    id: `removed-model-${Date.now()}`,
+    title,
+    mode: "removed-model",
+    units: String(source.units || "meters").slice(0, 24),
+    sourceType,
+    summary: String(source.summary || parsed?.summary || "已根据上传图片生成可旋转的彩色 3D 概念模型。").slice(0, 600),
+    assumptions: asStringArray(source.assumptions || parsed?.assumptions).slice(0, 8),
+    limitations: asStringArray(source.limitations || parsed?.limitations).concat(completeness.missing.length ? [`完整度仍需人工复核：${completeness.missing.join("、")}。`] : []).slice(0, 8),
+    confidence: clampNumber(asFiniteNumber(source.confidence ?? parsed?.confidence, 0.62), 0.05, 0.95),
+    objectCount: objects.length,
+    bounds: whiteModelBounds(objects),
+    spacePlan: normalizeWhiteModelSpacePlan(source, parsed),
+    previewCamera: normalizeWhiteModelPreviewCamera(source, sourceType),
+    layers: whiteModelLayerCounts(objects),
+    completeness,
+    completionScore: completeness.score,
+    objects,
+    intent: String(intent || "").slice(0, 1200),
+    sourceImage: primaryImage ? {
+      name: primaryImage.name || null,
+      type: primaryImage.type || null,
+      sourceType: primaryImage.sourceType || null
+    } : null,
+    reasoningModel: config.reasoningModel,
+    createdAt: new Date().toISOString()
+  };
+}
+
+function scadString(value) {
+  return JSON.stringify(String(value || "").replace(/[^\w\s#.,:+/-]/g, "").slice(0, 120));
+}
+
+function scadNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Number(number.toFixed(4)) : fallback;
+}
+
+function scadVector(values = [], fallback = [0, 0, 0]) {
+  return fallback.map((fallbackValue, index) => scadNumber(values[index], fallbackValue));
+}
+
+function whiteModelToScad(model) {
+  const title = String(model?.title || "ai-image-model");
+  const objects = Array.isArray(model?.objects) ? model.objects : [];
+  const lines = [
+    `// ${title}`,
+    "// Generated by Laogui AI image modeling. Units: millimeters.",
+    "// Open in OpenSCAD or import via FreeCAD/compatible CAD workflows.",
+    "unit_scale = 1000;",
+    "$fn = 48;",
+    "",
+    "module obj_box(size_m, pos_m, rot_deg, color_hex) {",
+    "  color(color_hex)",
+    "    translate([pos_m[0] * unit_scale, pos_m[2] * unit_scale, pos_m[1] * unit_scale])",
+    "      rotate([rot_deg[0], rot_deg[2], rot_deg[1]])",
+    "        cube([max(size_m[0] * unit_scale, 1), max(size_m[1] * unit_scale, 1), max(size_m[2] * unit_scale, 1)], center=true);",
+    "}",
+    "",
+    "module obj_cylinder(size_m, pos_m, rot_deg, color_hex) {",
+    "  radius = max(max(size_m[0], size_m[1]) * unit_scale / 2, 1);",
+    "  color(color_hex)",
+    "    translate([pos_m[0] * unit_scale, pos_m[2] * unit_scale, pos_m[1] * unit_scale])",
+    "      rotate([rot_deg[0], rot_deg[2], rot_deg[1]])",
+    "        cylinder(h=max(size_m[2] * unit_scale, 1), r=radius, center=true);",
+    "}",
+    "",
+    "module obj_sphere(size_m, pos_m, rot_deg, color_hex) {",
+    "  color(color_hex)",
+    "    translate([pos_m[0] * unit_scale, pos_m[2] * unit_scale, pos_m[1] * unit_scale])",
+    "      rotate([rot_deg[0], rot_deg[2], rot_deg[1]])",
+    "        scale([max(size_m[0] * unit_scale, 1), max(size_m[1] * unit_scale, 1), max(size_m[2] * unit_scale, 1)])",
+    "          sphere(r=0.5);",
+    "}",
+    "",
+    "union() {"
+  ];
+
+  objects.forEach((object, index) => {
+    const shape = String(object?.shape || "box").toLowerCase();
+    const moduleName = shape === "cylinder" ? "obj_cylinder" : shape === "sphere" ? "obj_sphere" : "obj_box";
+    const size = scadVector(object?.size, [1, 1, 1]);
+    const position = scadVector(object?.position, [0, size[2] / 2, 0]);
+    const rotation = scadVector(object?.rotation, [0, 0, 0]);
+    const color = isHex(object?.color) ? object.color : whiteModelMaterialPalette[object?.type] || whiteModelMaterialPalette.generic;
+    lines.push(`  // ${index + 1}. ${String(object?.label || object?.id || object?.type || "object").slice(0, 80)}`);
+    lines.push(`  ${moduleName}([${size.join(", ")}], [${position.join(", ")}], [${rotation.join(", ")}], ${scadString(color)});`);
+  });
+
+  lines.push("}");
+  return `${lines.join("\n")}\n`;
+}
+
+function dxfPair(code, value) {
+  return `${code}\n${value}\n`;
+}
+
+function whiteModelFootprintLines(model) {
+  const objects = Array.isArray(model?.objects) ? model.objects : [];
+  const lines = [];
+  objects.forEach((object) => {
+    if (object.type === "ceiling" || object.layer === "lighting") return;
+    const [width = 1, depth = 1] = object.size || [];
+    const [x = 0, , z = 0] = object.position || [];
+    const halfW = Math.max(0.01, Number(width) || 1) / 2;
+    const halfD = Math.max(0.01, Number(depth) || 1) / 2;
+    const left = (x - halfW) * 1000;
+    const right = (x + halfW) * 1000;
+    const top = (z - halfD) * 1000;
+    const bottom = (z + halfD) * 1000;
+    lines.push([left, top, right, top]);
+    lines.push([right, top, right, bottom]);
+    lines.push([right, bottom, left, bottom]);
+    lines.push([left, bottom, left, top]);
+  });
+  return lines.slice(0, 1200);
+}
+
+function whiteModelToDxf(model) {
+  const lines = whiteModelFootprintLines(model);
+  let dxf = "0\nSECTION\n2\nHEADER\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n";
+  for (const [x1, y1, x2, y2] of lines) {
+    dxf += "0\nLINE\n8\nAI_MODEL_FOOTPRINT\n";
+    dxf += dxfPair(10, scadNumber(x1));
+    dxf += dxfPair(20, scadNumber(y1));
+    dxf += dxfPair(30, 0);
+    dxf += dxfPair(11, scadNumber(x2));
+    dxf += dxfPair(21, scadNumber(y2));
+    dxf += dxfPair(31, 0);
+  }
+  dxf += "0\nENDSEC\n0\nEOF\n";
+  return dxf;
+}
+
+function whiteModelToFootprintSvg(model) {
+  const lines = whiteModelFootprintLines(model);
+  if (!lines.length) {
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600"><text x="40" y="60" fill="#333">No footprint</text></svg>`;
+  }
+  const xs = lines.flatMap((line) => [line[0], line[2]]);
+  const ys = lines.flatMap((line) => [line[1], line[3]]);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const width = Math.max(1, maxX - minX);
+  const height = Math.max(1, maxY - minY);
+  const pad = Math.max(width, height) * 0.08;
+  const viewBox = `${scadNumber(minX - pad)} ${scadNumber(minY - pad)} ${scadNumber(width + pad * 2)} ${scadNumber(height + pad * 2)}`;
+  const segments = lines.map(([x1, y1, x2, y2]) => `<line x1="${scadNumber(x1)}" y1="${scadNumber(y1)}" x2="${scadNumber(x2)}" y2="${scadNumber(y2)}" />`).join("");
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="900" viewBox="${viewBox}">`,
+    `<rect x="${scadNumber(minX - pad)}" y="${scadNumber(minY - pad)}" width="${scadNumber(width + pad * 2)}" height="${scadNumber(height + pad * 2)}" fill="#f7f3ea"/>`,
+    `<g fill="none" stroke="#161616" stroke-width="${Math.max(20, Math.max(width, height) * 0.004)}" stroke-linecap="square">${segments}</g>`,
+    "</svg>"
+  ].join("");
+}
+
+function meaningfulSlug(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const slug = slugify(raw);
+  return slug && slug !== "item" ? slug : "";
+}
+
+function deriveWhiteModelFileBase(model = {}) {
+  const direct = meaningfulSlug(model.fileBase);
+  if (direct) return direct;
+  const sourceName = model.sourceImage?.name || model.primaryImage?.name || "";
+  const imageBase = meaningfulSlug(sourceName ? path.basename(sourceName, path.extname(sourceName)) : "");
+  if (imageBase) return imageBase;
+  const subjectText = imageModelingSubjectText(model.title, model.modelingAnalysis, model.summary);
+  if (/(红苹果|苹果|apple|red apple)/i.test(subjectText)) return "red-apple-parametric-model";
+  return meaningfulSlug(model.title || model.id) || "ai-image-model";
+}
+
+function attachWhiteModelCadArtifacts(model) {
+  const fileBase = deriveWhiteModelFileBase(model);
+  return {
+    ...model,
+    fileBase,
+    scadCode: whiteModelToScad(model),
+    dxfText: whiteModelToDxf(model),
+    footprintSvg: whiteModelToFootprintSvg(model),
+    cadImport: {
+      recommended: "SCAD",
+      formats: ["GLB", "SCAD", "DXF footprint", "JSON"],
+      notes: [
+        "SCAD contains parametric 3D primitives in millimeters and can be opened in OpenSCAD or converted through FreeCAD.",
+        "DXF is a top-view footprint for CAD tracing and layout coordination.",
+        "GLB keeps the colored preview mesh for DCC or presentation workflows."
+      ]
+    }
+  };
+}
+
+function assertWhiteModelForCadIntegration(input) {
+  const model = input?.model || input?.whiteModelScene || input?.scene || input;
+  if (!model || !Array.isArray(model.objects) || !model.objects.length) {
+    throw httpError(400, "缺少可导出的 3D 参数模型对象");
+  }
+  const sourceType = String(model.sourceType || model.source_type || "image-to-colored-3d-model").slice(0, 60);
+  const objects = repairArchitectureExteriorModelObjects(model.objects.slice(0, 240), sourceType, model.modelingAnalysis, model.summary, model.intent);
+  return {
+    ...model,
+    title: String(model.title || "图片建模模型").slice(0, 120),
+    units: model.units || "meters",
+    sourceType,
+    objects
+  };
+}
+
+function generatedFileUrl(filePath) {
+  const relativePath = path.relative(generatedDir, filePath);
+  if (!relativePath || relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+    throw httpError(500, "Generated artifact path is outside generated directory");
+  }
+  return `/generated/${relativePath.split(path.sep).map(encodeURIComponent).join("/")}`;
+}
+
+async function createCadIntegrationWorkspace(model, engine) {
+  const fileBase = slugify(model.fileBase || model.title || model.id || "ai-3d-model") || "ai-3d-model";
+  const runId = `${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const dir = path.join(generatedDir, "cad-integrations", `${fileBase}-${engine}-${runId}`);
+  await fs.mkdir(dir, { recursive: true });
+  return { dir, fileBase };
+}
+
+function cadObjectLabel(object, index) {
+  return String(object?.label || object?.id || object?.type || `part-${index + 1}`)
+    .replace(/[^\w\s#.,:+/-]/g, "")
+    .trim()
+    .slice(0, 80) || `part-${index + 1}`;
+}
+
+function cadObjectColor(object) {
+  return isHex(object?.color)
+    ? object.color
+    : whiteModelMaterialPalette[object?.type] || whiteModelMaterialPalette.generic;
+}
+
+function jsArray(values, fallback) {
+  return JSON.stringify(scadVector(values, fallback));
+}
+
+function whiteModelToForgeCadScript(model) {
+  const title = String(model?.title || "AI 3D model");
+  const objects = Array.isArray(model?.objects) ? model.objects : [];
+  const lines = [
+    `// ${title}`,
+    "// Generated by Laogui AI image modeling for ForgeCAD.",
+    "// Units: millimeters. Source coordinates are meters: [x, vertical-y, depth-z].",
+    "// ForgeCAD uses Z-up: [x, depth-y, vertical-z].",
+    "",
+    "const mm = 1000;",
+    "",
+    "function placeModelShape(shape, positionM, rotationDeg) {",
+    "  let result = shape.placeReference('center', [0, 0, 0]);",
+    "  if (rotationDeg[0]) result = result.rotateX(rotationDeg[0]);",
+    "  if (rotationDeg[2]) result = result.rotateY(rotationDeg[2]);",
+    "  if (rotationDeg[1]) result = result.rotateZ(rotationDeg[1]);",
+    "  return result.translate(positionM[0] * mm, positionM[2] * mm, positionM[1] * mm);",
+    "}",
+    "",
+    "function modelBox(sizeM, positionM, rotationDeg) {",
+    "  return placeModelShape(box(Math.max(sizeM[0] * mm, 1), Math.max(sizeM[1] * mm, 1), Math.max(sizeM[2] * mm, 1)), positionM, rotationDeg);",
+    "}",
+    "",
+    "function modelCylinder(sizeM, positionM, rotationDeg) {",
+    "  const radius = Math.max(sizeM[0] * mm, sizeM[1] * mm, 2) / 2;",
+    "  return placeModelShape(cylinder(Math.max(sizeM[2] * mm, 1), radius), positionM, rotationDeg);",
+    "}",
+    "",
+    "function modelSphere(sizeM, positionM, rotationDeg) {",
+    "  const maxSize = Math.max(sizeM[0], sizeM[1], sizeM[2], 0.001);",
+    "  const radius = Math.max(maxSize * mm / 2, 1);",
+    "  return placeModelShape(sphere(radius).scale([sizeM[0] / maxSize, sizeM[1] / maxSize, sizeM[2] / maxSize]), positionM, rotationDeg);",
+    "}",
+    "",
+    "const parts = [];"
+  ];
+
+  objects.forEach((object, index) => {
+    const shape = String(object?.shape || "box").toLowerCase();
+    const factory = shape === "cylinder" ? "modelCylinder" : shape === "sphere" ? "modelSphere" : "modelBox";
+    const label = cadObjectLabel(object, index);
+    const size = jsArray(object?.size, [1, 1, 1]);
+    const position = jsArray(object?.position, [0, 0.5, 0]);
+    const rotation = jsArray(object?.rotation, [0, 0, 0]);
+    const color = JSON.stringify(cadObjectColor(object));
+    lines.push("");
+    lines.push(`// ${index + 1}. ${label}`);
+    lines.push(`parts.push({ name: ${JSON.stringify(label)}, shape: ${factory}(${size}, ${position}, ${rotation}).color(${color}) });`);
+  });
+
+  lines.push("");
+  lines.push("return {");
+  lines.push("  parts,");
+  lines.push("  source: { generator: 'laogui-ai', units: 'mm', coordinateSystem: 'Z-up' },");
+  lines.push(`  title: ${JSON.stringify(title)}`);
+  lines.push("};");
+  return `${lines.join("\n")}\n`;
+}
+
+function pythonLiteral(value) {
+  return JSON.stringify(value);
+}
+
+function whiteModelToBuild123dPython(model) {
+  const title = String(model?.title || "AI 3D model");
+  const label = slugify(title) || "ai_3d_model";
+  const objects = Array.isArray(model?.objects) ? model.objects : [];
+  const lines = [
+    `# ${title}`,
+    "# Generated by Laogui AI image modeling for earthtojake/text-to-cad.",
+    "# Units: millimeters. Source coordinates are meters: [x, vertical-y, depth-z].",
+    "",
+    "import build123d as bd",
+    "",
+    "MM_PER_M = 1000.0",
+    "",
+    "def _vec(values, fallback):",
+    "    raw = list(values or [])",
+    "    out = []",
+    "    for index, default in enumerate(fallback):",
+    "        try:",
+    "            out.append(float(raw[index]))",
+    "        except Exception:",
+    "            out.append(float(default))",
+    "    return out",
+    "",
+    "def _location(position_m, rotation_deg):",
+    "    x, y, z = _vec(position_m, [0, 0, 0])",
+    "    rx, ry, rz = _vec(rotation_deg, [0, 0, 0])",
+    "    return bd.Location((x * MM_PER_M, z * MM_PER_M, y * MM_PER_M), (rx, rz, ry))",
+    "",
+    "def _solid(shape, size_m):",
+    "    w, d, h = [max(value * MM_PER_M, 1.0) for value in _vec(size_m, [1, 1, 1])]",
+    "    if shape == 'cylinder':",
+    "        return bd.Cylinder(max(w, d) / 2.0, h, align=(bd.Align.CENTER, bd.Align.CENTER, bd.Align.CENTER))",
+    "    if shape == 'sphere':",
+    "        radius = max(w, d, h) / 2.0",
+    "        return bd.Sphere(radius)",
+    "    return bd.Box(w, d, h, align=(bd.Align.CENTER, bd.Align.CENTER, bd.Align.CENTER))",
+    "",
+    "def _part(shape, size_m, position_m, rotation_deg, label):",
+    "    solid = _solid(shape, size_m).moved(_location(position_m, rotation_deg))",
+    "    solid.label = label",
+    "    return solid",
+    "",
+    "def gen_step():",
+    "    parts = []"
+  ];
+
+  objects.forEach((object, index) => {
+    const shape = String(object?.shape || "box").toLowerCase();
+    const safeShape = ["box", "cylinder", "sphere", "plane"].includes(shape) ? shape : "box";
+    const labelText = cadObjectLabel(object, index);
+    lines.push(
+      `    parts.append(_part(${pythonLiteral(safeShape === "plane" ? "box" : safeShape)}, ${pythonLiteral(scadVector(object?.size, [1, 1, 1]))}, ${pythonLiteral(scadVector(object?.position, [0, 0.5, 0]))}, ${pythonLiteral(scadVector(object?.rotation, [0, 0, 0]))}, ${pythonLiteral(labelText)}))`
+    );
+  });
+
+  lines.push("    if not parts:");
+  lines.push("        return bd.Box(1, 1, 1)");
+  lines.push(`    return bd.Compound(obj=parts, children=parts, label=${pythonLiteral(label)})`);
+  lines.push("");
+  return `${lines.join("\n")}\n`;
+}
+
+function commandPreview(command, args = []) {
+  return [command, ...args].map((part) => /\s/.test(String(part)) ? JSON.stringify(String(part)) : String(part)).join(" ");
+}
+
+function runCommand(command, args = [], options = {}) {
+  return new Promise((resolve) => {
+    const timeoutMs = Math.max(1000, Number(options.timeoutMs || 60000));
+    const child = spawn(command, args, {
+      cwd: options.cwd || __dirname,
+      env: { ...process.env, ...(options.env || {}) },
+      shell: false
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({
+        command: commandPreview(command, args),
+        stdout: stdout.slice(-12000),
+        stderr: stderr.slice(-12000),
+        ...result
+      });
+    };
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      finish({ ok: false, timedOut: true, code: null, error: `Command timed out after ${timeoutMs}ms` });
+    }, timeoutMs);
+    child.stdout?.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", (error) => {
+      finish({ ok: false, code: null, error: error.message || String(error) });
+    });
+    child.on("close", (code) => {
+      finish({ ok: code === 0, code, error: code === 0 ? "" : `Command exited with code ${code}` });
+    });
+  });
+}
+
+function launchDetachedCommand(command, args = [], options = {}) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const child = spawn(command, args, {
+      cwd: options.cwd || __dirname,
+      env: { ...process.env, ...(options.env || {}) },
+      detached: true,
+      stdio: "ignore",
+      shell: false
+    });
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({
+        command: commandPreview(command, args),
+        pid: child.pid || null,
+        ...result
+      });
+    };
+    const timer = setTimeout(() => {
+      child.unref();
+      finish({ ok: true });
+    }, Math.max(300, Number(options.settleMs || 1200)));
+    child.on("error", (error) => {
+      finish({ ok: false, error: error.message || String(error) });
+    });
+    child.on("exit", (code) => {
+      if (code === 0) finish({ ok: true, code });
+      else finish({ ok: false, code, error: `Command exited with code ${code}` });
+    });
+  });
+}
+
+async function createForgeCadIntegration(body = {}) {
+  const model = assertWhiteModelForCadIntegration(body);
+  const action = String(body.action || "script").toLowerCase();
+  const workspace = await createCadIntegrationWorkspace(model, "forgecad");
+  const source = whiteModelToForgeCadScript(model);
+  const scriptPath = path.join(workspace.dir, `${workspace.fileBase}.forge.js`);
+  const readmePath = path.join(workspace.dir, "README.md");
+  await fs.writeFile(scriptPath, source, "utf8");
+  await fs.writeFile(readmePath, [
+    `# ${model.title || "ForgeCAD model"}`,
+    "",
+    "Generated from 老鬼AI 图片建模.",
+    "",
+    "```bash",
+    "forgecad studio .",
+    `forgecad run ${path.basename(scriptPath)}`,
+    "```",
+    ""
+  ].join("\n"), "utf8");
+
+  const forgecadBin = process.env.FORGECAD_BIN || "forgecad";
+  const result = {
+    action,
+    configured: Boolean(forgecadBin),
+    projectDir: workspace.dir,
+    projectUrl: generatedFileUrl(readmePath),
+    script: {
+      fileName: path.basename(scriptPath),
+      path: scriptPath,
+      url: generatedFileUrl(scriptPath),
+      source
+    },
+    setup: {
+      install: "npm install -g forgecad",
+      env: "FORGECAD_BIN=/absolute/path/to/forgecad"
+    }
+  };
+
+  if (action === "studio" || action === "open") {
+    const launch = await launchDetachedCommand(forgecadBin, ["studio", workspace.dir], { cwd: workspace.dir });
+    return {
+      ...result,
+      launched: launch.ok,
+      command: launch.command,
+      error: launch.ok ? "" : launch.error,
+      message: launch.ok
+        ? "ForgeCAD Studio 已尝试打开。"
+        : "ForgeCAD CLI 未启动；脚本已生成，可安装 ForgeCAD 后打开。"
+    };
+  }
+
+  if (action === "validate" || action === "run") {
+    const validation = await runCommand(forgecadBin, ["run", scriptPath], { cwd: workspace.dir, timeoutMs: 60000 });
+    return {
+      ...result,
+      validated: validation.ok,
+      validation,
+      message: validation.ok ? "ForgeCAD 脚本校验通过。" : "ForgeCAD 脚本已生成，但 CLI 校验未通过或未安装。"
+    };
+  }
+
+  return {
+    ...result,
+    message: "ForgeCAD 脚本已生成。"
+  };
+}
+
+function resolveCadSkillDir() {
+  const direct = process.env.TEXT_TO_CAD_CAD_SKILL_DIR || process.env.CAD_SKILL_DIR;
+  if (direct) return path.resolve(direct);
+  const repoDir = process.env.TEXT_TO_CAD_DIR || process.env.TEXT_TO_CAD_REPO;
+  if (repoDir) return path.join(path.resolve(repoDir), "skills", "cad");
+  return "";
+}
+
+async function fileRecordIfExists(filePath, source = "") {
+  try {
+    const stat = await fs.stat(filePath);
+    if (!stat.isFile()) return null;
+    const record = {
+      fileName: path.basename(filePath),
+      path: filePath,
+      url: generatedFileUrl(filePath),
+      bytes: stat.size
+    };
+    if (source) record.source = source;
+    return record;
+  } catch {
+    return null;
+  }
+}
+
+async function createTextToCadExport(body = {}) {
+  const model = assertWhiteModelForCadIntegration(body);
+  const formats = new Set(asStringArray(body.formats || ["step", "stl", "glb"]).map((item) => item.toLowerCase()));
+  const workspace = await createCadIntegrationWorkspace(model, "text-to-cad");
+  const source = whiteModelToBuild123dPython(model);
+  const pythonPath = path.join(workspace.dir, `${workspace.fileBase}.py`);
+  const stepPath = path.join(workspace.dir, `${workspace.fileBase}.step`);
+  const stlName = `${workspace.fileBase}.stl`;
+  const glbName = `${workspace.fileBase}.glb`;
+  const threeMfName = `${workspace.fileBase}.3mf`;
+  await fs.writeFile(pythonPath, source, "utf8");
+
+  const cadSkillDir = resolveCadSkillDir();
+  const pythonBin = process.env.TEXT_TO_CAD_PYTHON || process.env.PYTHON_BIN || "python3";
+  const scriptPath = cadSkillDir ? path.join(cadSkillDir, "scripts", "step", "cli.py") : "";
+  const files = {
+    python: await fileRecordIfExists(pythonPath, source)
+  };
+  const setup = {
+    env: [
+      "TEXT_TO_CAD_DIR=/absolute/path/to/text-to-cad",
+      "TEXT_TO_CAD_PYTHON=/absolute/path/to/python"
+    ],
+    install: [
+      "git clone https://github.com/earthtojake/text-to-cad.git",
+      "cd text-to-cad/skills/cad",
+      "python -m pip install -r requirements.txt"
+    ]
+  };
+
+  if (!scriptPath || !existsSync(scriptPath)) {
+    return {
+      configured: false,
+      projectDir: workspace.dir,
+      files,
+      setup,
+      command: scriptPath ? commandPreview(pythonBin, [scriptPath, pythonPath, "-o", stepPath]) : "",
+      message: "text-to-cad 引擎尚未配置；已生成 build123d Python 源码，可配置 TEXT_TO_CAD_DIR 后自动导出 STEP。"
+    };
+  }
+
+  const args = [scriptPath, pythonPath, "-o", stepPath];
+  if (formats.has("stl")) args.push("--stl", stlName);
+  if (formats.has("glb")) args.push("--glb", glbName);
+  if (formats.has("3mf") || formats.has("threemf")) args.push("--3mf", threeMfName);
+
+  const command = await runCommand(pythonBin, args, { cwd: workspace.dir, timeoutMs: 180000 });
+  files.step = await fileRecordIfExists(stepPath);
+  files.stl = await fileRecordIfExists(path.join(workspace.dir, stlName));
+  files.glb = await fileRecordIfExists(path.join(workspace.dir, glbName));
+  files.threeMf = await fileRecordIfExists(path.join(workspace.dir, threeMfName));
+  Object.keys(files).forEach((key) => {
+    if (!files[key]) delete files[key];
+  });
+
+  return {
+    configured: true,
+    projectDir: workspace.dir,
+    files,
+    command,
+    setup,
+    message: command.ok && files.step
+      ? "text-to-cad 已导出 STEP，并按需生成 STL/GLB sidecar。"
+      : "text-to-cad 已调用，但未得到完整 STEP 输出；请查看命令日志。"
+  };
+}
+
+function normalizeModelingSourceType(value = "") {
+  const text = String(value || "").toLowerCase();
+  const hasPlan = /(floor.?plan|plan|cad|drawing|blueprint|图纸|平面|施工图)/i.test(text);
+  const hasExteriorArchitecture = /(architecture|building|facade|façade|front elevation|villa|house|exterior|建筑外观|外观|外立面|立面|楼体|房屋|别墅|住宅外观)/i.test(text);
+  const hasInterior = /(interior|room|lobby|office|retail|hotel|restaurant|cafe|workspace|living room|bedroom|kitchen|dining|space|indoor|室内|空间|房间|大堂|办公室|办公|展厅|门店|客厅|卧室|厨房|餐厅|咖啡|商铺|商业空间)/i.test(text);
+  if (hasPlan && !hasExteriorArchitecture) return "floor-plan-reference";
+  if (hasInterior && !hasExteriorArchitecture) return "interior-photo";
+  if (hasExteriorArchitecture) return "architecture-photo";
+  if (hasInterior) return "interior-photo";
+  if (hasPlan) return "floor-plan-reference";
+  if (/(product|object|furniture|chair|table|lamp|apple|主体|产品|物体|家具|椅|桌|灯|苹果)/i.test(text)) return "object-photo";
+  return "object-photo";
+}
+
+function normalizeModelingLayer(layer = {}, index = 0, body = {}) {
+  const bounds = normalizeCutoutBounds(layer.bounds || layer.bounding_box || layer.box || {}, body.imageWidth || body.primaryImage?.width || 0, body.imageHeight || body.primaryImage?.height || 0);
+  return {
+    id: slugify(layer.id || layer.label || `layer-${index + 1}`) || `layer-${index + 1}`,
+    label: String(layer.label || layer.name || `图层 ${index + 1}`).slice(0, 80),
+    role: String(layer.role || layer.type || layer.category || "subject").slice(0, 60),
+    includeInModel: layer.includeInModel !== false && layer.include !== false,
+    priority: clampNumber(Number(layer.priority ?? index + 1) || index + 1, 1, 20),
+    bounds: bounds || { x: 0, y: 0, width: 1, height: 1 },
+    depthOrder: clampNumber(Number(layer.depthOrder ?? layer.depth_order ?? index + 1) || index + 1, 1, 50),
+    primitiveHint: String(layer.primitiveHint || layer.primitive || layer.shape || "").slice(0, 80),
+    geometryHints: asStringArray(layer.geometryHints || layer.geometry_hints || layer.hints).slice(0, 8),
+    material: String(layer.material || "").slice(0, 100),
+    scaleRole: String(layer.scaleRole || layer.scale_role || "").slice(0, 100),
+    notes: String(layer.notes || layer.note || "").slice(0, 220)
+  };
+}
+
+function normalizeModelingPoint(point) {
+  const rawX = Array.isArray(point) ? point[0] : point?.x;
+  const rawY = Array.isArray(point) ? point[1] : point?.y;
+  const x = clampNumber(Number(rawX), 0, 1);
+  const y = clampNumber(Number(rawY), 0, 1);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return [x, y];
+}
+
+function ellipseShapeFromBounds(bounds = {}) {
+  return {
+    type: "ellipse",
+    centerX: clampNumber(Number(bounds.x || 0) + Number(bounds.width || 1) / 2, 0, 1),
+    centerY: clampNumber(Number(bounds.y || 0) + Number(bounds.height || 1) / 2, 0, 1),
+    radiusX: clampNumber(Number(bounds.width || 1) / 2, 0.001, 1),
+    radiusY: clampNumber(Number(bounds.height || 1) / 2, 0.001, 1)
+  };
+}
+
+function normalizeModelingTargetShape(source = {}, targetBounds = {}, sourceType = "object-photo") {
+  const rawShape = source.targetShape || source.target_shape || source.shape || source.silhouette || source.mask || {};
+  const rawType = String(rawShape.type || rawShape.shapeType || rawShape.kind || "").toLowerCase();
+  const rawPoints = rawShape.points || rawShape.polygon || source.targetPolygon || source.target_polygon || source.polygon;
+  const points = Array.isArray(rawPoints)
+    ? rawPoints.map(normalizeModelingPoint).filter(Boolean).slice(0, 48)
+    : [];
+  if (points.length >= 3) {
+    return { type: "polygon", points };
+  }
+  if (rawType === "ellipse" || rawType === "oval" || rawType === "circle") {
+    const centerX = clampNumber(Number(rawShape.centerX ?? rawShape.cx ?? rawShape.center?.x ?? targetBounds.x + targetBounds.width / 2), 0, 1);
+    const centerY = clampNumber(Number(rawShape.centerY ?? rawShape.cy ?? rawShape.center?.y ?? targetBounds.y + targetBounds.height / 2), 0, 1);
+    const radiusX = clampNumber(Number(rawShape.radiusX ?? rawShape.rx ?? rawShape.radius ?? targetBounds.width / 2), 0.001, 1);
+    const radiusY = clampNumber(Number(rawShape.radiusY ?? rawShape.ry ?? rawShape.radius ?? targetBounds.height / 2), 0.001, 1);
+    return { type: "ellipse", centerX, centerY, radiusX, radiusY };
+  }
+  if (sourceType === "object-photo") return ellipseShapeFromBounds(targetBounds);
+  return {
+    type: "box",
+    bounds: targetBounds
+  };
+}
+
+function modelingLayerSearchText(layer = {}) {
+  return [
+    layer.id,
+    layer.label,
+    layer.role,
+    layer.primitiveHint,
+    layer.material,
+    layer.scaleRole,
+    layer.notes,
+    ...(Array.isArray(layer.geometryHints) ? layer.geometryHints : [])
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function userExplicitlyWantsDisplaySupport(body = {}) {
+  const text = [
+    body.intent,
+    body.userPrompt,
+    body.prompt,
+    body.brief?.projectName,
+    body.brief?.projectType,
+    body.brief?.style,
+    body.brief?.audience
+  ].filter(Boolean).join(" ").toLowerCase();
+  if (!text.trim()) return false;
+  if (/(不要|不需要|排除|忽略|只要|仅|only|exclude|without|no)\s*(底座|托盘|圆盘|承托|plate|tray|base|plinth|platform|stand)/i.test(text)) {
+    return false;
+  }
+  return /(底座|托盘|圆盘|承托|展示台|台座|plate|tray|plinth|platform|stand|pedestal|turntable|display base)/i.test(text);
+}
+
+function isDisplayPropModelingLayer(layer = {}) {
+  const text = modelingLayerSearchText(layer);
+  if (/(背景|阴影|高光|反光|纹理|background|shadow|highlight|specular|texture)/i.test(text)) return true;
+  return /(摄影|拍摄|展示|承托|托盘|圆盘|盘子|台面|桌面|黑色圆形底座|圆形底座|底座前缘|底座厚度|display|photo prop|plate|tray|plinth|turntable|tabletop|table surface|pedestal|display base|circular base)/i.test(text);
+}
+
+function isPrimaryObjectModelingLayer(layer = {}) {
+  const text = modelingLayerSearchText(layer);
+  if (isDisplayPropModelingLayer(layer)) return false;
+  return /(主体|主物体|主对象|产品主体|苹果|果实|fruit|apple|main subject|main body|product body|object body|foreground object)/i.test(text);
+}
+
+function shouldPreferPrimaryObjectBounds(targetBounds = {}, primaryBounds = {}) {
+  const targetArea = Number(targetBounds.width || 0) * Number(targetBounds.height || 0);
+  const primaryArea = Number(primaryBounds.width || 0) * Number(primaryBounds.height || 0);
+  if (!targetArea || !primaryArea) return false;
+  if (targetArea > primaryArea * 1.35) return true;
+  if (Number(targetBounds.width || 0) > Number(primaryBounds.width || 0) * 1.25) return true;
+  if ((Number(targetBounds.y || 0) + Number(targetBounds.height || 0)) > (Number(primaryBounds.y || 0) + Number(primaryBounds.height || 0) + 0.08)) return true;
+  return false;
+}
+
+function modelingShapeBounds(shape = {}) {
+  if (shape.type === "ellipse") {
+    const x = clampNumber(Number(shape.centerX || 0.5) - Number(shape.radiusX || 0.5), 0, 1);
+    const y = clampNumber(Number(shape.centerY || 0.5) - Number(shape.radiusY || 0.5), 0, 1);
+    const x2 = clampNumber(Number(shape.centerX || 0.5) + Number(shape.radiusX || 0.5), 0, 1);
+    const y2 = clampNumber(Number(shape.centerY || 0.5) + Number(shape.radiusY || 0.5), 0, 1);
+    return { x, y, width: x2 - x, height: y2 - y };
+  }
+  if (shape.type === "polygon" && Array.isArray(shape.points) && shape.points.length) {
+    const xs = shape.points.map((point) => Number(point[0])).filter(Number.isFinite);
+    const ys = shape.points.map((point) => Number(point[1])).filter(Number.isFinite);
+    if (!xs.length || !ys.length) return null;
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+  }
+  return shape.bounds || null;
+}
+
+function shapeIsLooserThanBounds(shape = {}, bounds = {}) {
+  const shapeBounds = modelingShapeBounds(shape);
+  if (!shapeBounds) return false;
+  return shouldPreferPrimaryObjectBounds(shapeBounds, bounds);
+}
+
+function modelingAnalysisLooksLikeObjectPhoto(source = {}, layers = [], body = {}) {
+  const text = imageModelingSubjectText(source, layers, body.primaryImage?.name, body.inputAnalysis);
+  if (/(floor.?plan|cad|drawing|图纸|平面)/i.test(String(source.sourceType || source.source_type || "")) && !/(苹果|apple|product|object|产品|物体|主体|果实|家具|椅|桌|灯)/i.test(text)) {
+    return false;
+  }
+  if (/(苹果|apple|fruit|果实|product body|object body|产品主体|主物体|主对象|foreground object|前景主体)/i.test(text)) return true;
+  return layers.some((layer) => {
+    const layerText = modelingLayerSearchText(layer);
+    return /(product|object|产品|物体|主体|attached detail|附属|果梗|柄)/i.test(layerText);
+  });
+}
+
+function modelingAnalysisLooksLikeArchitecturePhoto(source = {}, layers = [], body = {}) {
+  const text = imageModelingSubjectText(source, layers, body.primaryImage?.name, body.inputAnalysis, body.intent, body.userPrompt);
+  if (/(floor.?plan|cad|drawing|blueprint|图纸|平面|施工图)/i.test(String(source.sourceType || source.source_type || "")) && !/(exterior|facade|façade|building|house|villa|外观|外立面|立面|建筑|楼体|房屋|住宅|别墅)/i.test(text)) {
+    return false;
+  }
+  if (/(interior|室内|房间|空间|客厅|卧室|厨房|餐厅|大堂|办公室|办公|展厅|门店)/i.test(text) && !/(exterior|facade|façade|front elevation|building exterior|外观|外立面|立面|建筑外观)/i.test(text)) {
+    return false;
+  }
+  if (/(exterior|facade|façade|front elevation|building envelope|building mass|building exterior|house exterior|villa exterior|外观|外立面|立面|建筑外观|建筑主体|楼体|主楼体|房屋外观|住宅外观|别墅外观)/i.test(text)) return true;
+  return layers.some((layer) => {
+    const layerText = modelingLayerSearchText(layer);
+    return /(facade|façade|exterior|building|roof|window|door|立面|外墙|建筑|楼体|屋顶|屋面|窗|门|入口)/i.test(layerText);
+  });
+}
+
+function modelingAnalysisLooksLikeInteriorPhoto(source = {}, layers = [], body = {}) {
+  const text = imageModelingSubjectText(source, layers, body.primaryImage?.name, body.inputAnalysis, body.intent, body.userPrompt);
+  if (/(exterior|facade|façade|front elevation|building exterior|house exterior|villa exterior|外观|外立面|立面|建筑外观|楼体外观|住宅外观|别墅外观)/i.test(text)) return false;
+  if (/(interior|indoor|room|lobby|office|workspace|retail interior|store interior|restaurant|cafe|living room|bedroom|kitchen|dining|corridor|室内|空间|房间|大堂|办公室|办公|展厅|门店|客厅|卧室|厨房|餐厅|走廊|商铺|商业空间)/i.test(text)) return true;
+  const interiorLayerCount = layers.filter((layer) => /(floor|wall|ceiling|counter|cabinet|shelf|seat|sofa|chair|table|fixture|light|地面|墙|墙面|天花|吊顶|柜|台|沙发|座椅|椅|桌|灯|陈列|收纳)/i.test(modelingLayerSearchText(layer))).length;
+  return interiorLayerCount >= 3;
+}
+
+function normalizeImageModelingCompleteness(value = {}) {
+  const source = value.completeness || value.completenessAssessment || value.subjectCompleteness || value.subject_completeness || {};
+  const rawScore = Number(source.score ?? source.completeness ?? source.confidence ?? NaN);
+  const hasExplicitScore = Number.isFinite(rawScore) || Number.isFinite(Number(source.percent));
+  const score = Number.isFinite(rawScore)
+    ? clampNumber(rawScore > 1 ? rawScore / 100 : rawScore, 0, 1)
+    : Number.isFinite(Number(source.percent))
+      ? clampNumber(Number(source.percent) / 100, 0, 1)
+      : 0;
+  const inferredComplete = typeof source.isComplete === "boolean"
+    ? source.isComplete
+    : typeof source.complete === "boolean"
+      ? source.complete
+      : typeof source.is_complete === "boolean"
+        ? source.is_complete
+        : typeof source.completeSubject === "boolean"
+          ? source.completeSubject
+          : typeof source.complete_subject === "boolean"
+            ? source.complete_subject
+            : score > 0 ? score >= 0.72 : /完整/.test(String(source.label || source.status || "")) && !/不完整|未完整|缺失/.test(String(source.label || source.status || ""));
+  const missingParts = asStringArray(source.missingParts || source.missing_parts || source.missing || source.missingRegions || source.missing_regions).slice(0, 8);
+  const edgeContact = asStringArray(source.edgeContact || source.edge_contact || source.touchesEdges || source.touches_edges || source.edgeHits || source.edge_hits).slice(0, 8);
+  const label = String(source.label || source.status || (inferredComplete ? "完整" : "不完整")).slice(0, 80);
+  return {
+    isComplete: inferredComplete,
+    score: hasExplicitScore ? score : (inferredComplete ? 0.86 : 0.58),
+    label,
+    missingParts,
+    edgeContact,
+    recommendation: String(source.recommendation || source.suggestion || source.nextStep || source.next_step || (inferredComplete ? "直接生成白底主体图" : "建议扩图补全后再生成白底主体图")).slice(0, 240),
+    reason: String(source.reason || source.explanation || source.note || "").slice(0, 300)
+  };
+}
+
+function normalizeImageModelingAnalysis(value = {}, body = {}) {
+  const source = value.modelingAnalysis || value.analysis || value;
+  const layers = Array.isArray(source.layers)
+    ? source.layers
+    : Array.isArray(source.subjectLayers)
+      ? source.subjectLayers
+      : Array.isArray(source.subject_layers)
+        ? source.subject_layers
+        : [];
+  let sourceType = normalizeModelingSourceType([
+    source.sourceType,
+    source.source_type,
+    source.modelingMode,
+    source.modeling_mode,
+    source.subjectType,
+    source.subject_type,
+    source.subject,
+    body.primaryImage?.inputAnalysis?.label,
+    body.inputAnalysis?.label,
+    body.inputAnalysis?.title,
+    body.inputAnalysis?.summary,
+    body.inputAnalysis?.project_type,
+    body.inputAnalysis?.project_type_visual,
+    body.primaryImage?.sourceType,
+    body.brief?.spaceType,
+    body.brief?.projectType,
+    body.brief?.functions,
+    body.intent,
+    body.userPrompt
+  ].filter(Boolean).join(" "));
+  const completeness = normalizeImageModelingCompleteness(source);
+  const includeDisplaySupport = userExplicitlyWantsDisplaySupport(body);
+  const normalizedLayers = layers
+    .slice(0, 16)
+    .map((layer, index) => normalizeModelingLayer(layer, index, body))
+    .map((layer) => {
+      if (sourceType !== "object-photo" || includeDisplaySupport || !isDisplayPropModelingLayer(layer)) return layer;
+      return {
+        ...layer,
+        includeInModel: false,
+        role: layer.role === "subject" ? "excluded-display-prop" : layer.role,
+        notes: [layer.notes, "对象照片默认排除摄影道具/承托底座；如需建模底座，请在需求中明确说明。"].filter(Boolean).join(" ")
+      };
+    })
+    .sort((a, b) => a.priority - b.priority);
+  if (sourceType === "floor-plan-reference" && modelingAnalysisLooksLikeObjectPhoto(source, normalizedLayers, body)) {
+    sourceType = "object-photo";
+  }
+  if (sourceType === "floor-plan-reference" && modelingAnalysisLooksLikeArchitecturePhoto(source, normalizedLayers, body)) {
+    sourceType = "architecture-photo";
+  }
+  if (modelingAnalysisLooksLikeInteriorPhoto(source, normalizedLayers, body)) {
+    sourceType = "interior-photo";
+  }
+  let targetBounds = normalizeCutoutBounds(
+    source.targetBounds || source.target_bounds || source.bounds || source.bounding_box || {},
+    body.imageWidth || body.primaryImage?.width || 0,
+    body.imageHeight || body.primaryImage?.height || 0
+  ) || normalizedLayers.find((layer) => layer.includeInModel)?.bounds || { x: 0, y: 0, width: 1, height: 1 };
+
+  const primaryObjectLayer = sourceType === "object-photo" && !includeDisplaySupport
+    ? normalizedLayers.find((layer) => layer.includeInModel && isPrimaryObjectModelingLayer(layer))
+      || normalizedLayers.find((layer) => layer.includeInModel && !isDisplayPropModelingLayer(layer))
+    : null;
+  const preferredPrimaryBounds = Boolean(primaryObjectLayer && shouldPreferPrimaryObjectBounds(targetBounds, primaryObjectLayer.bounds));
+  if (preferredPrimaryBounds) {
+    targetBounds = primaryObjectLayer.bounds;
+  }
+  let targetShape = normalizeModelingTargetShape(source, targetBounds, sourceType);
+  if (preferredPrimaryBounds && shapeIsLooserThanBounds(targetShape, targetBounds)) {
+    targetShape = ellipseShapeFromBounds(targetBounds);
+  }
+  const excludedRegions = [
+    ...asStringArray(source.excludedRegions || source.excluded_regions || source.ignore),
+    ...normalizedLayers
+      .filter((layer) => !layer.includeInModel && isDisplayPropModelingLayer(layer))
+      .map((layer) => layer.label)
+  ];
+  const subject = sourceType === "object-photo" && primaryObjectLayer && /苹果|apple|fruit/i.test(modelingLayerSearchText(primaryObjectLayer))
+    ? "红苹果"
+    : String(source.subject || source.mainSubject || source.main_subject || "主体").slice(0, 100);
+
+  return {
+    subject,
+    sourceType,
+    summary: String(source.summary || source.selectionReason || source.selection_reason || completeness.reason || "").slice(0, 700),
+    confidence: clampNumber(Number(source.confidence ?? 0.72) || 0.72, 0.05, 0.98),
+    targetBounds,
+    targetShape,
+    completeness,
+    layers: normalizedLayers,
+    excludedRegions: [...new Set(excludedRegions.filter(Boolean))].slice(0, 10),
+    depthRelations: asStringArray(source.depthRelations || source.depth_relations).slice(0, 10),
+    scaleStrategy: String(source.scaleStrategy || source.scale_strategy || "").slice(0, 360),
+    modelingScope: String(source.modelingScope || source.modeling_scope || "").slice(0, 360),
+    primitiveStrategy: String(source.primitiveStrategy || source.primitive_strategy || "").slice(0, 360),
+    visualProfile: {
+      silhouette: String(source.visualProfile?.silhouette || source.visual_profile?.silhouette || "").slice(0, 220),
+      viewAngle: String(source.visualProfile?.viewAngle || source.visual_profile?.view_angle || source.visual_profile?.viewAngle || "").slice(0, 120),
+      characteristicFeatures: asStringArray(source.visualProfile?.characteristicFeatures || source.visual_profile?.characteristic_features).slice(0, 10),
+      materialZones: asStringArray(source.visualProfile?.materialZones || source.visual_profile?.material_zones).slice(0, 8),
+      nonGeometry: asStringArray(source.visualProfile?.nonGeometry || source.visual_profile?.non_geometry).slice(0, 8)
+    },
+    cadReferenceImage: source.cadReferenceImage || source.cad_reference_image || source.modelingCadPrepass?.image || source.modeling_cad_prepass?.image || null,
+    cadReferenceParameters: source.cadReferenceParameters || source.cad_reference_parameters || null,
+    source: "gpt-5.5-vision-layer-analysis",
+    model: config.reasoningModel
+  };
+}
+
+function shouldUseImageModelingWhiteBackgroundPrepass(body = {}) {
+  if (body.skipWhiteBackgroundPrepass === true || body.disableWhiteBackgroundPrepass === true) return false;
+  return parseBooleanEnv(process.env.IMAGE_MODELING_WHITE_BACKGROUND_PREPASS, true);
+}
+
+function shouldUseImageModelingCadReferencePrepass(body = {}) {
+  if (body.skipCadReferencePrepass === true || body.disableCadReferencePrepass === true) return false;
+  return parseBooleanEnv(process.env.IMAGE_MODELING_CAD_REFERENCE_PREPASS, true);
+}
+
+function normalizeImageModelingPreprocessAction(value = "") {
+  const action = String(value || "").trim().toLowerCase();
+  if (!action) return "";
+  if (["white", "white-background", "white_background", "subject-white", "generate-white", "direct-white"].includes(action)) return "white-background";
+  if (["outpaint", "expand", "expanded", "subject-outpaint", "subject-expand", "complete-subject"].includes(action)) return "outpaint";
+  if (["white-from-expanded", "white_from_expanded", "expanded-to-white", "outpaint-to-white"].includes(action)) return "white-from-expanded";
+  if (["cad-reference", "cad_reference", "cad-guide", "cad_guide", "structure-guide", "structure_guide", "cad-structure", "cad_structure"].includes(action)) return "cad-reference";
+  return "";
+}
+
+function imageModelingIntegratedCadPromptLines(stage = "model", sourceType = "") {
+  const normalizedSourceType = String(sourceType || "").toLowerCase();
+  const lines = [
+    "Honor the user's intent exactly. Do not redesign the subject, do not add unrelated constraints, and do not chase mood or spectacle over geometric fidelity."
+  ];
+
+  if (stage === "analysis") {
+    lines.push(
+      "Think like a parametric CAD editor preparing downstream modeling scope, not like a concept artist describing vibes.",
+      "Focus on geometry-bearing evidence: masses, envelopes, seams, openings, joints, roof edges, slab lines, thickness cues, repeated modules, structural supports and part boundaries.",
+      "Prefer conservative interpretation. If something is ambiguous, identify it as inferred instead of inventing decorative detail."
+    );
+  } else if (stage === "white-background" || stage === "outpaint" || stage === "cad-reference") {
+    lines.push(
+      "Prepare the subject for downstream parametric CAD editors such as OpenSCAD, ForgeCAD and build123d/text-to-cad.",
+      "Keep major part boundaries, openings, seams, roof lines, slab/eave edges, joints and thickness cues legible so later structural recognition stays stable.",
+      "Remove atmosphere, photographic styling, decorative clutter and graphic treatment that would confuse a CAD-focused model."
+    );
+    if (stage === "cad-reference") {
+      lines.push(
+        "This guide image should read like a restrained engineering / CAD aid, not a marketing render or fantasy concept sheet.",
+        "Use simplification only to clarify structure. Never simplify away geometry that changes the editable CAD result."
+      );
+    }
+  } else {
+    lines.push(
+      "Behave like a parametric CAD editor that must produce an editable downstream model, not a loose concept sculptor.",
+      "Prefer connected, manifold, export-friendly solids with readable thickness and clean part separation so the result survives ForgeCAD and build123d/text-to-cad export.",
+      "Use stable descriptive snake_case object ids for major parts whenever possible, and separate repeated systems into individually editable objects instead of one giant generic mass.",
+      "If geometry is uncertain from the image, simplify conservatively and record the inference in assumptions or limitations instead of inventing decorative detail."
+    );
+  }
+
+  if (normalizedSourceType === "architecture-photo") {
+    lines.push(
+      "Architectural priority: preserve building massing, floor stack, roof profile, facade rhythm, side returns, entry hierarchy, major openings and base condition before texture or ornament."
+    );
+  } else if (normalizedSourceType === "interior-photo") {
+    lines.push(
+      "Interior priority: preserve the reference photo's real interior camera, envelope, floor/wall/ceiling planes, openings, fixed joinery, counters, seating, circulation structure and major furniture before atmosphere or lighting effects.",
+      "Interior source lock: if the uploaded reference is an interior room/space, never reinterpret it as an exterior building, facade box, object-only product, or generic cutaway. Model the inside of the room from the photo evidence."
+    );
+  } else if (normalizedSourceType === "object-photo") {
+    lines.push(
+      "Object priority: preserve the real silhouette, separable parts, joints, seams, sockets, supports and functional geometry of the object itself; remove display props unless explicitly requested."
+    );
+  }
+
+  return lines;
+}
+
+function imageModelingWhiteBackgroundSize(primaryImage = {}, body = {}) {
+  const requested = body.whiteBackgroundSize || process.env.IMAGE_MODELING_WHITE_BACKGROUND_SIZE;
+  if (requested) return closestStandardImageSize(String(requested));
+  const sourceImage = body.subjectImage || primaryImage;
+  const width = Number(sourceImage.width || 0);
+  const height = Number(sourceImage.height || 0);
+  if (width > 0 && height > 0) return closestStandardImageSize(`${width}x${height}`);
+  return "1024x1024";
+}
+
+function buildImageModelingWhiteBackgroundPrompt({ brief = {}, intent = "", primaryImage = {}, subjectImage = {}, subjectSelection = null, analysis = null } = {}) {
+  const completeness = analysis?.completeness || {};
+  const complete = completeness.isComplete !== false;
+  const selectionText = subjectSelection
+    ? `User-boxed subject region on the original image: x=${Number(subjectSelection.x || 0).toFixed(4)}, y=${Number(subjectSelection.y || 0).toFixed(4)}, width=${Number(subjectSelection.width || 0).toFixed(4)}, height=${Number(subjectSelection.height || 0).toFixed(4)}.`
+    : "No manual subject box was provided.";
+  const cropNote = subjectImage?.dataUrl
+    ? "Input image 2 is a zoomed crop of the user-selected subject region."
+    : "No subject crop is available; use the original image only.";
+  return [
+    "You are preparing one reference image for a CAD-friendly image-to-3D modeling pipeline.",
+    "Input image 1 is the original uploaded reference image.",
+    cropNote,
+    selectionText,
+    ...imageModelingIntegratedCadPromptLines("white-background", analysis?.sourceType || primaryImage?.sourceType || ""),
+    complete
+      ? "The subject appears complete. Isolate the real object/building/space cleanly onto white and preserve the current geometry without inventing new parts."
+      : "The subject appears incomplete or cut off. Use the original image context to outpaint and reconstruct the missing parts first, then isolate the completed subject onto white.",
+    "Output exactly one finished image: the selected subject centered on a pure white (#ffffff) background with a small margin.",
+    "Preserve the subject's real geometry, proportions, visible silhouette, view angle, facade/opening positions, roof form, product parts, material color zones and depth clues.",
+    "Do not stylize, redesign, simplify into an icon, add labels, add watermarks, add readable text, add extra decorative parts or change the camera into a fantasy view.",
+    "Remove everything that is not part of the modeling subject: sky, trees, grass, people, cars, roads, photo studio surfaces, display plates, trays, plinths, tabletops, shadows, reflections and background clutter.",
+    "For an architectural exterior, keep the whole building as the subject, including roof/parapet, facade, side depth clues, openings, entry, steps/columns/balcony/base when visible. Remove landscape and street context.",
+    "For a product/object photo, keep only the physical object itself. Keep attached structural parts; remove props and supports that are merely photographic staging.",
+    "For an interior/room photo, keep the architectural envelope and major fixed/furniture forms as a clean cutaway reference on white; remove atmospheric background noise and lighting glare.",
+    `Original image name: ${primaryImage.name || "uploaded image"}.`,
+    subjectImage?.name ? `Selected subject crop name: ${subjectImage.name}.` : "",
+    `Project brief: ${JSON.stringify(brief)}`,
+    completeness.reason ? `Vision completeness note: ${completeness.reason}` : "",
+    completeness.recommendation ? `Vision recommendation: ${completeness.recommendation}` : "",
+    `User modeling request: ${intent || "Create a CAD-friendly 3D model from this image."}`
+  ].filter(Boolean).join("\n");
+}
+
+async function createImageModelingWhiteBackgroundPrepass({ body = {}, primaryImage = {}, subjectImage = {}, brief = {}, intent = "", analysis = null } = {}) {
+  const cropImage = subjectImage?.dataUrl ? subjectImage : primaryImage;
+  const dataUrl = String(cropImage.dataUrl || primaryImage.dataUrl || body.imageDataUrl || "").trim();
+  if (!dataUrl.startsWith("data:image/")) return null;
+  const completeness = analysis?.completeness || {};
+  const shouldOutpaint = completeness.isComplete === false;
+  const hasSubjectCrop = Boolean(subjectImage?.dataUrl && subjectImage.dataUrl !== primaryImage.dataUrl);
+  const prompt = buildImageModelingWhiteBackgroundPrompt({ brief, intent, primaryImage, subjectImage: hasSubjectCrop ? subjectImage : {}, subjectSelection: body.subjectSelection || body.selection || null, analysis });
+  const inputImages = [{
+    dataUrl: cropImage.dataUrl,
+    label: hasSubjectCrop
+      ? "optional user subject crop; isolate or complete this subject onto pure white"
+      : "source reference image; isolate the main subject onto pure white"
+  }];
+  if (shouldOutpaint && primaryImage?.dataUrl && primaryImage.dataUrl !== cropImage.dataUrl) {
+    inputImages.push({
+      dataUrl: primaryImage.dataUrl,
+      label: "original full image; use it to recover missing parts while outpainting"
+    });
+  }
+  const generated = await generateImageWithImageProvider({
+    prompt,
+    inputImages,
+    size: imageModelingWhiteBackgroundSize(cropImage, { ...body, subjectImage: cropImage }),
+    quality: body.whiteBackgroundQuality || process.env.IMAGE_MODELING_WHITE_BACKGROUND_QUALITY || "low",
+    preferReferenceEdit: true,
+    mode: shouldOutpaint ? "image-modeling-white-background-outpaint" : "image-modeling-white-background"
+  });
+  const createdAt = new Date().toISOString();
+  const dataUrlOut = imageBufferToDataUrl(generated.buffer, "image/png");
+  const title = shouldOutpaint ? "白底主体图（扩图补全）" : "白底建模参考图";
+  const saved = await saveGeneratedImage({
+    buffer: generated.buffer,
+    slug: `image-modeling-white-${slugify(primaryImage.name || brief.projectName || "subject")}`,
+    meta: {
+      reasoning_model: generated.reasoningModel || config.reasoningModel,
+      image_model: config.imageModel,
+      prompt_library_version: promptLibraryVersion,
+      mode: shouldOutpaint ? "image-modeling-white-background-outpaint" : "image-modeling-white-background",
+      source_image_name: primaryImage.name || null,
+      prompt,
+      created_at: createdAt
+    },
+    extra: {
+      id: `image-modeling-white-${Date.now()}`,
+      title,
+      mode: "image-modeling",
+      stepMode: shouldOutpaint ? "image-modeling-white-background-outpaint" : "image-modeling-white-background",
+      inputImageType: "white-background-subject-reference",
+      prompt,
+      sourcePrompt: prompt,
+      intent: shouldOutpaint
+        ? "主体不完整，先用生图模式扩图补全并生成白底主体图，再进入 3D 建模。"
+        : "先用生图模式识别主体并生成白底标准图，再进入 3D 建模。",
+      endpoint: generated.endpoint,
+      attempt: generated.attempt,
+      attempts: generated.attempts,
+      imageApi: generated.imageApi,
+      actualParams: generated.actualParams,
+      revisedPrompt: generated.revisedPrompt,
+      completeness,
+      createdAt
+    }
+  });
+
+  return {
+    used: true,
+    image: {
+      name: `${slugify(primaryImage.name || "modeling-subject") || "modeling-subject"}-white-background.png`,
+      title,
+      type: "image/png",
+      dataUrl: dataUrlOut,
+      width: 0,
+      height: 0,
+      url: saved.url,
+      sourceType: "image-generation-white-background",
+      originalName: primaryImage.name || null
+    },
+    record: {
+      ...saved,
+      dataUrl: dataUrlOut,
+      createdAt,
+      originalImageName: primaryImage.name || null
+    },
+    prompt,
+    originalImageName: primaryImage.name || null
+  };
+}
+
+function buildImageModelingOutpaintPrompt({ brief = {}, intent = "", primaryImage = {} } = {}) {
+  return [
+    "You are preparing an intermediate expanded subject reference for an image-to-3D modeling pipeline.",
+    "Input image 1 is the user's original uploaded reference image.",
+    ...imageModelingIntegratedCadPromptLines("outpaint", primaryImage?.sourceType || ""),
+    "Complete the main architectural/object subject before white-background extraction. If the subject is cropped, cut off, too tight, or missing roof/sides/base/depth clues, plausibly outpaint and reconstruct those missing parts from the visible evidence.",
+    "Output exactly one image of the completed subject with enough margin around the whole form. Keep the same view angle, perspective, lens feel, materials, facade/opening rhythm, roof/parapet/eaves, entry/base/plinth, product parts, proportions and design identity.",
+    "This is an expansion/completion step, not the final white-background cutout. Do not convert to a 3D render, CAD drawing, icon, line drawing, diagram, labeled graphic, or fantasy redesign.",
+    "Keep the background simple and unobtrusive; it may be neutral or naturally extended from the source, but the completed subject must be clear and fully visible for the next white-background step.",
+    "Remove or suppress distractions where possible: people, cars, messy foreground clutter, text overlays, watermarks and unrelated objects. Do not invent new decorative architecture that contradicts the source.",
+    `Original image name: ${primaryImage.name || "uploaded image"}.`,
+    `Project brief: ${JSON.stringify(brief)}`,
+    `User modeling request: ${intent || "Complete the main subject before image-to-3D modeling."}`
+  ].filter(Boolean).join("\n");
+}
+
+async function createImageModelingOutpaintPrepass({ body = {}, primaryImage = {}, brief = {}, intent = "" } = {}) {
+  const dataUrl = String(primaryImage.dataUrl || body.imageDataUrl || "").trim();
+  if (!dataUrl.startsWith("data:image/")) return null;
+  const prompt = buildImageModelingOutpaintPrompt({ brief, intent, primaryImage });
+  const generated = await generateImageWithImageProvider({
+    prompt,
+    inputImages: [{
+      dataUrl,
+      label: "original reference image; complete and outpaint the main subject before white-background extraction"
+    }],
+    size: imageModelingWhiteBackgroundSize(primaryImage, body),
+    quality: body.outpaintQuality || body.whiteBackgroundQuality || process.env.IMAGE_MODELING_WHITE_BACKGROUND_QUALITY || "low",
+    preferReferenceEdit: true,
+    mode: "image-modeling-subject-outpaint"
+  });
+  const createdAt = new Date().toISOString();
+  const dataUrlOut = imageBufferToDataUrl(generated.buffer, "image/png");
+  const title = "主体建筑扩图";
+  const saved = await saveGeneratedImage({
+    buffer: generated.buffer,
+    slug: `image-modeling-outpaint-${slugify(primaryImage.name || brief.projectName || "subject")}`,
+    meta: {
+      reasoning_model: generated.reasoningModel || config.reasoningModel,
+      image_model: config.imageModel,
+      prompt_library_version: promptLibraryVersion,
+      mode: "image-modeling-subject-outpaint",
+      source_image_name: primaryImage.name || null,
+      prompt,
+      created_at: createdAt
+    },
+    extra: {
+      id: `image-modeling-outpaint-${Date.now()}`,
+      title,
+      mode: "image-modeling",
+      stepMode: "image-modeling-subject-outpaint",
+      inputImageType: "expanded-subject-reference",
+      prompt,
+      sourcePrompt: prompt,
+      intent: "先用生图模式完善主体建筑扩图；扩图结果可直接进入 3D 建模，也可选再生成白底主体图。",
+      endpoint: generated.endpoint,
+      attempt: generated.attempt,
+      attempts: generated.attempts,
+      imageApi: generated.imageApi,
+      actualParams: generated.actualParams,
+      revisedPrompt: generated.revisedPrompt,
+      createdAt
+    }
+  });
+
+  return {
+    used: true,
+    image: {
+      name: `${slugify(primaryImage.name || "modeling-subject") || "modeling-subject"}-outpaint.png`,
+      title,
+      type: "image/png",
+      dataUrl: dataUrlOut,
+      width: 0,
+      height: 0,
+      url: saved.url,
+      sourceType: "image-generation-subject-outpaint",
+      originalName: primaryImage.name || null
+    },
+    record: {
+      ...saved,
+      dataUrl: dataUrlOut,
+      createdAt,
+      originalImageName: primaryImage.name || null
+    },
+    prompt,
+    originalImageName: primaryImage.name || null
+  };
+}
+
+function buildImageModelingCadReferenceParameters(analysis = {}, cadReferenceImage = null) {
+  const layers = Array.isArray(analysis?.layers) ? analysis.layers : [];
+  const includeLayers = layers
+    .filter((layer) => layer?.includeInModel !== false)
+    .slice(0, 12)
+    .map((layer) => ({
+      id: String(layer.id || "").slice(0, 60),
+      label: String(layer.label || layer.role || "").slice(0, 80),
+      role: String(layer.role || "").slice(0, 60),
+      primitiveHint: String(layer.primitiveHint || layer.primitive_hint || "").slice(0, 60),
+      depthOrder: Number(layer.depthOrder || layer.depth_order || 0) || 0,
+      scaleRole: String(layer.scaleRole || layer.scale_role || "").slice(0, 60),
+      geometryHints: asStringArray(layer.geometryHints || layer.geometry_hints).slice(0, 4),
+      notes: String(layer.notes || "").slice(0, 160)
+    }));
+  return {
+    sourceType: String(analysis?.sourceType || "").slice(0, 60),
+    subject: String(analysis?.subject || "").slice(0, 100),
+    completeness: String(analysis?.completeness?.label || "").slice(0, 60),
+    recommendation: String(analysis?.completeness?.recommendation || "").slice(0, 180),
+    targetShape: String(analysis?.targetShape?.type || "").slice(0, 40),
+    viewAngle: String(analysis?.visualProfile?.viewAngle || "").slice(0, 80),
+    silhouette: String(analysis?.visualProfile?.silhouette || "").slice(0, 180),
+    characteristicFeatures: asStringArray(analysis?.visualProfile?.characteristicFeatures).slice(0, 8),
+    materialZones: asStringArray(analysis?.visualProfile?.materialZones).slice(0, 6),
+    primitiveStrategy: String(analysis?.primitiveStrategy || "").slice(0, 200),
+    scaleStrategy: String(analysis?.scaleStrategy || "").slice(0, 200),
+    depthRelations: asStringArray(analysis?.depthRelations).slice(0, 8),
+    excludedRegions: asStringArray(analysis?.excludedRegions).slice(0, 8),
+    includeLayers,
+    cadReferenceTitle: String(cadReferenceImage?.title || "").slice(0, 80)
+  };
+}
+
+function buildImageModelingCadReferencePrompt({ brief = {}, intent = "", primaryImage = {}, analysis = null, sourceRole = "" } = {}) {
+  const sourceRoleText = sourceRole
+    ? `Source image role: ${String(sourceRole).slice(0, 120)}.`
+    : "Source image role: current modeling subject reference.";
+  const sourceType = String(analysis?.sourceType || "").toLowerCase();
+  const objectSubject = /object|product/i.test(sourceType)
+    || objectPhotoLooksLikeApple(sourceType, analysis, intent, primaryImage?.name)
+    || /object|product|产品|物体|主体|apple|苹果|fruit|果实/i.test(imageModelingSubjectText(analysis, intent, primaryImage?.name));
+  return [
+    "You are preparing one CAD-friendly structure reference image for a downstream image-to-3D modeling pipeline.",
+    "Convert the selected subject into a clean architectural / industrial line-and-mass guide image that stabilizes silhouette, openings, roof profile, side depth, floor lines, repeated modules and main part boundaries.",
+    sourceRoleText,
+    ...imageModelingIntegratedCadPromptLines("cad-reference", sourceType),
+    "Output exactly one image.",
+    "Use a pure white or near-white background. Use dark gray or black edge lines, flat light fills, and restrained monochrome shading only where it clarifies depth. Keep the subject centered with a small margin.",
+    "Do not add readable text, dimensions, arrows, labels, title blocks, watermarks, logos, UI, or graphic decorations. The geometry hints will be provided separately as JSON parameters.",
+    objectSubject
+      ? [
+          "PRODUCT/OBJECT CAD GUIDE HARD RULES:",
+          "Output exactly one depiction of the single foreground object, not a product blueprint sheet.",
+          "Use one single three-quarter or source-matching view of the object, centered large on the canvas.",
+          "Do not create multiple views, exploded views, orthographic front/side/top views, sections, cutaways, repeated thumbnails, comparison panels, construction diagrams, labels, dimension rings, crosshair grids, or background layout sheets.",
+          "Preserve one continuous outer silhouette and only the visible/inferable structural features attached to the object.",
+          "For an apple or round fruit, draw one apple only: one rounded body, one top dimple/stem socket, one attached stem if visible, subtle bottom flattening if inferable, and a few contour/part-boundary lines on that same single apple. Do not add top-view circles, split sections, extra apples, plates, trays or tabletop geometry."
+        ].join("\n")
+      : "",
+    sourceType === "architecture-photo"
+      ? "For an architectural exterior, preserve the whole building, same view angle, overall massing, side returns, roof/parapet/eaves, facade rhythm, openings, entry, steps, balcony/columns/base and major material bands. Remove trees, sky, road, cars and context clutter."
+      : sourceType === "interior-photo"
+        ? "For an interior/space subject, preserve the same interior camera logic plus envelope, floor/wall/ceiling planes, openings, counters, seats, tables, shelves, columns, stairs and major fixed forms. Do not turn the room into an outside building box. Remove glare, atmosphere, clutter and non-structural background noise."
+        : "For a product/object subject, preserve the real silhouette, seams, break lines, main parts, joints and base geometry that belongs to the object itself. Remove photographic props and display surfaces.",
+    "Do not turn the subject into a fantasy redesign or photoreal render. This should look like a CAD-friendly guide image derived from the real subject.",
+    analysis?.visualProfile?.characteristicFeatures?.length
+      ? `Must preserve these characteristic features: ${analysis.visualProfile.characteristicFeatures.join(", ")}.`
+      : "",
+    analysis?.completeness?.reason ? `Completeness note: ${analysis.completeness.reason}` : "",
+    `Original image name: ${primaryImage.name || "uploaded image"}.`,
+    `Project brief: ${JSON.stringify(brief)}`,
+    `User modeling request: ${intent || "Generate a CAD-friendly structure guide for image-to-3D modeling."}`
+  ].filter(Boolean).join("\n");
+}
+
+async function createImageModelingCadReferencePrepass({ body = {}, primaryImage = {}, brief = {}, intent = "", analysis = null, sourceRole = "" } = {}) {
+  const dataUrl = String(primaryImage.dataUrl || body.imageDataUrl || "").trim();
+  if (!dataUrl.startsWith("data:image/")) return null;
+  const cadReferenceAnalysis = knownObjectTemplateAnalysis(analysis || {}, { intent, primaryImage }) || analysis;
+  const prompt = buildImageModelingCadReferencePrompt({ brief, intent, primaryImage, analysis: cadReferenceAnalysis, sourceRole });
+  const generated = await generateImageWithImageProvider({
+    prompt,
+    inputImages: [{
+      dataUrl,
+      label: "subject reference image; convert it into a CAD-friendly structure guide"
+    }],
+    size: imageModelingWhiteBackgroundSize(primaryImage, { ...body, whiteBackgroundSize: body.cadReferenceSize || body.whiteBackgroundSize }),
+    quality: body.cadReferenceQuality || body.whiteBackgroundQuality || process.env.IMAGE_MODELING_CAD_REFERENCE_QUALITY || "low",
+    preferReferenceEdit: true,
+    mode: "image-modeling-cad-reference"
+  });
+  const createdAt = new Date().toISOString();
+  const dataUrlOut = imageBufferToDataUrl(generated.buffer, "image/png");
+  const title = "CAD结构参考图";
+  const saved = await saveGeneratedImage({
+    buffer: generated.buffer,
+    slug: `image-modeling-cad-reference-${slugify(primaryImage.name || brief.projectName || "subject")}`,
+    meta: {
+      reasoning_model: generated.reasoningModel || config.reasoningModel,
+      image_model: config.imageModel,
+      prompt_library_version: promptLibraryVersion,
+      mode: "image-modeling-cad-reference",
+      source_image_name: primaryImage.name || null,
+      prompt,
+      created_at: createdAt
+    },
+    extra: {
+      id: `image-modeling-cad-reference-${Date.now()}`,
+      title,
+      mode: "image-modeling",
+      stepMode: "image-modeling-cad-reference",
+      inputImageType: "cad-structure-reference",
+      prompt,
+      sourcePrompt: prompt,
+      intent: "生成 CAD 友好的结构参考图，帮助 gpt-5.5 在正式建模时稳定识别体块、开口、屋顶和层级。",
+      endpoint: generated.endpoint,
+      attempt: generated.attempt,
+      attempts: generated.attempts,
+      imageApi: generated.imageApi,
+      actualParams: generated.actualParams,
+      revisedPrompt: generated.revisedPrompt,
+      createdAt
+    }
+  });
+
+  return {
+    used: true,
+    image: {
+      name: `${slugify(primaryImage.name || "modeling-subject") || "modeling-subject"}-cad-reference.png`,
+      title,
+      type: "image/png",
+      dataUrl: dataUrlOut,
+      width: 0,
+      height: 0,
+      url: saved.url,
+      sourceType: "image-generation-cad-reference",
+      originalName: primaryImage.name || null
+    },
+    record: {
+      ...saved,
+      dataUrl: dataUrlOut,
+      createdAt,
+      originalImageName: primaryImage.name || null
+    },
+    parameters: buildImageModelingCadReferenceParameters(analysis, { title }),
+    prompt,
+    originalImageName: primaryImage.name || null
+  };
+}
+
+function imageModelingWhiteBackgroundImageFromAnalysis(analysis = {}) {
+  const prepassImage = analysis?.modelingPrepass?.image || null;
+  const prepassText = `${prepassImage?.stepMode || ""} ${prepassImage?.title || ""} ${prepassImage?.sourceType || ""}`.toLowerCase();
+  const image = analysis?.whiteBackgroundImage || (/white-background|white background|白底/.test(prepassText) ? prepassImage : null);
+  const dataUrl = String(image?.dataUrl || "").trim();
+  if (!dataUrl.startsWith("data:image/")) return null;
+  return {
+    name: image.name || "image-modeling-white-background.png",
+    title: image.title || "白底建模参考图",
+    type: image.type || "image/png",
+    dataUrl,
+    width: Number(image.width || 0),
+    height: Number(image.height || 0),
+    url: image.url || "",
+    sourceType: "image-generation-white-background",
+    originalName: image.originalImageName || image.originalName || null
+  };
+}
+
+function imageModelingCadReferenceImageFromAnalysis(analysis = {}) {
+  const direct = analysis?.cadReferenceImage || null;
+  if (direct?.dataUrl) return direct;
+  const prepassImage = analysis?.modelingCadPrepass?.image || null;
+  const dataUrl = String(prepassImage?.dataUrl || "").trim();
+  if (!dataUrl.startsWith("data:image/")) return null;
+  return prepassImage;
+}
+
+function imageModelingPrepassForClient(prepass = null, options = {}) {
+  if (!prepass?.image?.dataUrl) return null;
+  const record = prepass.record || {};
+  const defaultTitle = options.defaultTitle || "白底建模参考图";
+  const defaultStepMode = options.defaultStepMode || "image-modeling-white-background";
+  const defaultSourceType = options.defaultSourceType || "image-generation-white-background";
+  const defaultInputImageType = options.defaultInputImageType || "white-background-subject-reference";
+  return {
+    used: true,
+    reused: Boolean(prepass.reused),
+    title: prepass.image.title || record.title || defaultTitle,
+    name: prepass.image.name || "image-modeling-white-background.png",
+    type: prepass.image.type || "image/png",
+    url: record.url || prepass.image.url || "",
+    dataUrl: prepass.image.dataUrl,
+    stepMode: record.stepMode || prepass.stepMode || defaultStepMode,
+    sourceType: defaultSourceType,
+    inputImageType: record.inputImageType || defaultInputImageType,
+    originalImageName: prepass.originalImageName || prepass.image.originalName || record.originalImageName || null,
+    createdAt: record.createdAt || new Date().toISOString(),
+    endpoint: record.endpoint || prepass.endpoint || "",
+    attempt: record.attempt || prepass.attempt || "",
+    imageApi: record.imageApi || "",
+    prompt: record.prompt || prepass.prompt || "",
+    intent: record.intent || prepass.intent || "",
+    completeness: record.completeness || prepass.completeness || null
+  };
+}
+
+function attachImageModelingPrepassMeta(target = {}, prepass = null, originalPrimaryImage = {}) {
+  const whiteBackgroundImage = imageModelingPrepassForClient(prepass, {
+    defaultTitle: "白底建模参考图",
+    defaultStepMode: "image-modeling-white-background",
+    defaultSourceType: "image-generation-white-background",
+    defaultInputImageType: "white-background-subject-reference"
+  });
+  if (!whiteBackgroundImage && prepass?.error) {
+    return {
+      ...target,
+      modelingPrepass: {
+        used: false,
+        error: String(prepass.error || "").slice(0, 240)
+      }
+    };
+  }
+  if (!whiteBackgroundImage) return target;
+  return {
+    ...target,
+    whiteBackgroundImage,
+    modelingPrepass: {
+      used: true,
+      reused: Boolean(prepass?.reused),
+      image: whiteBackgroundImage,
+      originalImageName: originalPrimaryImage?.name || whiteBackgroundImage.originalImageName || null
+    }
+  };
+}
+
+function attachImageModelingOutpaintMeta(target = {}, prepass = null, originalPrimaryImage = {}) {
+  const expandedSubjectImage = imageModelingPrepassForClient(prepass, {
+    defaultTitle: "主体建筑扩图",
+    defaultStepMode: "image-modeling-subject-outpaint",
+    defaultSourceType: "image-generation-subject-outpaint",
+    defaultInputImageType: "expanded-subject-reference"
+  });
+  if (!expandedSubjectImage && prepass?.error) {
+    return {
+      ...target,
+      requiresWhiteBackground: false,
+      modelingPrepass: {
+        used: false,
+        error: String(prepass.error || "").slice(0, 240)
+      }
+    };
+  }
+  if (!expandedSubjectImage) return target;
+  return {
+    ...target,
+    requiresWhiteBackground: false,
+    expandedSubjectImage,
+    modelingPrepass: {
+      used: true,
+      reused: Boolean(prepass?.reused),
+      image: expandedSubjectImage,
+      originalImageName: originalPrimaryImage?.name || expandedSubjectImage.originalImageName || null
+    }
+  };
+}
+
+function attachImageModelingCadReferenceMeta(target = {}, prepass = null, originalPrimaryImage = {}) {
+  const cadReferenceImage = imageModelingPrepassForClient(prepass, {
+    defaultTitle: "CAD结构参考图",
+    defaultStepMode: "image-modeling-cad-reference",
+    defaultSourceType: "image-generation-cad-reference",
+    defaultInputImageType: "cad-structure-reference"
+  });
+  if (!cadReferenceImage && prepass?.error) {
+    return {
+      ...target,
+      modelingCadPrepass: {
+        used: false,
+        error: String(prepass.error || "").slice(0, 240)
+      }
+    };
+  }
+  if (!cadReferenceImage) return target;
+  return {
+    ...target,
+    cadReferenceImage,
+    cadReferenceParameters: prepass?.parameters || buildImageModelingCadReferenceParameters(target, cadReferenceImage),
+    modelingCadPrepass: {
+      used: true,
+      reused: Boolean(prepass?.reused),
+      image: cadReferenceImage,
+      originalImageName: originalPrimaryImage?.name || cadReferenceImage.originalImageName || null
+    }
+  };
+}
+
+async function createImageModelingPreprocessAnalysis(body = {}, action = "") {
+  const sourcePrimaryImage = body.primaryImage || body.image || {};
+  const sourceDataUrl = String(sourcePrimaryImage.dataUrl || body.imageDataUrl || "").trim();
+  if (!sourceDataUrl.startsWith("data:image/")) {
+    const error = new Error("请先上传一张用于建模的图片");
+    error.status = 400;
+    throw error;
+  }
+  const brief = body.brief || {};
+  const intent = String(body.intent || body.userPrompt || "").trim();
+  const previousAnalysis = body.modelingAnalysis || body.analysis || null;
+  const expandedSubjectImage = body.expandedSubjectImage || body.outpaintImage || body.expandedImage || {};
+  const expandedDataUrl = String(expandedSubjectImage.dataUrl || "").trim();
+  const base = {
+    subject: action === "outpaint" ? "主体建筑扩图" : action === "cad-reference" ? "CAD结构参考图" : "主体建筑白底图",
+    sourceType: "architecture-photo",
+    summary: action === "outpaint"
+      ? "已选择先完善主体建筑扩图；扩图结果可直接进入 3D 建模，白底主体图为可选清洁化步骤。"
+      : action === "cad-reference"
+        ? "已生成 CAD 友好的结构参考图。正式建模时会把这张结构图和主体输入一起交给 gpt-5.5，帮助稳定识别体块、开口、屋顶和层级。"
+      : action === "white-from-expanded"
+        ? "已选择从主体建筑扩图结果生成白底主体图，作为 3D 建模输入。"
+        : "已选择从原始参考图直接生成主体建筑白底图，作为 3D 建模输入。",
+    confidence: 0.72,
+    targetBounds: { x: 0, y: 0, width: 1, height: 1 },
+    targetShape: { type: "bounds", bounds: { x: 0, y: 0, width: 1, height: 1 }, note: "preprocess action selected by user" },
+    completeness: {
+      isComplete: action !== "outpaint",
+      score: action === "outpaint" ? 0.58 : 0.86,
+      label: action === "outpaint" ? "扩图可建模" : action === "cad-reference" ? "CAD参考就绪" : "白底图就绪",
+      missingParts: [],
+      edgeContact: [],
+      recommendation: action === "outpaint"
+        ? "可以直接进入 3D 建模，也可选生成白底主体图"
+        : action === "cad-reference"
+          ? "建议保留当前主体输入，并把 CAD 结构参考图一起用于正式建模"
+          : "可以进入 3D 建模",
+      reason: "当前判断来自用户选择的图片建模预处理路径。"
+    },
+    modelingScope: action === "outpaint"
+      ? "final modeling may use the expanded subject image directly; white-background extraction is optional"
+      : action === "cad-reference"
+        ? "final modeling should use the prepared subject image together with the generated CAD structure guide"
+      : "final modeling should use the generated white-background subject image",
+    scaleStrategy: "",
+    primitiveStrategy: "",
+    visualProfile: { silhouette: "", viewAngle: "", characteristicFeatures: [], materialZones: [], nonGeometry: [] },
+    depthRelations: [],
+    excludedRegions: [],
+    layers: [],
+    preprocessAction: action,
+    source: "user-selected-image-modeling-preprocess",
+    model: config.imageModel
+  };
+
+  if (action === "outpaint") {
+    let outpaintPrepass = null;
+    try {
+      outpaintPrepass = await createImageModelingOutpaintPrepass({ body, primaryImage: sourcePrimaryImage, brief, intent });
+    } catch (error) {
+      console.warn(`[image-modeling] subject outpaint failed: ${error.status || "ERR"} ${error.message || error}`);
+      outpaintPrepass = { used: false, error: error.message || "主体建筑扩图失败" };
+    }
+    return attachImageModelingOutpaintMeta(base, outpaintPrepass, sourcePrimaryImage);
+  }
+
+  if (action === "cad-reference") {
+    const cadReferenceSourceImage = body.cadReferenceSourceImage || expandedSubjectImage || sourcePrimaryImage;
+    const sourceRole = String(body.cadReferenceSourceRole || "").trim();
+    let cadReferencePrepass = null;
+    try {
+      cadReferencePrepass = await createImageModelingCadReferencePrepass({
+        body,
+        primaryImage: cadReferenceSourceImage?.dataUrl ? cadReferenceSourceImage : sourcePrimaryImage,
+        brief,
+        intent,
+        analysis: previousAnalysis,
+        sourceRole
+      });
+    } catch (error) {
+      console.warn(`[image-modeling] cad reference preprocess failed: ${error.status || "ERR"} ${error.message || error}`);
+      cadReferencePrepass = { used: false, error: error.message || "CAD结构参考图生成失败" };
+    }
+    return attachImageModelingCadReferenceMeta(base, cadReferencePrepass, sourcePrimaryImage);
+  }
+
+  if (action === "white-from-expanded" && !expandedDataUrl.startsWith("data:image/")) {
+    const error = new Error("请先完成主体建筑扩图，再生成白底图");
+    error.status = 400;
+    throw error;
+  }
+  const whiteSourceImage = action === "white-from-expanded" ? expandedSubjectImage : sourcePrimaryImage;
+  const whiteBody = action === "white-from-expanded"
+    ? { ...body, subjectImage: whiteSourceImage, subjectSelection: null }
+    : { ...body, subjectImage: null, subjectSelection: null };
+  let whiteBackgroundPrepass = null;
+  try {
+    whiteBackgroundPrepass = await createImageModelingWhiteBackgroundPrepass({
+      body: whiteBody,
+      primaryImage: whiteSourceImage,
+      subjectImage: {},
+      brief,
+      intent,
+      analysis: { completeness: { isComplete: true, recommendation: "可以进入 3D 建模" } }
+    });
+  } catch (error) {
+    console.warn(`[image-modeling] white-background preprocess failed: ${error.status || "ERR"} ${error.message || error}`);
+    whiteBackgroundPrepass = { used: false, error: error.message || "白底主体图生成失败" };
+  }
+  return {
+    ...attachImageModelingPrepassMeta(base, whiteBackgroundPrepass, sourcePrimaryImage),
+    expandedSubjectImage: action === "white-from-expanded" && expandedDataUrl.startsWith("data:image/") ? expandedSubjectImage : null,
+    requiresWhiteBackground: false
+  };
+}
+
+async function analyzeImageModelingSubject(body = {}) {
+  const sourcePrimaryImage = body.primaryImage || body.image || {};
+  const sourceDataUrl = String(sourcePrimaryImage.dataUrl || body.imageDataUrl || "").trim();
+  if (!sourceDataUrl.startsWith("data:image/")) {
+    const error = new Error("请先上传一张用于建模的图片");
+    error.status = 400;
+    throw error;
+  }
+
+  const brief = body.brief || {};
+  const intent = String(body.intent || body.userPrompt || "").trim();
+  const preprocessAction = normalizeImageModelingPreprocessAction(body.preprocessAction || body.modelingPreprocessAction || body.imageModelingAction || body.action);
+  if (preprocessAction) {
+    return createImageModelingPreprocessAnalysis(body, preprocessAction);
+  }
+  const subjectImage = body.subjectImage || body.subject_image || {};
+  const subjectDataUrl = String(subjectImage.dataUrl || "").trim();
+  const subjectSelection = body.subjectSelection || body.selection || null;
+  const analysisInputImages = [{
+    type: "input_image",
+    image_url: sourceDataUrl
+  }];
+  if (subjectDataUrl && subjectDataUrl !== sourceDataUrl) {
+    analysisInputImages.push({
+      type: "input_image",
+      image_url: subjectDataUrl
+    });
+  }
+
+  const prompt = [
+    "You are gpt-5.5 vision acting as a pre-modeling subject and layer recognition assistant.",
+    "Inspect the boxed subject before any 3D generation. Decide exactly what should become geometry and what should be ignored.",
+    ...imageModelingIntegratedCadPromptLines("analysis", sourcePrimaryImage?.sourceType || body.primaryImage?.sourceType || ""),
+    body.modelingInputRole
+      ? `Input image note: ${String(body.modelingInputRole).slice(0, 360)}`
+      : subjectDataUrl && subjectDataUrl !== sourceDataUrl
+        ? "Input image 1 is the original uploaded image and input image 2 is the user's boxed subject crop. Analyze the boxed subject crop, but return all normalized coordinates relative to the original image."
+        : "Input image note: this is the original uploaded image.",
+    subjectSelection
+      ? `User boxed subject selection on the original image: x=${Number(subjectSelection.x || 0).toFixed(4)}, y=${Number(subjectSelection.y || 0).toFixed(4)}, width=${Number(subjectSelection.width || 0).toFixed(4)}, height=${Number(subjectSelection.height || 0).toFixed(4)}.`
+      : "No manual subject box was provided.",
+    "Return a real subject silhouette/shape, normalized bounding boxes, visible modeling features, and layer roles so the next CAD-friendly modeling step can stay focused.",
+    "Coordinate rules: bounds use x, y, width, height from 0 to 1 relative to the full image.",
+    "Shape rules: targetShape is what the user will visually confirm. It must follow the visible subject silhouette, not a square/rectangular selection box.",
+    "Completeness rules:",
+    "- Judge whether the boxed subject is complete or cut off.",
+    "- If the subject is incomplete, identify the missing sides or missing parts and recommend outpainting before white-background generation.",
+    "- If the subject is complete, say that no outpaint is needed.",
+    "Selection rules:",
+    "- If this is a product/object photo, select the actual foreground object as the main subject. Exclude display props such as plates, trays, plinths, turntables, tabletops, shadows and background surfaces unless the user explicitly asks to model them.",
+    "- Include a base/support only when it is physically attached to the object or essential to the object's real structure, not merely something the object sits on for photography.",
+    "- For a round fruit/object such as an apple, identify the exact object class and the characteristic geometry: ellipsoid body, asymmetric shoulders, top dimple/stem socket, attached stem if visible, bottom flattening/calyx if inferable. Use targetShape.type='ellipse' or a 12-32 point polygon tightly around the fruit body. Do not include the display plate/base in targetBounds, targetShape, or includeInModel layers unless explicitly requested.",
+    "- Do not describe a common object with only one generic layer. Add separate includeInModel layers for any visible/inferable structural feature that materially changes the 3D silhouette.",
+    "- If this is an architectural exterior photo, select the whole building as the modeling subject. Exclude sky, trees, people, cars, road, signage, lens distortion and background unless they are explicitly requested.",
+    "- For a building exterior, split the whole building into includeInModel layers: main mass/envelope, front facade, side-depth/rear inferred mass, roof or parapet, eaves/cornice, windows, doors/entry, balcony/columns/steps/base/plinth, and major material bands.",
+    "- If this is an interior image, select the built space envelope and major furniture/structure layers, not random texture, highlights, shadows, UI or background blur.",
+    "- Split the selected subject into modeling layers: shell/envelope, openings, structure, major furniture/product parts, base/support, key repeated elements.",
+    "- Mark decorative texture, specular highlights, shadows, labels, watermarks, sky/background and image frame as excluded regions unless the user explicitly asks to model them.",
+    "- The next stage will model only includeInModel=true layers.",
+    "- Write layer ids in stable descriptive snake_case when practical. Avoid vague ids like part1, obj2 or thing.",
+    "- Prefer identifying editable systems the downstream CAD model can preserve: facade bays, roof masses, columns, rails, slabs, shelves, brackets, sockets, lids, handles, supports and repeated modules.",
+    "Return valid JSON only, no markdown, in this exact shape:",
+    JSON.stringify({
+      modelingAnalysis: {
+        subject: "short Chinese subject name",
+        sourceType: "object-photo | interior-photo | architecture-photo | floor-plan-reference",
+        summary: "what is selected and why",
+        confidence: 0.78,
+        completeness: {
+          isComplete: true,
+          score: 0.86,
+          label: "完整 or 不完整",
+          missingParts: ["top edge"],
+          edgeContact: ["top"],
+          recommendation: "直接生成白底主体图 or 建议扩图补全后再生成白底主体图",
+          reason: "why the subject is or is not complete"
+        },
+        targetBounds: { x: 0.12, y: 0.08, width: 0.76, height: 0.84 },
+        targetShape: {
+          type: "ellipse",
+          centerX: 0.5,
+          centerY: 0.52,
+          radiusX: 0.26,
+          radiusY: 0.31,
+          note: "visible subject silhouette, not a rectangular box"
+        },
+        modelingScope: "only the selected object/building/space; exclude photographic background unless explicitly requested",
+        scaleStrategy: "scale assumptions for meters",
+        primitiveStrategy: "boxes/cylinders/spheres/planes strategy",
+        visualProfile: {
+          silhouette: "specific visible outline and asymmetry",
+          viewAngle: "front / three-quarter / side / top",
+          characteristicFeatures: ["features that must become geometry"],
+          materialZones: ["major color/material zones that help recognition but are not highlights"],
+          nonGeometry: ["highlights and shadows that must not become geometry"]
+        },
+        depthRelations: ["front object in front of ignored display surface", "rear wall behind furniture"],
+        excludedRegions: ["display plate/tray/plinth", "shadow", "specular highlight", "background blur"],
+        layers: [
+          {
+            id: "main-body",
+            label: "main subject body",
+            role: "product body or spatial shell",
+            includeInModel: true,
+            priority: 1,
+            bounds: { x: 0.2, y: 0.2, width: 0.6, height: 0.6 },
+            depthOrder: 1,
+            primitiveHint: "sphere",
+            geometryHints: ["rounded main mass", "slightly flattened top"],
+            material: "visible material/color",
+            scaleRole: "primary scale reference",
+            notes: "visible/inferred"
+          }
+        ]
+      }
+    }, null, 2),
+    `Project brief: ${JSON.stringify(brief)}`,
+    `User modeling request: ${intent || "Create a CAD-friendly 3D model from this image."}`
+  ].join("\n");
+
+  const payload = {
+    model: config.reasoningModel,
+    input: [
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: prompt },
+          ...analysisInputImages
+        ]
+      }
+    ],
+    max_output_tokens: 3600
+  };
+
+  const text = await openaiResponsesTextStream(payload, { timeoutMs: 240000, provider: "reasoning" });
+  const analysis = normalizeImageModelingAnalysis(await parseModelJsonWithRepair(text, "image-modeling subject analysis"), body);
+  let whiteBackgroundPrepass = null;
+  if (shouldUseImageModelingWhiteBackgroundPrepass(body)) {
+    try {
+      whiteBackgroundPrepass = await createImageModelingWhiteBackgroundPrepass({
+        body,
+        primaryImage: sourcePrimaryImage,
+        subjectImage: subjectImage?.dataUrl ? subjectImage : {},
+        brief,
+        intent,
+        analysis
+      });
+    } catch (error) {
+      console.warn(`[image-modeling] white-background prepass failed after analysis: ${error.status || "ERR"} ${error.message || error}`);
+      whiteBackgroundPrepass = {
+        used: false,
+        error: error.message || "白底主体图生成失败"
+      };
+    }
+  }
+  return attachImageModelingPrepassMeta(analysis, whiteBackgroundPrepass, sourcePrimaryImage);
+}
+
+async function generateImageModel(body = {}) {
+  const primaryImage = body.primaryImage || body.image || {};
+  const dataUrl = String(primaryImage.dataUrl || body.imageDataUrl || "").trim();
+  if (!dataUrl.startsWith("data:image/")) {
+    const error = new Error("请先上传一张用于建模的图片");
+    error.status = 400;
+    throw error;
+  }
+
+  const brief = body.brief || {};
+  const intent = String(body.intent || body.userPrompt || "").trim();
+  const providedAnalysis = body.modelingAnalysis || body.analysis || null;
+  const reusableWhiteImage = imageModelingWhiteBackgroundImageFromAnalysis(providedAnalysis);
+  const subjectImage = body.subjectImage || body.subject_image || {};
+  let whiteBackgroundPrepass = reusableWhiteImage
+    ? {
+        used: true,
+        reused: true,
+        image: reusableWhiteImage,
+        record: providedAnalysis.whiteBackgroundImage || providedAnalysis.modelingPrepass?.image || {},
+        originalImageName: primaryImage.name || reusableWhiteImage.originalName || null
+      }
+    : null;
+  if (!whiteBackgroundPrepass && shouldUseImageModelingWhiteBackgroundPrepass(body)) {
+    try {
+      whiteBackgroundPrepass = await createImageModelingWhiteBackgroundPrepass({
+        body,
+        primaryImage,
+        subjectImage,
+        brief,
+        intent,
+        analysis: providedAnalysis
+      });
+    } catch (error) {
+      console.warn(`[image-modeling] white-background prepass failed during modeling: ${error.status || "ERR"} ${error.message || error}`);
+      whiteBackgroundPrepass = {
+        used: false,
+        error: error.message || "白底主体图生成失败"
+      };
+    }
+  }
+  const modelingPrimaryImage = whiteBackgroundPrepass?.image?.dataUrl ? whiteBackgroundPrepass.image : primaryImage;
+  const modelingDataUrl = String(modelingPrimaryImage.dataUrl || dataUrl).trim();
+  let modelingAnalysis;
+  try {
+    modelingAnalysis = whiteBackgroundPrepass?.image?.dataUrl && !whiteBackgroundPrepass.reused
+      ? await analyzeImageModelingSubject({
+          ...body,
+          primaryImage: modelingPrimaryImage,
+          skipWhiteBackgroundPrepass: true,
+          modelingInputRole: "This is the generated white-background subject reference. Analyze only the isolated subject; pure white is background and must not become geometry."
+        })
+      : Array.isArray(providedAnalysis?.layers) && providedAnalysis.layers.length > 0
+        ? normalizeImageModelingAnalysis(providedAnalysis, body)
+        : await analyzeImageModelingSubject({
+            ...body,
+            primaryImage: modelingPrimaryImage,
+            skipWhiteBackgroundPrepass: true,
+            modelingInputRole: whiteBackgroundPrepass?.image?.dataUrl
+              ? "This is the generated white-background subject reference. Analyze only the isolated subject; pure white is background and must not become geometry."
+              : providedAnalysis?.preprocessAction === "outpaint"
+                ? "This is the generated expanded/completed subject reference. Analyze the completed subject directly; background is context and should not become geometry unless it is part of the subject."
+                : "This is the original uploaded image."
+          });
+  } catch (error) {
+    if (!isReasoningFallbackError(error) || !shouldFallbackToSpatialImageModelingRequest(body, providedAnalysis, { brief, intent, primaryImage: modelingPrimaryImage })) throw error;
+    console.warn(`[image-modeling] analysis reasoning fallback: ${reasoningFallbackReason(error)}`);
+    modelingAnalysis = fallbackSpatialImageModelingAnalysis({
+      body,
+      brief,
+      intent,
+      primaryImage: modelingPrimaryImage,
+      providedAnalysis,
+      error
+    });
+  }
+  const reusableCadReferenceImage = imageModelingCadReferenceImageFromAnalysis(providedAnalysis);
+  let cadReferencePrepass = reusableCadReferenceImage
+    ? {
+        used: true,
+        reused: true,
+        image: reusableCadReferenceImage,
+        record: providedAnalysis?.cadReferenceImage || providedAnalysis?.modelingCadPrepass?.image || {},
+        parameters: providedAnalysis?.cadReferenceParameters || buildImageModelingCadReferenceParameters(modelingAnalysis, reusableCadReferenceImage),
+        originalImageName: primaryImage.name || reusableCadReferenceImage.originalName || null
+      }
+    : null;
+  if (!cadReferencePrepass && shouldUseImageModelingCadReferencePrepass(body)) {
+    try {
+      cadReferencePrepass = await createImageModelingCadReferencePrepass({
+        body,
+        primaryImage: modelingPrimaryImage,
+        brief,
+        intent,
+        analysis: modelingAnalysis,
+        sourceRole: whiteBackgroundPrepass?.image?.dataUrl
+          ? "generated white-background subject reference"
+          : providedAnalysis?.preprocessAction === "outpaint"
+            ? "generated expanded/completed subject reference"
+            : "original uploaded reference image"
+      });
+    } catch (error) {
+      console.warn(`[image-modeling] cad reference prepass failed during modeling: ${error.status || "ERR"} ${error.message || error}`);
+      cadReferencePrepass = {
+        used: false,
+        error: error.message || "CAD结构参考图生成失败"
+      };
+    }
+  }
+  const commonObjectAnalysis = knownObjectTemplateAnalysis(modelingAnalysis, { intent, primaryImage: modelingPrimaryImage });
+  const hasDirectCadReference = Boolean(cadReferencePrepass?.image?.dataUrl);
+  const templateScene = parseBooleanEnv(process.env.IMAGE_MODELING_COMMON_OBJECT_TEMPLATES, true) && commonObjectAnalysis && !hasDirectCadReference
+    ? commonObjectTemplateSceneFromAnalysis(commonObjectAnalysis, { intent, primaryImage: modelingPrimaryImage })
+    : null;
+  const prepassMeta = imageModelingPrepassForClient(whiteBackgroundPrepass, {
+    defaultTitle: "白底建模参考图",
+    defaultStepMode: "image-modeling-white-background",
+    defaultSourceType: "image-generation-white-background",
+    defaultInputImageType: "white-background-subject-reference"
+  });
+  const cadReferenceMeta = imageModelingPrepassForClient(cadReferencePrepass, {
+    defaultTitle: "CAD结构参考图",
+    defaultStepMode: "image-modeling-cad-reference",
+    defaultSourceType: "image-generation-cad-reference",
+    defaultInputImageType: "cad-structure-reference"
+  });
+  const cadReferenceParameters = cadReferencePrepass?.parameters || providedAnalysis?.cadReferenceParameters || buildImageModelingCadReferenceParameters(modelingAnalysis, cadReferenceMeta);
+  const enrichedModelingAnalysis = cadReferenceMeta
+    ? {
+        ...(commonObjectAnalysis || modelingAnalysis),
+        cadReferenceImage: cadReferenceMeta,
+        cadReferenceParameters
+      }
+    : (commonObjectAnalysis || modelingAnalysis);
+  const summaryPrefix = [
+    prepassMeta
+      ? modelingAnalysis?.completeness?.isComplete === false
+        ? "主体不完整时已按扩图建议补全白底主体图，再基于白底图完成识别与参数化建模。"
+        : "已先用生图模式生成白底主体标准图，再基于白底图完成识别与参数化建模。"
+      : "",
+    cadReferenceMeta ? "已按 CAD 结构参考图作为主几何依据建模，原图仅用于校验主体、颜色和材质分区。" : ""
+  ].filter(Boolean).join("");
+  if (templateScene) {
+    const model = normalizeWhiteModelScene({ whiteModelScene: templateScene }, { brief, intent, primaryImage: modelingPrimaryImage, modelingAnalysis: enrichedModelingAnalysis });
+    return attachWhiteModelCadArtifacts({
+      ...model,
+      id: `image-model-${Date.now()}`,
+      mode: "image-modeling",
+      modelingAnalysis: enrichedModelingAnalysis,
+      originalSourceImage: primaryImage ? {
+        name: primaryImage.name || null,
+        type: primaryImage.type || null,
+        sourceType: primaryImage.sourceType || null
+      } : null,
+      whiteBackgroundImage: prepassMeta,
+      cadReferenceImage: cadReferenceMeta,
+      cadReferenceParameters,
+      modelingPrepass: prepassMeta
+        ? { used: true, reused: Boolean(whiteBackgroundPrepass?.reused), image: prepassMeta }
+        : { used: false, error: whiteBackgroundPrepass?.error || "" },
+      modelingCadPrepass: cadReferenceMeta
+        ? { used: true, reused: Boolean(cadReferencePrepass?.reused), image: cadReferenceMeta }
+        : { used: false, error: cadReferencePrepass?.error || "" },
+      summary: `${summaryPrefix}${model.summary || "已根据图片生成可旋转预览的参数化 3D 模型。"}`
+    });
+  }
+  const cadReferenceDrivesModeling = Boolean(cadReferenceMeta?.dataUrl);
+  const modelingInputNotes = cadReferenceDrivesModeling
+    ? [
+        "Input image 1 is the generated CAD structure reference. It is the PRIMARY geometry source for this modeling step. Follow its cleaned silhouette, part boundaries, proportions, openings, seams, axes and simplified depth cues when constructing CAD primitives.",
+        "Input image 2 is the original or prepared subject photo. Use it only as secondary evidence for subject identity, view angle, color/material zones and details that the CAD guide preserves. Do not let photographic background, props, shadows, highlights, texture noise or display surfaces override the CAD structure reference.",
+        primaryImage?.dataUrl && primaryImage.dataUrl !== modelingDataUrl
+          ? "Input image 3 is the original uploaded photo. Use it only to resolve ambiguity after the CAD structure reference and prepared subject input."
+          : "",
+        "When CAD structure reference and original photo conflict, prefer the CAD structure reference for geometry, object count, footprint, major silhouette and editable part separation."
+      ]
+    : [
+        "Input image 1 is the main modeling subject reference and should drive the final massing, silhouette and scale relationships.",
+        primaryImage?.dataUrl && primaryImage.dataUrl !== modelingDataUrl
+          ? "Input image 2 is the original uploaded photo. Use it to preserve real view angle cues, material zones and visible depth evidence; do not reintroduce removed background clutter."
+          : ""
+      ];
+  const prompt = [
+    "You are gpt-5.5 acting as a pragmatic image-to-CAD modeling assistant for architects and designers.",
+    cadReferenceDrivesModeling
+      ? "Reference fidelity contract: the CAD structure reference image is the source of truth for geometry. The original upload is secondary evidence for subject identity and color/material zones. Do not redesign, restyle, add ignored props, or convert the subject into another category."
+      : "Reference fidelity contract: the uploaded image is the source of truth. First honor whether it is an interior, exterior, floor plan, or object photo; then model only that kind of subject. Do not redesign, restyle, simplify into a generic room, or change an interior photo into an exterior/cutaway box.",
+    "Use the pre-modeling vision analysis as the binding scope. Convert only the selected subject/layers into a lightweight parametric 3D scene made from CAD-friendly primitives that match the reference photo's visible camera, layout, major planes and object positions.",
+    ...imageModelingIntegratedCadPromptLines("model", enrichedModelingAnalysis?.sourceType || modelingAnalysis?.sourceType || ""),
+    ...modelingInputNotes.filter(Boolean),
+    "Treat targetShape as the confirmed silhouette. Do not model the rectangular targetBounds as geometry; it is only a rough locator.",
+    "This is not photogrammetry. Build a clean editable approximation that preserves the main silhouette, masses, proportions, openings, repeated elements, material zones, and useful CAD footprint.",
+    "Prefer boxes, cylinders, spheres and planes. Use meters. Size order is [width, depth, height]. Coordinate system: x = width, y = vertical height, z = depth. Put object centers in position [x,y,z].",
+    "CRITICAL SIZE RULE: object.size must always be [width, depth, height], never [width, height, depth]. A facade panel 4m wide x 2.6m high x 0.08m thick must be size [4, 0.08, 2.6]. A roof slab 8m wide x 10m deep x 0.24m thick must be size [8, 10, 0.24]. A column 0.5m x 0.5m x 3m high must be size [0.5, 0.5, 3].",
+    "Interior-photo mandatory behavior: if sourceType is interior-photo or the image visibly shows a room, the output MUST be an inside-the-room model. Return sourceType='interior-photo'. Include floor, back/side walls, ceiling or ceiling edge when visible, doors/windows/openings, built-in cabinetry/counters, tables, seats/sofas, shelves, lighting/ceiling features, columns/beams if visible, and the main furniture positions according to the reference image.",
+    "Interior-photo camera rule: preserve the reference image's eye-level or near eye-level interior perspective in spacePlan and previewCamera. Do not use an exterior axonometric as the conceptual model. If depth is uncertain, infer conservatively from the photo's floor lines, wall corners, ceiling lines and furniture scale.",
+    "Interior-photo quality floor: normally use 24-80 purposeful primitives. A floor plus a few walls and boxes is not acceptable. Separate walls, openings, cabinet runs, countertops, table tops, legs, sofa/seat bases/backs, shelves, ceiling bands and light strips when they are visible or strongly implied.",
+    "For interiors: include floor, walls, openings, counters, tables, seats, shelves, fixtures, columns, beams and main furniture if selected by the analysis.",
+    "For architectural exterior photos: model the whole building, not a flat poster. Include main mass, side/rear inferred depth, front facade, roof/parapet/eaves, entry, windows/doors, columns/balconies/steps/base/plinth and major material bands. Do not add interior ceiling lights, room furniture, sky, trees, cars, roads or people unless selected by the analysis.",
+    "Architecture-exterior quality floor: normally use 32-96 purposeful primitives. A single block with a few window rectangles is not acceptable for a whole building model.",
+    "For architecture, separate the model into legible systems: site/base, stacked masses, side depth returns, roof planes or parapets, floor slabs/eaves, facade openings, entry/steps, railings/columns, and major material zones. Use thin depth for facade glass/railings and thin height for roof/slab/eave plates.",
+    "For product/object photos: model the confirmed foreground object only. Do not add display props, plates, trays, tabletops, plinths, room floor/walls/background, or generic supports unless the confirmed analysis explicitly marks them includeInModel=true as physically attached structural parts.",
+    "For rounded product subjects such as an apple, use multiple ellipsoid/sphere/cylinder primitives to approximate curved body lobes, shoulders, dimples, stem sockets, attached stems and bottom flattening. Never turn the silhouette into a box-shaped room, tray, or open container.",
+    "Object-photo quality floor: common products must normally use 8-24 purposeful primitives. One generic body plus one accessory is not acceptable unless the subject is truly that simple.",
+    "Every object-photo result must include notes explaining which parts are visible and which are inferred from the single image.",
+    "Do not turn shadows, specular highlights, photographic noise, logos, labels or decorative texture patches into standalone geometry unless the analysis explicitly marks them includeInModel=true.",
+    "Use 8-24 objects for simple products, 24-80 objects for interiors, and 32-96 objects for architectural exteriors when useful. Add enough objects for a readable model, but avoid noisy tiny decoration.",
+    "Every object must use a descriptive, stable snake_case id where practical, and labels should stay human-readable for downstream CAD/export tools.",
+    "Do not collapse all geometry into one boolean blob. Keep major editable systems separate: base/site, main masses, roof planes, facade openings, rails, steps, furniture bodies, supports, handles, brackets and repeated modules.",
+    "Prefer explicit thickness over infinitely thin decoration. If a detail is only graphic texture, keep it out of geometry.",
+    "Return valid JSON only, no markdown. Shape:",
+    JSON.stringify({
+      whiteModelScene: {
+        title: "short Chinese model title",
+        sourceType: "object-photo or interior-photo or architecture-photo or floor-plan-reference",
+        units: "meters",
+        summary: "what was modeled and what remains approximate",
+        confidence: 0.72,
+        assumptions: ["depth inferred from single image"],
+        limitations: ["back side is inferred"],
+        spacePlan: {
+          roomType: "detected type",
+          envelope: "overall envelope or subject envelope",
+          keyZones: ["zone"],
+          circulation: "if spatial",
+          scaleAssumptions: ["scale notes"],
+          modelingStrategy: "primitive strategy"
+        },
+        previewCamera: {
+          mode: "interior or orbit",
+          position: [2.2, 1.55, 3.2],
+          target: [0, 1.35, -1.2],
+          note: "interior eye-level preview matching the reference photo when sourceType is interior-photo"
+        },
+        objects: [
+          {
+            id: "floor_plate",
+            type: "floor",
+            shape: "box",
+            label: "floor plate",
+            size: [8, 6, 0.08],
+            position: [0, 0.04, 0],
+            rotation: [0, 0, 0],
+            color: "#b89f7a",
+            layer: "shell",
+            material: "wood or stone",
+            roughness: 0.7,
+            metalness: 0.02,
+            opacity: 1,
+            note: "visible/inferred"
+          }
+        ]
+      }
+    }, null, 2),
+    "",
+    "Allowed object types: floor, wall, ceiling, column, beam, opening, stair, box, counter, table, seat, shelf, fixture, plant, generic.",
+    "Allowed shapes: box, cylinder, sphere, plane.",
+    "Keep colors as hex values. Keep all sizes positive. Object count must be at least 24 for interiors, at least 32 for architectural exteriors, and at least 8 for products.",
+    "Pre-modeling vision analysis, binding scope:",
+    JSON.stringify(enrichedModelingAnalysis, null, 2),
+    cadReferenceMeta ? "CAD reference parameters JSON:" : "",
+    cadReferenceMeta ? JSON.stringify(cadReferenceParameters, null, 2) : "",
+    `Project brief: ${JSON.stringify(brief)}`,
+    `User modeling request: ${intent || "Create a CAD-friendly 3D model from this image."}`
+  ].join("\n");
+
+  const modelingInputImages = cadReferenceDrivesModeling
+    ? [
+        { type: "input_image", image_url: cadReferenceMeta.dataUrl },
+        { type: "input_image", image_url: modelingDataUrl }
+      ]
+    : [
+        { type: "input_image", image_url: modelingDataUrl }
+      ];
+  if (primaryImage?.dataUrl && primaryImage.dataUrl !== modelingDataUrl) {
+    modelingInputImages.push({ type: "input_image", image_url: primaryImage.dataUrl });
+  }
+  const payload = {
+    model: config.reasoningModel,
+    input: [
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: prompt },
+          ...modelingInputImages
+        ]
+      }
+    ],
+    max_output_tokens: 5200
+  };
+
+  try {
+    const text = await openaiResponsesTextStream(payload, { timeoutMs: 420000, provider: "reasoning" });
+    const parsed = await parseModelJsonWithRepair(text, "image-to-CAD model scene");
+    const parsedScene = parsed?.whiteModelScene || parsed?.scene || parsed || {};
+    const scopedParsed = {
+      whiteModelScene: {
+        ...parsedScene,
+        sourceType: parsedScene.sourceType || parsedScene.source_type || modelingAnalysis.sourceType
+      }
+    };
+    const model = normalizeWhiteModelScene(scopedParsed, { brief, intent, primaryImage: modelingPrimaryImage, modelingAnalysis: enrichedModelingAnalysis });
+    return attachWhiteModelCadArtifacts({
+      ...model,
+      id: `image-model-${Date.now()}`,
+      mode: "image-modeling",
+      modelingAnalysis: enrichedModelingAnalysis,
+      originalSourceImage: primaryImage ? {
+        name: primaryImage.name || null,
+        type: primaryImage.type || null,
+        sourceType: primaryImage.sourceType || null
+      } : null,
+      whiteBackgroundImage: prepassMeta,
+      cadReferenceImage: cadReferenceMeta,
+      cadReferenceParameters,
+      modelingPrepass: prepassMeta
+        ? { used: true, reused: Boolean(whiteBackgroundPrepass?.reused), image: prepassMeta }
+        : { used: false, error: whiteBackgroundPrepass?.error || "" },
+      modelingCadPrepass: cadReferenceMeta
+        ? { used: true, reused: Boolean(cadReferencePrepass?.reused), image: cadReferenceMeta }
+        : { used: false, error: cadReferencePrepass?.error || "" },
+      summary: `${summaryPrefix}${model.summary || "已根据图片生成可旋转预览的参数化 3D 模型。"}`
+    });
+  } catch (error) {
+    const fallbackObjectAnalysis = knownObjectTemplateAnalysis(enrichedModelingAnalysis, { intent, primaryImage: modelingPrimaryImage });
+    if (isReasoningFallbackError(error) && fallbackObjectAnalysis) {
+      console.warn(`[image-modeling] final known-object fallback: ${reasoningFallbackReason(error)}`);
+      const fallbackScene = commonObjectTemplateSceneFromAnalysis(fallbackObjectAnalysis, { intent, primaryImage: modelingPrimaryImage });
+      if (fallbackScene) {
+        const model = normalizeWhiteModelScene({ whiteModelScene: fallbackScene }, { brief, intent, primaryImage: modelingPrimaryImage, modelingAnalysis: fallbackObjectAnalysis });
+        return attachWhiteModelCadArtifacts({
+          ...model,
+          id: `image-model-${Date.now()}`,
+          mode: "image-modeling",
+          modelingAnalysis: {
+            ...fallbackObjectAnalysis,
+            fallbackModel: true,
+            fallbackReason: reasoningFallbackReason(error)
+          },
+          originalSourceImage: primaryImage ? {
+            name: primaryImage.name || null,
+            type: primaryImage.type || null,
+            sourceType: primaryImage.sourceType || null
+          } : null,
+          whiteBackgroundImage: prepassMeta,
+          cadReferenceImage: cadReferenceMeta,
+          cadReferenceParameters,
+          modelingPrepass: prepassMeta
+            ? { used: true, reused: Boolean(whiteBackgroundPrepass?.reused), image: prepassMeta }
+            : { used: false, error: whiteBackgroundPrepass?.error || "" },
+          modelingCadPrepass: cadReferenceMeta
+            ? { used: true, reused: Boolean(cadReferencePrepass?.reused), image: cadReferenceMeta }
+            : { used: false, error: cadReferencePrepass?.error || "" },
+          summary: `${summaryPrefix}${model.summary || "端点未返回建模规划，已按已知物体模板生成可编辑基础模型。"}`
+        });
+      }
+    }
+    if (!isReasoningFallbackError(error) || !shouldFallbackToSpatialWhiteModel(enrichedModelingAnalysis, { brief, intent, primaryImage: modelingPrimaryImage })) throw error;
+    console.warn(`[image-modeling] final model reasoning fallback: ${reasoningFallbackReason(error)}`);
+    const fallbackScene = fallbackInteriorWhiteModelSceneFromAnalysis(enrichedModelingAnalysis, {
+      brief,
+      intent,
+      primaryImage: modelingPrimaryImage,
+      cadReferenceMeta,
+      error
+    });
+    const model = normalizeWhiteModelScene({ whiteModelScene: fallbackScene }, { brief, intent, primaryImage: modelingPrimaryImage, modelingAnalysis: enrichedModelingAnalysis });
+    return attachWhiteModelCadArtifacts({
+      ...model,
+      id: `image-model-${Date.now()}`,
+      mode: "image-modeling",
+      modelingAnalysis: {
+        ...enrichedModelingAnalysis,
+        fallbackModel: true,
+        fallbackReason: reasoningFallbackReason(error)
+      },
+      originalSourceImage: primaryImage ? {
+        name: primaryImage.name || null,
+        type: primaryImage.type || null,
+        sourceType: primaryImage.sourceType || null
+      } : null,
+      whiteBackgroundImage: prepassMeta,
+      cadReferenceImage: cadReferenceMeta,
+      cadReferenceParameters,
+      modelingPrepass: prepassMeta
+        ? { used: true, reused: Boolean(whiteBackgroundPrepass?.reused), image: prepassMeta }
+        : { used: false, error: whiteBackgroundPrepass?.error || "" },
+      modelingCadPrepass: cadReferenceMeta
+        ? { used: true, reused: Boolean(cadReferencePrepass?.reused), image: cadReferenceMeta }
+        : { used: false, error: cadReferencePrepass?.error || "" },
+      summary: `${summaryPrefix}${model.summary || "端点超时，已先生成可编辑基础室内模型。"}`
+    });
+  }
+}
+
 async function generateImage(body) {
   const direction = body.direction || {};
   const brief = body.brief || {};
@@ -2388,12 +6477,13 @@ async function generateImage(body) {
 }
 
 async function renderFromUploadedImages(body) {
-  const mode = normalizeRenderMode([
+  const requestedMode = normalizeRenderMode(body.mode);
+  const allowedRenderModes = new Set([
     "custom",
     "plan-axonometric",
+    "plan-axonometric-view",
     "plan-render",
-    "floorplan",
-    "viewpoint",
+    "panorama",
     "photo",
     "whitemodel",
     "sketch",
@@ -2406,42 +6496,267 @@ async function renderFromUploadedImages(body) {
     "materialboard",
     "sharpen",
     "outpaint"
-  ].includes(body.mode) ? body.mode : "plan-render");
+  ]);
+  const mode = allowedRenderModes.has(requestedMode) ? requestedMode : body.mode ? "custom" : "plan-render";
   const brief = body.brief || {};
   const intent = String(body.intent || "").trim();
   const primary = body.primaryImage;
   const references = activeReferenceImagesFromBody(body);
+  const viewAngleReference = isPlanPaperRenderMode(mode) && body.viewAngleReference?.dataUrl
+    ? body.viewAngleReference
+    : null;
 
-  if (!primary?.dataUrl && mode !== "custom") {
+  if (!primary?.dataUrl && !["custom", "panorama"].includes(mode)) {
     const error = new Error("Missing primary image");
     error.status = 400;
     throw error;
   }
 
-  const inputCount = (primary?.dataUrl ? 1 : 0) + references.filter((reference) => reference?.dataUrl).length;
+  const requestedSize = body.size || "1024x1536";
+  const requestedQuality = body.quality || "low";
+  const useReasoning = body.thinkingEnabled === true;
+  const useColoredPlanPipeline = false;
+  const planInputColorKind = mode === "plan-axonometric"
+    ? (isColoredPlanInput(primary, body) ? "colored-floor-plan" : "black-white-line-plan")
+    : "";
+  let coloredPlanRecord = null;
+
+  if (mode === "plan-axonometric") {
+    const viewAngleLine = viewAnglePromptLine(body.planPaperView, mode);
+    const viewAngleReferenceLine = viewAngleReferencePromptLine(viewAngleReference, mode);
+    const hasPaperViewControl = Boolean(viewAngleReference?.dataUrl || viewAngleLine);
+    const coloredPrompt = buildColoredFloorPlanPrompt({
+      brief,
+      intent,
+      planPaperView: body.planPaperView || null,
+      viewControlled: hasPaperViewControl
+    });
+    const coloredGenerated = await thinkThenGenerateImage({
+      prompt: [
+        coloredPrompt,
+        viewAngleLine,
+        viewAngleReferenceLine,
+        hasPaperViewControl
+          ? [
+              "VIEW_CONTROLLED_COLORED_PLAN:",
+              "The paper-drag control is part of this selected floor-plan workflow step.",
+              "Generate the colored floor plan in the selected dragged-paper orientation, preserving the source aspect ratio, crop feeling, projected paper silhouette, yaw, tilt, zoom and pan.",
+              "The result must still be a flat colored architectural plan surface: add color semantics and material zones only; do not extrude walls, do not invent wall height, do not make a full axonometric model, and do not make an eye-level render."
+            ].join("\n")
+          : "",
+        "",
+        "WORKFLOW_RECOMMENDATION_ONLY:",
+        PLAN_WORKFLOW_RECOMMENDATION
+      ].filter(Boolean).join("\n"),
+      inputImages: viewAngleReference?.dataUrl
+        ? [
+            {
+              dataUrl: viewAngleReference.dataUrl,
+              label: "IMAGE 1 PAPER DRAG VIEW LOCK: high-resolution dragged paper view generated from the uploaded plan; final colored floor plan must keep this exact projected paper angle, crop, page placement, silhouette, foreshortening, yaw/tilt, zoom and pan."
+            },
+            {
+              dataUrl: primary.dataUrl,
+              label: "IMAGE 2 ORIGINAL LOCKED PLAN: high-resolution floor plan; preserve exact layout, walls, openings, labels, door swings, room relationships and major furniture footprints while adding flat color semantics in the selected paper-drag view."
+            }
+          ]
+        : [{
+            dataUrl: primary.dataUrl,
+            label: "IMAGE 1 ORIGINAL LOCKED PLAN: high-resolution black-and-white floor plan; preserve exact layout while adding flat top-down color semantics only"
+          }],
+      size: requestedSize,
+      quality: requestedQuality,
+      title: "colored floor plan",
+      mode: "plan-color",
+      preferReferenceEdit: true,
+      finalPromptFooter: [
+        "INTERMEDIATE_OUTPUT_LOCK:",
+        hasPaperViewControl
+          ? "Return a clean colored floor plan in the selected paper-drag view only. Keep it as a flat colored plan surface: no wall extrusion, no wall height, no axonometric model and no eye-level render."
+          : "Return a clean top-down colored floor plan only. No 3D, no tilt, no perspective, no wall extrusion, no camera change.",
+        viewAngleReferenceFinalPromptFooter(viewAngleReference, mode),
+        PLAN_WORKFLOW_RECOMMENDATION
+      ].filter(Boolean).join("\n"),
+      useReasoning
+    });
+    const colorRecord = await saveGeneratedImage({
+      buffer: coloredGenerated.buffer,
+      slug: `plan-color-${slugify(brief.projectName || "colored-plan")}`,
+      meta: {
+        reasoning_model: coloredGenerated.reasoningModel || "preset-only",
+        image_model: config.imageModel,
+        prompt_library_version: promptLibraryVersion,
+        mode: "plan-axonometric",
+        workflowId: body.workflowId || null,
+        parentImageId: body.parentImageId || null,
+        stepMode: "plan-axonometric",
+        inputImageType: body.inputImageType || null,
+        source_prompt: coloredPrompt,
+        prompt: coloredGenerated.prompt || coloredPrompt,
+        thinking: coloredGenerated.thinking,
+        planPaperView: body.planPaperView || null,
+        viewAngleReference: viewAngleReference ? {
+          name: viewAngleReference.name || null,
+          type: viewAngleReference.type || null,
+          viewAngle: viewAngleReference.viewAngle || null,
+          targetQuadrilateral: viewAngleReference.targetQuadrilateral || null,
+          perspectiveMetrics: viewAngleReference.perspectiveMetrics || null,
+          prompt: viewAngleReference.prompt || null
+        } : null,
+        multiAngleView: null,
+        created_at: new Date().toISOString()
+      },
+      extra: {
+        title: "彩色平面图",
+        mode: "plan-axonometric",
+        prompt: coloredGenerated.prompt || coloredPrompt,
+        sourcePrompt: coloredPrompt,
+        thinking: coloredGenerated.thinking,
+        endpoint: coloredGenerated.endpoint,
+        attempt: coloredGenerated.attempt,
+        attempts: coloredGenerated.attempts,
+        imageApi: coloredGenerated.imageApi,
+        actualParams: coloredGenerated.actualParams,
+        revisedPrompt: coloredGenerated.revisedPrompt,
+        workflowId: body.workflowId || null,
+        parentImageId: body.parentImageId || null,
+        stepMode: "plan-axonometric",
+        inputImageType: body.inputImageType || null,
+        pipelineStage: "colored-floor-plan",
+        planInputColorKind,
+        planPaperView: body.planPaperView || null,
+        viewAngleReference: viewAngleReference ? {
+          name: viewAngleReference.name || null,
+          type: viewAngleReference.type || null,
+          viewAngle: viewAngleReference.viewAngle || null,
+          targetQuadrilateral: viewAngleReference.targetQuadrilateral || null,
+          perspectiveMetrics: viewAngleReference.perspectiveMetrics || null,
+          prompt: viewAngleReference.prompt || null
+        } : null,
+        multiAngleView: null,
+        planColorDecision: { recommended: true, reason: PLAN_WORKFLOW_RECOMMENDATION },
+        input_count: 1,
+        createdAt: new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })
+      }
+    });
+    return colorRecord;
+  }
+
+  const coloredPlanDirect = false;
+  const renderInputImages = mode === "plan-axonometric-view" && viewAngleReference?.dataUrl
+    ? [
+        {
+          dataUrl: viewAngleReference.dataUrl,
+          label: "IMAGE 1 PRIMARY COMPOSITION LOCK: high-resolution dragged colored-plan camera base; final output must keep this exact camera, projected quadrilateral, page placement, silhouette, foreshortening, zoom/pan crop and visible frame, as if re-expressing the colored floor plan as a high-precision axonometric view"
+        },
+        ...(primary?.dataUrl ? [{
+          dataUrl: primary.dataUrl,
+          label: "IMAGE 2 COLORED FLOOR PLAN SOURCE: high-resolution colored floor plan or plan source; preserve room relationships, wall/opening/furniture footprints, scale, cut-wall logic and material zones while improving axonometric readability"
+        }] : [])
+      ]
+    : mode === "plan-render" && viewAngleReference?.dataUrl
+      ? [
+          {
+            dataUrl: viewAngleReference.dataUrl,
+            label: "IMAGE 1 PAPER DRAG REGION LOCK: high-resolution dragged axonometric/plan camera base; use this exact visible crop, projected paper angle, near/far relationship, yaw/tilt, zoom and pan to determine the target zone and camera direction for the final human-eye render"
+          },
+          ...(primary?.dataUrl ? [{
+            dataUrl: primary.dataUrl,
+            label: "IMAGE 2 AXONOMETRIC OR PLAN SOURCE: high-resolution spatial guide; preserve the selected or inferred zone, spatial relationships, openings, circulation, furniture/display logic and scale cues while translating it into a realistic effect render"
+          }] : [])
+        ]
+    : [
+        ...(coloredPlanRecord ? [{
+          dataUrl: imageBufferToDataUrl(await fs.readFile(coloredPlanRecord.file), "image/png"),
+          label: "IMAGE 1 COLORED FLOOR PLAN INTERMEDIATE: generated semantic/material top-down plan from step 1; use as the main axonometric source"
+        }] : []),
+        ...(primary?.dataUrl ? [{
+          dataUrl: primary.dataUrl,
+          label: coloredPlanDirect
+            ? "colored floor plan source, direct-to-3D layout/material reference"
+            : firstInputLabel(mode)
+        }] : [])
+      ];
+  const inputCount = renderInputImages.filter((image) => image?.dataUrl).length + references.filter((reference) => reference?.dataUrl).length;
 
   const prompt = buildRenderPrompt({
     mode,
     brief,
     intent,
     selection: body.selection,
-    viewpoint: body.viewpoint,
+    planPaperView: body.planPaperView,
+    multiAngleView: body.multiAngleView,
+    viewAngleReference,
     referenceCount: references.length,
-    references
+    references,
+    coloredPlanPipeline: Boolean(coloredPlanRecord),
+    coloredPlanRecord,
+    coloredPlanDirect
   });
 
   const generated = await thinkThenGenerateImage({
     prompt,
     inputImages: [
-      ...(primary?.dataUrl ? [{ dataUrl: primary.dataUrl, label: firstInputLabel(mode) }] : []),
+      ...renderInputImages,
       ...references.map((reference, index) => ({ dataUrl: reference.dataUrl, label: `reference ${index + 1} (${referenceWeightMeta(reference.weight).label}; ${referenceUsageMeta(reference.usage).label})` }))
     ],
-    size: body.size || "1024x1536",
-    quality: body.quality || "low",
+    size: requestedSize,
+    quality: requestedQuality,
     title: `${mode} render`,
     mode,
-    useReasoning: body.thinkingEnabled === true
+    finalPromptFooter: [
+      viewAngleReferenceFinalPromptFooter(viewAngleReference, mode, {
+        coloredPlanPipeline: Boolean(coloredPlanRecord),
+        coloredPlanDirect
+      }),
+      coloredPlanRecord ? [
+        "TWO_STAGE_PIPELINE_FINAL_LOCK:",
+        "The advisory chain is: original floor plan -> colored top-down plan -> high-precision axonometric view.",
+        "The final image should behave like the colored plan has been re-expressed as an axonometric model from the dragged camera angle."
+      ].join("\n") : ""
+    ].filter(Boolean).join("\n\n"),
+    useReasoning
   });
+
+  const pipeline = coloredPlanRecord ? {
+    enabled: true,
+    strategy: "先把黑白线稿平面图转成彩色语义平面图，再用彩平、原始线稿和拖拽视角生成高精度轴测图。",
+    steps: [
+      {
+        id: "source-plan",
+        title: "原始平面图",
+        kind: "Input",
+        status: "input",
+        description: "锁定原始线稿、房间关系、门窗、家具脚印和文字细节。",
+        name: primary?.name || ""
+      },
+      {
+        id: "colored-plan",
+        title: "彩色平面图",
+        kind: "Intermediate",
+        status: "done",
+        stepMode: "plan-color",
+        url: coloredPlanRecord.url,
+        file: coloredPlanRecord.file,
+        bytes: coloredPlanRecord.bytes,
+        prompt: coloredPlanRecord.prompt || "",
+        sourcePrompt: coloredPlanRecord.sourcePrompt || "",
+        thinking: coloredPlanRecord.thinking || "",
+        endpoint: coloredPlanRecord.endpoint || "",
+        imageApi: coloredPlanRecord.imageApi || "",
+        actualParams: coloredPlanRecord.actualParams || null,
+        revisedPrompt: coloredPlanRecord.revisedPrompt || "",
+        createdAt: coloredPlanRecord.createdAt || ""
+      },
+      {
+        id: "axonometric-plan",
+        title: "高精度轴测图",
+        kind: "Final",
+        status: "done",
+        stepMode: mode,
+        description: "用彩平作为语义图、原图作为细节图、拖拽视角作为镜头锁定生成。"
+      }
+    ]
+  } : null;
 
   return saveGeneratedImage({
     buffer: generated.buffer,
@@ -2460,7 +6775,19 @@ async function renderFromUploadedImages(body) {
       prompt: generated.prompt || prompt,
       thinking: generated.thinking,
       selection: body.selection || null,
-      viewpoint: body.viewpoint || null,
+      planPaperView: body.planPaperView || null,
+      viewAngleReference: viewAngleReference ? {
+        name: viewAngleReference.name || null,
+        type: viewAngleReference.type || null,
+        viewAngle: viewAngleReference.viewAngle || null,
+        targetQuadrilateral: viewAngleReference.targetQuadrilateral || null,
+        perspectiveMetrics: viewAngleReference.perspectiveMetrics || null,
+        prompt: viewAngleReference.prompt || null
+      } : null,
+      multiAngleView: body.multiAngleView || null,
+      pipeline,
+      planInputColorKind,
+      planColorDecision: body.planColorDecision || null,
       input_count: inputCount,
       created_at: new Date().toISOString()
     },
@@ -2478,7 +6805,19 @@ async function renderFromUploadedImages(body) {
       parentImageId: body.parentImageId || null,
       stepMode: body.stepMode || mode,
       inputImageType: body.inputImageType || null,
-      viewpoint: body.viewpoint || null
+      planPaperView: body.planPaperView || null,
+      viewAngleReference: viewAngleReference ? {
+        name: viewAngleReference.name || null,
+        type: viewAngleReference.type || null,
+        viewAngle: viewAngleReference.viewAngle || null,
+        targetQuadrilateral: viewAngleReference.targetQuadrilateral || null,
+        perspectiveMetrics: viewAngleReference.perspectiveMetrics || null,
+        prompt: viewAngleReference.prompt || null
+      } : null,
+      multiAngleView: body.multiAngleView || null,
+      pipeline,
+      planInputColorKind,
+      planColorDecision: body.planColorDecision || null
     }
   });
 }
@@ -2487,12 +6826,13 @@ function firstInputLabel(mode) {
   mode = normalizeRenderMode(mode);
   const labels = {
     custom: "optional primary image",
-    "plan-axonometric": "black-and-white or colored floor plan hard layout reference",
-    "plan-render": "3D floor plan or selected plan-based spatial guide",
+    "plan-axonometric": "black-and-white or colored floor plan hard layout reference for colored-plan generation",
+    "plan-axonometric-view": "colored floor plan or axonometric floor-plan reference",
+    "plan-render": "axonometric view or selected plan-based spatial guide",
+    panorama: "optional panorama or spatial reference image",
     photo: "site photo",
     whitemodel: "white model screenshot",
     sketch: "concept sketch",
-    viewpoint: "spatial source image with a marked camera standing point",
     cadrender: "CAD drawing",
     upscale: "image to enhance",
     detail: "image to enrich",
@@ -2515,6 +6855,7 @@ function isReasoningFallbackError(error) {
   const details = error?.details ? JSON.stringify(error.details).slice(0, 1000) : "";
   const message = `${error?.message || ""} ${details}`.toLowerCase();
   if ([408, 409, 429, 500, 502, 503, 504].includes(status)) return true;
+  if (/(empty planning result|did not return json|empty model|empty response|no output|空规划|空结果|空响应)/.test(message)) return true;
   if (!status) return /(abort|timeout|timed out|network|fetch failed|socket|bad gateway|gateway timeout)/.test(message);
   return false;
 }
@@ -3653,6 +7994,164 @@ function parsePromptFusion(text) {
   }
 }
 
+function normalizeCutoutCoordinate(value, axisSize = 0) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  const normalized = numeric > 1 && axisSize > 1 ? numeric / axisSize : numeric;
+  return clampNumber(normalized, 0, 1);
+}
+
+function normalizeCutoutPoint(point, imageWidth = 0, imageHeight = 0) {
+  const rawX = Array.isArray(point) ? point[0] : point?.x;
+  const rawY = Array.isArray(point) ? point[1] : point?.y;
+  const x = normalizeCutoutCoordinate(rawX, imageWidth);
+  const y = normalizeCutoutCoordinate(rawY, imageHeight);
+  return x === null || y === null ? null : [x, y];
+}
+
+function boundsFromCutoutPoints(points = []) {
+  const valid = points.filter((point) => Array.isArray(point) && point.length >= 2);
+  if (!valid.length) return null;
+  const xs = valid.map((point) => point[0]);
+  const ys = valid.map((point) => point[1]);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  const maxX = Math.max(...xs);
+  const maxY = Math.max(...ys);
+  return {
+    x: clampNumber(minX, 0, 1),
+    y: clampNumber(minY, 0, 1),
+    width: clampNumber(maxX - minX, 0, 1),
+    height: clampNumber(maxY - minY, 0, 1)
+  };
+}
+
+function normalizeCutoutBounds(bounds = {}, imageWidth = 0, imageHeight = 0) {
+  const x = normalizeCutoutCoordinate(bounds.x ?? bounds.left ?? bounds.x1, imageWidth);
+  const y = normalizeCutoutCoordinate(bounds.y ?? bounds.top ?? bounds.y1, imageHeight);
+  const rawWidth = bounds.width ?? (Number.isFinite(Number(bounds.x2)) && Number.isFinite(Number(bounds.x1)) ? Number(bounds.x2) - Number(bounds.x1) : null);
+  const rawHeight = bounds.height ?? (Number.isFinite(Number(bounds.y2)) && Number.isFinite(Number(bounds.y1)) ? Number(bounds.y2) - Number(bounds.y1) : null);
+  const width = normalizeCutoutCoordinate(rawWidth, imageWidth);
+  const height = normalizeCutoutCoordinate(rawHeight, imageHeight);
+  if (x === null || y === null || width === null || height === null) return null;
+  return {
+    x: clampNumber(x, 0, 1),
+    y: clampNumber(y, 0, 1),
+    width: clampNumber(width, 0.001, 1 - x),
+    height: clampNumber(height, 0.001, 1 - y)
+  };
+}
+
+function polygonFromCutoutBounds(bounds) {
+  if (!bounds) return [];
+  const x1 = bounds.x;
+  const y1 = bounds.y;
+  const x2 = clampNumber(bounds.x + bounds.width, 0, 1);
+  const y2 = clampNumber(bounds.y + bounds.height, 0, 1);
+  return [[x1, y1], [x2, y1], [x2, y2], [x1, y2]];
+}
+
+function normalizeAiCutoutAnalysis(value = {}, body = {}) {
+  const imageWidth = Number(body.imageWidth || body.primaryImage?.width || 0) || 0;
+  const imageHeight = Number(body.imageHeight || body.primaryImage?.height || 0) || 0;
+  const rawPolygons = Array.isArray(value.polygons)
+    ? value.polygons
+    : Array.isArray(value.foreground_polygons)
+      ? value.foreground_polygons
+      : Array.isArray(value.points)
+        ? [{ label: value.subject || "主体", points: value.points }]
+        : [];
+  const polygons = rawPolygons.slice(0, 6).map((polygon, index) => {
+    const rawPoints = Array.isArray(polygon) ? polygon : polygon?.points;
+    const points = Array.isArray(rawPoints)
+      ? rawPoints.map((point) => normalizeCutoutPoint(point, imageWidth, imageHeight)).filter(Boolean).slice(0, 80)
+      : [];
+    return {
+      label: String(polygon?.label || value.subject || `主体 ${index + 1}`),
+      points
+    };
+  }).filter((polygon) => polygon.points.length >= 3);
+  const explicitBounds = normalizeCutoutBounds(value.bounds || value.bounding_box || value.box || {}, imageWidth, imageHeight);
+  if (!polygons.length && explicitBounds) {
+    polygons.push({ label: String(value.subject || "主体"), points: polygonFromCutoutBounds(explicitBounds) });
+  }
+  const allPoints = polygons.flatMap((polygon) => polygon.points);
+  const bounds = explicitBounds || boundsFromCutoutPoints(allPoints) || { x: 0.1, y: 0.1, width: 0.8, height: 0.8 };
+  const holes = Array.isArray(value.holes)
+    ? value.holes.map((hole) => {
+        const rawPoints = Array.isArray(hole) ? hole : hole?.points;
+        return Array.isArray(rawPoints)
+          ? rawPoints.map((point) => normalizeCutoutPoint(point, imageWidth, imageHeight)).filter(Boolean).slice(0, 80)
+          : [];
+      }).filter((points) => points.length >= 3).slice(0, 6)
+    : [];
+  return {
+    subject: String(value.subject || value.subject_label || value.main_subject || "主体"),
+    summary: String(value.summary || value.reason || value.selection_reason || ""),
+    confidence: clampNumber(Number(value.confidence ?? value.score ?? 0.72) || 0.72, 0, 1),
+    bounds,
+    polygons,
+    holes,
+    source: "gpt-5.5-vision",
+    model: config.reasoningModel
+  };
+}
+
+async function analyzeCutoutSubject(body = {}) {
+  const primaryImage = body.primaryImage || body.image || {};
+  const dataUrl = String(primaryImage.dataUrl || body.dataUrl || "").trim();
+  if (!dataUrl.startsWith("data:image/")) {
+    const error = new Error("Missing image data for AI cutout analysis");
+    error.status = 400;
+    throw error;
+  }
+
+  const prompt = [
+    "You are a vision segmentation assistant for a design image editor.",
+    "Inspect the uploaded image and identify the single main visual subject that should be cut out from the background.",
+    "Return a coarse but useful subject silhouette, not a full-scene caption.",
+    "Coordinate rules:",
+    "- Use normalized coordinates from 0 to 1 relative to the full image.",
+    "- x grows left to right, y grows top to bottom.",
+    "- Provide one to six polygons. Each polygon should have 12 to 40 points when possible.",
+    "- Trace around the visible outer silhouette of the subject. Include protrusions, balconies, arms, furniture legs, plants, roof lines, product edges or other visible subject details.",
+    "- Do not include background sky, walls, floor, checkerboard transparency, empty canvas, UI, shadows, or large blank areas unless they are physically part of the subject.",
+    "- If the subject has holes, return them in holes as polygons.",
+    "Selection rule:",
+    "- Choose the dominant foreground object/product/person/building/furniture/space element a designer would naturally want as a transparent cutout.",
+    "- If the image is an interior or architecture scene, choose the main foreground built subject or object mass, not the whole rectangular image.",
+    "Return valid JSON only, no markdown, in this exact shape:",
+    JSON.stringify({
+      subject: "short Chinese subject label",
+      summary: "one sentence why this subject was selected",
+      confidence: 0.0,
+      bounds: { x: 0, y: 0, width: 1, height: 1 },
+      polygons: [
+        { label: "主体", points: [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]] }
+      ],
+      holes: []
+    })
+  ].join("\n");
+
+  const payload = {
+    model: config.reasoningModel,
+    input: [
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: prompt },
+          { type: "input_image", image_url: dataUrl }
+        ]
+      }
+    ],
+    max_output_tokens: 2200
+  };
+
+  const text = await openaiResponsesTextStream(payload, { timeoutMs: 180000, provider: "reasoning" });
+  const parsed = parseModelJson(text);
+  return normalizeAiCutoutAnalysis(parsed, body);
+}
+
 function buildFinalPromptGuard({ mode, requestedSize, quality, title }) {
   mode = normalizeRenderMode(mode);
   return [
@@ -3671,21 +8170,28 @@ function auditFinalPromptForMode({ mode, prompt }) {
   mode = normalizeRenderMode(mode);
   const text = String(prompt || "").toLowerCase();
   const checks = {
+    "plan-color": [
+      ["彩色平面图输出", /(colored floor plan|彩色平面|彩平|色彩平面)/i],
+      ["保持俯视二维", /(top-down|orthographic|2d|俯视|二维|正交)/i],
+      ["锁定原始布局", /(preserve|locked|保留|锁定).{0,120}(linework|layout|wall|room|opening|footprint|线稿|布局|墙|房间|开口|脚印)/i],
+      ["禁止3D透视", /(no|avoid|不要|禁止).{0,100}(3d|tilt|perspective|extrusion|eye-level|三维|倾斜|透视|挤出|人视角)/i]
+    ],
     "plan-axonometric": [
-      ["真实3D平面图输出", /(3d floor plan|3d平面|三维平面|轴测)/i],
+      ["彩色平面图输出", /(colored floor plan|彩色平面|彩平|色彩平面)/i],
       ["锁定原平面线条布局", /(locked|hard|preserve|保留|锁定).{0,140}(linework|layout|room|wall|opening|footprint|plan|线条|布局|房间|墙|开口|脚印)/i],
-      ["上帝视角/弱透视/轴测相机", /(orthographic|isometric|top-down|weak-perspective|上帝视角|弱透视|轴测)/i],
-      ["禁止人视角/改布局/二维彩平", /(no|avoid|不要|禁止).{0,160}(eye-level|human-eye|layout drift|moved|redesigned|flat 2d|colored plan|人视角|改布局|布局漂移|二维彩平)/i]
+      ["严格俯视二维", /(top-down|orthographic|2d|俯视|二维|正交)/i],
+      ["禁止3D透视/人视角/改布局", /(no|avoid|不要|禁止).{0,160}(3d|extrusion|tilt|perspective|eye-level|human-eye|layout drift|moved|redesigned|三维|挤出|倾斜|透视|人视角|改布局|布局漂移)/i]
+    ],
+    "plan-axonometric-view": [
+      ["轴测图输出", /(axonometric|isometric|axonometric view|轴测|3d floor plan|3d平面)/i],
+      ["锁定彩色平面图布局", /(locked|hard|preserve|保留|锁定).{0,140}(colored floor plan|layout|room|wall|opening|footprint|plan|线条|布局|房间|墙|开口|脚印|彩色平面)/i],
+      ["正交/弱透视/拖拽视角相机", /(orthographic|isometric|weak-perspective|dragged|view-angle|yaw|pitch|foreshortening|轴测|拖拽|视角)/i],
+      ["禁止人视角/改布局/二维平面", /(no|avoid|不要|禁止).{0,160}(eye-level|human-eye|layout drift|moved|redesigned|flat 2d|colored plan|人视角|改布局|布局漂移|二维平面)/i]
     ],
     "plan-render": [
       ["人视角效果图输出", /(eye-level|human-eye|effect render|效果图|人视角)/i],
       ["保留空间关系/选区", /(preserve|保留).{0,100}(spatial|circulation|selected|zone|空间|动线|选区|功能)/i],
       ["前中后景与材料灯光", /(foreground|midground|background|materials|lighting|前景|中景|背景|材料|灯光)/i]
-    ],
-    viewpoint: [
-      ["新机位人视角", /(new|marked|camera|standing point|eye-level|新视角|机位|站位|人视角)/i],
-      ["保留原空间设计语言", /(preserve|same|保留).{0,120}(source|spatial|structure|materials|lighting|furniture|原图|空间|结构|材料|灯光|家具)/i],
-      ["不生成UI标记人物", /(no|avoid|不要|禁止).{0,120}(ui|marker|person|human|figure|模型|标记|人物|人)/i]
     ],
     designseries: [
       ["统一系列DNA", /(series|coherent|same project|design dna|系列|统一|同一项目)/i],
@@ -3948,37 +8454,155 @@ function isImageCapabilityError(error) {
 }
 
 function normalizeRenderMode(mode) {
-  return mode === "floorplan" ? "plan-render" : (mode || "plan-render");
+  const value = String(mode || "").trim();
+  if (!value) return "plan-render";
+  if (value === "floorplan") return "plan-render";
+  if (value === "plan-viewer" || value === "plan-3d-view" || value === "plan-viewer-3d" || value === "floorplan-viewer") return "plan-axonometric";
+  if (value === "axonometric-view" || value === "floorplan-axonometric") return "plan-axonometric-view";
+  if (value === "design-logic" || value === "design-derivation-plan") return "design-derivation";
+  if (value === "360-panorama" || value === "panoramic" || value === "equirectangular") return "panorama";
+  if (value === "viewpoint" || value === "camera-viewpoint" || value === "view-transform") return "custom";
+  if (value === "white-model-3d" || value === "ai-3d-model" || value === "colored-3d-model" || value === "model-3d") return "image-modeling";
+  if (value === "colored-plan" || value === "color-plan" || value === "colored-floor-plan" || value === "color-floor-plan") return "plan-color";
+  return value;
 }
 
-const PLAN_TO_3D_FIXED_PROMPT = [
-  "FIXED PLAN-TO-3D FLOOR PLAN PROMPT:",
-  "Generate a realistic 3D floor plan from the uploaded black-and-white floor plan line drawing or colored floor plan.",
+function isPlanPaperRenderMode(mode) {
+  const normalized = normalizeRenderMode(mode);
+  return ["plan-axonometric", "plan-axonometric-view", "plan-render"].includes(normalized);
+}
+
+const PLAN_WORKFLOW_RECOMMENDATION = "Recommended workflow, advisory only: floor plan -> colored floor plan -> high-precision axonometric view -> selected axonometric region to eye-level effect render. This is a suggestion, not a forced chain; the current selected mode may still be executed directly.";
+
+const PLAN_TO_COLORED_PLAN_FIXED_PROMPT = [
+  "FIXED PLAN-TO-COLORED-FLOOR-PLAN PROMPT:",
+  "Generate a clean colored architectural floor plan from the uploaded black-and-white floor plan line drawing or existing plan.",
   "Treat the uploaded plan as locked base geometry, not as loose inspiration.",
-  "Do not move, delete, simplify, redraw, crop, rotate, add or remove any room, wall, opening, door swing, window, stair, fixed fixture or major furniture footprint.",
+  "Do not move, delete, simplify, redraw, add or remove any room, wall, opening, door swing, window, stair, fixed fixture or major furniture footprint.",
   "Preserve the original outer contour, wall linework/thickness, room shapes, room adjacency, circulation, zoning, visible labels/dimensions, fixed fixtures, main furniture footprints, relative scale and plan orientation.",
-  "Only extrude the existing 2D footprints into wall height, proportional furniture volumes, floor materials, wall finishes, subtle shadows and readable spatial depth.",
-  "Camera must be a complete orthographic or weak-perspective top-down/isometric cutaway 3D floor-plan view with the full plan visible and minimal distortion.",
-  "Final image must not be a flat 2D colored plan, not a human-eye interior render, not a redesigned layout, not a dramatic perspective scene and not a simplified new plan."
+  "Add only restrained semantic color fills, room/material/function zones, wet-area cues, circulation clarity, furniture color hierarchy and light flat-shadow readability.",
+  "Keep it as a flat colored plan surface. By default use strict top-down orthographic plan view; if a paper-drag / multi-angle view control is provided, present that same flat colored plan surface in the selected paper view.",
+  "Do not extrude, render wall height, create an axonometric wall model, create a human-eye render, redesign the layout or turn the result into a realistic 3D floor-plan model."
 ].join("\n");
+
+const PLAN_TO_AXONOMETRIC_VIEW_PROMPT = [
+  "FIXED COLORED-FLOOR-PLAN-TO-AXONOMETRIC PROMPT:",
+  "Generate a high-precision axonometric view from the uploaded colored floor plan, floor plan, or existing axonometric floor-plan reference.",
+  "Treat the uploaded colored floor plan as locked spatial geometry and semantic material/zoning source, not as loose inspiration.",
+  "Do not move, delete, simplify, redraw, add or remove any room, wall, opening, door swing, window, stair, fixed fixture or major furniture footprint; do not crop or rotate away from the supplied dragged view-angle reference when it exists.",
+  "Preserve the original outer contour, wall/opening/furniture footprints, room shapes, adjacency, circulation, zoning, visible labels/dimensions when useful, fixed fixtures, relative scale, plan orientation and material zones.",
+  "Only re-express the same locked plan geometry as a cleaner high-precision axonometric image: stable orthographic or weak-perspective projection, readable wall height, visible wall thickness, proportional furniture volumes, material clarity, crisp cut walls, controlled shadows, near/far scale and strong spatial depth.",
+  "Default camera is a standard architectural axonometric floor-plan view with weak 3D perspective depth: clear near/far scale, slight foreshortening, visible wall thickness and furniture volume while retaining axonometric discipline.",
+  "If a dragged paper view-angle reference image is provided, it overrides the default camera: match that reference image's yaw, pitch, crop, rotation, silhouette, foreshortening and near/far edge relationship while still producing a clean high-precision axonometric view in the same visible frame.",
+  "Final image must not be an eye-level interior render, not a flat 2D plan, not a redesigned layout, not a default-camera drift and not a decorative scene over geometry."
+].join("\n");
+
+const PLAN_TO_COLORED_FLOOR_PLAN_PROMPT = [
+  "FIXED PLAN-TO-COLORED-FLOOR-PLAN INTERMEDIATE PROMPT:",
+  "Generate a clean colored architectural floor plan from the uploaded black-and-white floor plan line drawing.",
+  "This is an intermediate semantic map for a later high-precision axonometric view, not the final axonometric or render output.",
+  "Keep a strict top-down orthographic plan view by default; if a dragged paper view control/reference is provided, use that same flat-paper yaw/tilt/crop without extruding, rendering wall height, or creating an eye-level scene.",
+  "Preserve the original outer contour, wall linework/thickness, room shapes, room adjacency, openings, door swings, windows, stairs, fixed fixtures, main furniture footprints, labels/dimensions when legible, relative scale and plan orientation exactly.",
+  "Add restrained color fills and material cues to clarify room functions, floors, walls, fixed furniture, loose furniture, planting, wet areas and circulation without hiding the original linework.",
+  "Use professional interior-plan coloring: light warm floors, neutral walls, subtle material zones, readable furniture colors and low-saturation accents.",
+  "Do not redraw, simplify, invent rooms, change furniture layout, remove labels, crop the plan, rotate the plan, add perspective shadows, or turn it into an eye-level render."
+].join("\n");
+
+function buildColoredFloorPlanPrompt({ brief = {}, intent = "", planPaperView = null, viewControlled = false } = {}) {
+  return [
+    PLAN_TO_COLORED_FLOOR_PLAN_PROMPT,
+    "",
+    "Recommended workflow step 1: floor plan -> colored floor plan.",
+    "Purpose of this intermediate: make room functions, furniture zones, wet areas, circulation, wall/door/window logic and material regions easier for the later axonometric step to understand.",
+    viewControlled
+      ? "The colored plan must remain an accurate flat 2D plan surface, but it should be presented in the selected dragged-paper camera/view. It must not already become a wall-height axonometric model."
+      : "The colored plan must remain an accurate top-down 2D plan. It must not already become the axonometric image.",
+    planPaperView
+      ? viewControlled
+        ? "Use the dragged camera angle only as a flat-paper presentation angle; do not extrude walls or create an eye-level scene."
+        : "A dragged camera angle may be used later, but ignore it for this intermediate: keep the colored plan top-down so it can serve as a clean semantic layout map."
+      : "",
+    `Project: ${brief.projectName || "spatial design project"}.`,
+    `Space type: ${brief.spaceType || "unspecified"}. Area: ${brief.area || "unspecified"}.`,
+    `Designer notes: ${intent || brief.constraints || "lock the uploaded plan layout and clarify it with color only"}.`,
+    viewControlled
+      ? "Output only the colored floor plan in the selected paper view on a clean neutral background; no UI, no arrows, no mockup frame, no watermark."
+      : "Output only the colored floor plan on a clean neutral background; no UI, no arrows, no mockup frame, no watermark."
+  ].filter(Boolean).join("\n");
+}
+
+function planColorPipelinePromptLine(coloredPlanRecord = null, { hasViewAngleReference = true } = {}) {
+  if (!coloredPlanRecord?.url) return "";
+  const coloredIndex = hasViewAngleReference ? "2" : "1";
+  const originalIndex = hasViewAngleReference ? "3" : "2";
+  return [
+    "TWO_STAGE_PLAN_PIPELINE:",
+    "- The final axonometric view should use the colored floor-plan intermediate as the semantic/material map.",
+    `- Input image ${coloredIndex} is the generated colored floor plan from step 1. It locks room functions, material zones, furniture zones, wet areas and circulation readability.`,
+    `- Input image ${originalIndex} is the original black-and-white plan and remains available only to verify linework and fine detail.`,
+    "- Do not ignore the colored intermediate and jump directly from black-and-white linework to a generic axonometric view."
+  ].join("\n");
+}
+
+function isColoredPlanInput(primary = {}, body = {}) {
+  const analysis = primary.inputAnalysis || body.inputAnalysis || body.primaryImageAnalysis || {};
+  const text = [
+    primary.sourceType,
+    primary.stepMode,
+    analysis.key,
+    analysis.sourceType,
+    analysis.stepMode,
+    analysis.label,
+    analysis.reason,
+    primary.name
+  ].filter(Boolean).join(" ").toLowerCase();
+  return /(^|[^a-z])(colored-plan|plan-color|color-plan)([^a-z]|$)|彩平|彩色平面|colored.?floor.?plan|colored.?plan|color.?floor.?plan/i.test(text);
+}
+
+function needsPlanColorIntermediate(primary = {}, body = {}) {
+  if (!primary?.dataUrl) return false;
+  if (body.planColorPipeline === true) return true;
+  if (body.planColorPipeline === false) return false;
+  if (isColoredPlanInput(primary, body)) return false;
+  const analysis = primary.inputAnalysis || body.inputAnalysis || body.primaryImageAnalysis || {};
+  const text = [
+    primary.sourceType,
+    analysis.key,
+    analysis.label,
+    analysis.reason,
+    primary.name
+  ].filter(Boolean).join(" ").toLowerCase();
+  if (/line-plan|cad-screenshot|black.?white|b.?w|黑白|线稿|施工图|图纸线稿/.test(text)) return true;
+  return true;
+}
 
 function planWorkflowPromptConfig(mode) {
   mode = normalizeRenderMode(mode);
   const map = {
     "plan-axonometric": {
       step: 1,
-      label: "平面图转3D平面图",
+      label: "平面图转彩色平面图",
       input: "black-and-white architectural floor plan line drawing or colored architectural floor plan",
-      output: "realistic 3D floor plan, orthographic/isometric top-down cutaway",
+      output: "clean colored architectural floor plan intermediate, default top-down orthographic view or selected dragged-paper view when provided",
       preserve: "the original outer contour, wall linework/thickness, room shapes, room adjacency, openings, door swings, windows, stairs, circulation, zoning, visible labels/dimensions, fixed fixtures, main furniture footprints, relative scale and plan orientation exactly",
-      transform: "extrude only the existing 2D footprints into realistic cutaway wall height, proportional furniture volumes, floor materials, wall finishes, subtle shadows and readable spatial depth",
-      camera: "complete orthographic or weak-perspective top-down/isometric 3D floor-plan cutaway, full plan visible, minimal distortion",
-      avoid: "no moved/deleted/simplified/redrawn rooms, no moved walls/openings/door swings, no eye-level render, no unrelated rotated/cropped perspective, no flat 2D-only colored plan, no layout drift, no invented room arrangement"
+      transform: "add restrained semantic color fills, room/function/material zones, wet-area cues, circulation readability and furniture color hierarchy without changing linework",
+      camera: "strict top-down orthographic 2D plan camera by default; when a dragged paper view-angle reference is attached, match that same flat-paper yaw/pitch/crop/foreshortening without wall extrusion",
+      avoid: "no moved/deleted/simplified/redrawn rooms, no moved walls/openings/door swings, no eye-level render, no axonometric wall model, no 3D extrusion, no unrelated perspective, no layout drift, no invented room arrangement"
+    },
+    "plan-axonometric-view": {
+      step: 2,
+      label: "彩色平面图转轴测图",
+      input: "colored architectural floor plan, clean floor plan, axonometric floor-plan reference or dragged view-angle base",
+      output: "high-precision axonometric floor-plan view with 3D perspective depth",
+      preserve: "the original outer contour, wall/opening/furniture footprints, room adjacency, circulation, cut-wall logic, visible labels/dimensions when useful, fixed fixtures, relative scale, plan orientation and material zones",
+      transform: "re-express the locked plan geometry as a cleaner high-precision axonometric view with readable wall height, visible wall thickness, proportional furniture volumes, floor/wall material clarity, subtle shadows, near/far depth, spatial hierarchy and a controlled 3D perspective impression",
+      camera: "orthographic or weak-perspective axonometric camera with controlled 3D perspective depth; when a dragged paper view-angle reference is attached, match that reference's yaw/pitch/crop/rotation/silhouette/foreshortening instead of a default isometric angle; otherwise keep the full visible plan readable with minimal distortion",
+      avoid: "no moved/deleted/simplified/redrawn rooms, no moved walls/openings/door swings, no eye-level render, no flat 2D-only plan, no layout drift, no default-camera drift, no invented room arrangement"
     },
     "plan-render": {
-      step: 2,
-      label: "3D平面图转效果图",
-      input: "3D floor plan, selected 3D-floor-plan region, or legacy plan-based spatial reference when explicitly provided",
+      step: 3,
+      label: "轴测图转效果图",
+      input: "axonometric view, selected axonometric region, or legacy plan-based spatial reference when explicitly provided",
       output: "final human-eye architecture/interior effect render",
       preserve: "spatial relationship, selected zone, circulation, functional logic, main furniture or display arrangement, room adjacency and scale cues",
       transform: "translate only the selected or inferred target zone into an eye-level scene with camera position, foreground, midground, background, furniture systems, display objects, wall/ceiling/floor materials, lighting fixtures and controlled atmosphere",
@@ -3996,10 +8620,16 @@ function finalOutputRuleForMode(mode) {
     return `The final result must be ${planConfig.output}; camera rule: ${planConfig.camera}; avoid: ${planConfig.avoid}.`;
   }
   if (normalizedMode === "plan-axonometric") {
-    return "The final result must be a realistic 3D floor plan: orthographic or weak-perspective top-down cutaway, visible wall height and furniture volumes, plan-faithful layout; not an eye-level render and not a flat 2D colored plan.";
+    return "The final result must be a clean colored architectural floor plan: default top-down orthographic view, or the selected dragged-paper flat view when a paper view reference is attached; preserve plan-faithful layout and restrained material/function color zones; not a 3D extrusion, not an axonometric wall model and not an eye-level render.";
+  }
+  if (normalizedMode === "panorama") {
+    return "The final result must be a 2:1 equirectangular 360-degree panorama with seamless horizontal wrap, stable horizon and continuous surrounding space; not a normal single-camera wide-angle render, not a cropped scene and not a visible seam.";
   }
   if (normalizedMode === "materialboard") {
     return "The final result must be a polished visual material/color/FF&E board, not a single eye-level spatial render.";
+  }
+  if (normalizedMode === "custom") {
+    return "The final result must match the artifact type implied by the latest user request, such as render, board, product/mockup, UI/mockup, poster, diagram, edit, outpaint, facade, concept image or design series; do not force an architectural/interior render unless the request is clearly spatial.";
   }
   return "The final result must be a finished architectural/interior visualization, not a diagram, not a floor plan, not a UI screenshot.";
 }
@@ -4054,25 +8684,39 @@ function renderModeKnowledge(mode) {
       transform: "Generate the most useful artifact for the request: render, concept image, design board, material study, design series, edit, outpaint, facade, product scene, diagram-like visual or another clearly named visual output."
     },
     "plan-axonometric": {
-      label: "平面图转3D平面图",
-      purpose: "Use the fixed plan-to-3D prompt: treat the black-and-white floor plan or colored plan as locked base geometry and create a realistic 3D floor plan.",
-      referenceFocus: "Use references only for material language, color and presentation quality after the input plan layout is locked; references must never override walls, openings or furniture footprints.",
+      label: "平面图转彩色平面图",
+      purpose: "Use the fixed plan-to-colored-floor-plan prompt: treat the black-and-white floor plan or existing plan as locked base geometry and create a clean colored semantic floor plan for later axonometric work.",
+      referenceFocus: "Use references only for restrained material/color zoning after the input plan layout is locked; references must never override walls, openings or furniture footprints.",
       preserve: "Preserve the original outer contour, wall linework/thickness, room shapes, adjacency, openings, door swings, windows, stairs, circulation, visible labels/dimensions, fixed fixtures, main furniture footprints, relative scale and plan orientation exactly.",
-      transform: "Only extrude the original 2D footprints into a realistic top-down/isometric 3D floor plan with wall height, proportional furniture volumes, floor/wall materials, subtle shadows and readable spatial depth."
+      transform: "Only add colored room/function/material zones, furniture color hierarchy, wet-area cues and circulation readability while keeping a strict top-down orthographic 2D plan."
+    },
+    "plan-axonometric-view": {
+      label: "彩色平面图转轴测图",
+      purpose: "Use the fixed colored-plan-to-axonometric prompt: treat the uploaded colored floor plan as locked spatial geometry and semantic zoning, then re-express it as a high-precision axonometric view with 3D perspective depth; when a dragged paper view-angle reference is provided, match that camera angle.",
+      referenceFocus: "Use references only for presentation quality, material clarity and readability after the colored floor-plan geometry is locked; references must never override walls, openings, furniture footprints or cut-wall logic.",
+      preserve: "Preserve the visible outer contour, wall/opening/furniture footprints, room shapes, adjacency, circulation, cut-wall logic, labels/dimensions when useful, fixed fixtures, relative scale and plan orientation exactly.",
+      transform: "Only re-express the original colored floor-plan geometry into a clearer high-precision axonometric view with readable wall height, proportional furniture volumes, floor/wall materials, subtle shadows, near/far depth and readable spatial hierarchy, viewed from the dragged angle when supplied."
     },
     "plan-render": {
-      label: "3D平面图转效果图",
-      purpose: "Generate the final eye-level architecture/interior effect render from a selected 3D floor-plan zone or, when no selection exists, from the clearest inferred functional zone.",
-      referenceFocus: "Use references for materials, lighting, furniture, display language, palette and atmosphere, without overriding the 3D floor-plan spatial guide or target-zone location.",
+      label: "轴测图转效果图",
+      purpose: "Generate the final eye-level architecture/interior effect render from a selected axonometric zone or, when no selection exists, from the clearest inferred functional zone.",
+      referenceFocus: "Use references for materials, lighting, furniture, display language, palette and atmosphere, without overriding the axonometric spatial guide or target-zone location.",
       preserve: "Preserve the input image's spatial relationship, selected or inferred target zone, circulation, functional logic, key furniture/display arrangement, room adjacency and scale cues.",
       transform: "Translate only that target zone into a realistic human-eye render with a believable camera position, detailed foreground/midground/background, materials, lighting and presentation quality."
     },
-    viewpoint: {
-      label: "视角转换",
-      purpose: "Treat the input image as an enterable spatial scene; use the user-marked standing point, image-depth coordinate, yaw direction and shift intensity to generate a new eye-level view from that position.",
-      referenceFocus: "Use references only to support material, lighting, furniture, display language and atmosphere; never override the source image's spatial identity, design language, openings, major structure or marker-driven camera logic.",
-      preserve: "Preserve the source image's spatial identity, main structure, openings, material system, lighting direction, furniture/display logic, scale cues and design atmosphere.",
-      transform: "Change camera position and visible field only: infer walkable floor area, eye height, lens, view direction, foreground/midground/background and adjacent-space continuity from x/y/yaw/intensity marker data."
+    panorama: {
+      label: "全景图生成",
+      purpose: "Generate a 2:1 equirectangular 360-degree panorama that can be viewed in Pannellum or similar panorama viewers.",
+      referenceFocus: "Use references to infer spatial continuity, eye level, material system, lighting mood and wrap-safe composition; they must not be treated as single-view camera references.",
+      preserve: "Preserve spatial continuity, major openings, ceiling/floor logic, horizon stability, material language and the sense of one continuous surround environment.",
+      transform: "Expand the scene into a seamless 360-degree panorama with wrap-safe left/right edges, stable horizon and continuous architecture or interior environment."
+    },
+    "plan-color": {
+      label: "彩色平面图中间稿",
+      purpose: "Convert a black-and-white floor plan into a top-down colored semantic floor plan as an intermediate map for later axonometric generation.",
+      referenceFocus: "No style-reference override; the uploaded line drawing is the hard layout source.",
+      preserve: "Preserve outer contour, walls, openings, doors, windows, stairs, labels, fixtures, furniture footprints, room adjacency, relative scale and plan orientation exactly.",
+      transform: "Add flat restrained color fills and material/function zones only; keep top-down 2D plan grammar."
     },
     photo: {
       label: "现场图转效果图",
@@ -4189,28 +8833,36 @@ function modeOptimizationPlaybook(mode) {
       "- Name the chosen output type in the final prompt so the image model does not drift into a generic interior render."
     ],
     "plan-axonometric": [
-      "Mode optimization - floor plan to realistic 3D floor plan:",
-      "- Use the fixed plan-to-3D prompt. Treat the uploaded floor plan as locked base geometry, not as loose inspiration.",
+      "Mode optimization - floor plan to colored floor plan:",
+      "- Use the fixed plan-to-colored-floor-plan prompt. Treat the uploaded floor plan as locked base geometry, not as loose inspiration.",
       "- Preserve outer contour, wall linework/thickness, room shapes, adjacency, openings, door swings, windows, stairs, circulation, visible labels/dimensions, fixed fixtures and main furniture footprints.",
-      "- Use an orthographic or weak-perspective high oblique/isometric top-down camera with the full plan visible and minimal distortion.",
-      "- Only extrude existing footprints into wall height, proportional furniture volumes, floor/wall materials, subtle shadows and spatial depth.",
-      "- Reject any moved wall/opening/furniture, added or missing room, cropped plan, human-eye render, flat 2D colored plan or redesigned layout."
+      "- Keep a strict top-down orthographic plan camera by default; when a dragged paper view is attached, keep that same flat-paper yaw/tilt/crop without extrusion.",
+      "- Only add colored room/function/material zones, wet-area cues, furniture color hierarchy and circulation readability.",
+      "- Reject any moved wall/opening/furniture, added or missing room, cropped plan, human-eye render, axonometric view, 3D extrusion or redesigned layout."
+    ],
+    "plan-axonometric-view": [
+      "Mode optimization - colored floor plan to high-precision axonometric view:",
+      "- Use the fixed colored-plan-to-axonometric prompt. Treat the uploaded colored floor plan as locked spatial geometry and semantic zoning, not as loose inspiration.",
+      "- Preserve wall/opening/furniture footprints, room shapes, adjacency, circulation, cut-wall logic, visible labels/dimensions when useful, fixed fixtures and material zones.",
+      "- Use an orthographic or weak-perspective axonometric camera by default; if a dragged paper view-angle reference is attached, match that reference's yaw, pitch, foreshortening and visible outline instead.",
+      "- Add high-precision axonometric depth: readable wall height, proportional furniture volumes, floor/wall materials, subtle shadows, near/far scale and crisp spatial hierarchy.",
+      "- Reject eye-level render, flat 2D plan, cropped or redrawn layout, moved wall/opening/furniture and default-camera drift."
     ],
     "plan-render": [
-      "Mode optimization - 3D floor plan / plan guide to final effect render:",
-      "- This is step 2 of the current floor-plan workflow: 3D floor plan or selected 3D-plan zone to finished human-eye spatial render.",
+      "Mode optimization - axonometric guide to final effect render:",
+      "- This is step 3 of the current floor-plan workflow: axonometric view or selected axonometric zone to finished human-eye spatial render.",
       "- Use the selected region as the target zone when present; without a selection, infer one clear functional zone and state why it was chosen.",
       "- Preserve room relationships, target-zone location, circulation, adjacency, scale cues and main display/furniture logic.",
       "- Improve success rate by naming camera standing point, view direction, foreground, midground, background, furniture systems, materials, fixtures, lighting and clutter limits.",
-      "- The output must make it clear which area of the 3D floor plan it represents; avoid full-plan views and leftover diagram symbols."
+      "- The output must make it clear which area of the axonometric guide it represents; avoid full-plan views and leftover diagram symbols."
     ],
-    viewpoint: [
-      "Mode optimization - marked viewpoint transformation:",
-      "- Treat the source image as a coherent spatial scene, not as a style-only reference.",
-      "- The marker coordinates define camera standing point; yaw defines left/right viewing direction. The UI marker itself must not appear in the image.",
-      "- Preserve the source structure, openings, material system, lighting direction, furniture/display logic, scale and design atmosphere.",
-      "- Change only camera position and visible field; infer foreground, midground, background and adjacent-space continuity from the marked point.",
-      "- Output a new eye-level view, not the original camera, not a floor plan, not a bird's-eye view and not a model viewport."
+    panorama: [
+      "Mode optimization - 360 panorama generation:",
+      "- Output must be a 2:1 equirectangular panorama for web panorama viewing, not a standard wide-angle or single-camera render.",
+      "- Keep the horizon level and continuous; the left and right image edges must wrap seamlessly without visible stitch marks.",
+      "- Define viewer eye height, full-surround spatial logic, continuous ceiling/floor/wall planes, and consistent material scale around the entire environment.",
+      "- If references exist, use them for spatial language, materials, lighting and atmosphere, then expand them into a coherent surround scene instead of copying one camera angle.",
+      "- Avoid fisheye single frames, duplicated doors/windows at the seam, warped verticals, pinched zenith/nadir poles, black borders, labels, UI and watermarks."
     ],
     cad: [
       "Mode optimization - plan image to CAD:",
@@ -4476,16 +9128,40 @@ function gptImage2CraftPrinciples({ mode } = {}) {
 
 function promptContractControlLines(mode) {
   mode = normalizeRenderMode(mode);
+  if (mode === "custom") {
+    return [
+      "8) ARTIFACT DECISION: name the exact artifact implied by the latest user request before adding visual details.",
+      "9) MODE BOUNDARY: this is open custom generation; do not silently convert product, UI, poster, diagram, board, logo, composite or edit requests into a generic spatial render.",
+      "10) PRESERVE: if a primary image exists, preserve only the subject, composition, structure, text, layout or identity the requested artifact depends on.",
+      "11) TRANSFORM: apply only the operation the user asked for: generate, edit, expand, mock up, diagram, board, product scene, facade, concept image or spatial render.",
+      "12) ARTIFACT GRAMMAR: use the correct grammar for the chosen artifact, such as type hierarchy for posters, component layout for UI, samples for boards, material/contact shadow for products or camera/lens for renders.",
+      "13) REFERENCES: read references as evidence and quality direction; do not copy exact compositions, brands, watermarks or accidental artifacts.",
+      "14) QUALITY: crisp geometry or layout, readable hierarchy, clean silhouette, believable material or interface behavior and professional finish for the chosen artifact.",
+      "15) AVOID: no hidden workflow drift, no forced floor plan/render language, no extra slogans/text, no logos/watermarks and no unrelated narrative objects."
+    ];
+  }
   if (mode === "plan-axonometric") {
     return [
       "8) LOCKED PLAN GEOMETRY: preserve outer contour, wall linework/thickness, room shapes, room adjacency, openings, door swings, windows, stairs, circulation, visible labels/dimensions, fixed fixtures, main furniture footprints, relative scale and plan orientation.",
-      "9) CAMERA: complete orthographic or weak-perspective top-down/isometric 3D floor-plan cutaway; full plan visible; no crop, no rotation change, no human-eye camera.",
-      "10) MATERIALS: add believable floor, wall, furniture and built-in material cues only on the original locked footprints.",
-      "11) LIGHTING: clean even render lighting that clarifies volumes; subtle shadows only; avoid dramatic eye-level lighting or strong sun glare.",
+      "9) CAMERA: strict top-down orthographic colored floor-plan camera by default; if a dragged paper view is attached, match that flat-paper yaw/tilt/crop, with no extrusion and no human-eye camera.",
+      "10) MATERIALS: add restrained color/material/function zones only on the original locked footprints.",
+      "11) LIGHTING: use flat plan readability and very subtle shadow cues only; avoid volumetric render lighting.",
       "12) PALETTE: restrained coordinated material palette that supports plan readability without hiding the original layout.",
+      "13) DETAIL DENSITY: enough colored furniture, fixtures and surface zones to read scale, but no clutter or new objects that alter circulation.",
+      "14) QUALITY: clean colored floor plan intermediate, stable geometry, plan-faithful layout, readable room/material/function zones and no layout drift.",
+      "15) AVOID: no moved walls/openings/furniture, no added or missing rooms, no simplified/redesigned plan, no 3D extrusion, no axonometric wall model, no final eye-level render, no unrelated perspective."
+    ];
+  }
+  if (mode === "plan-axonometric-view") {
+    return [
+      "8) LOCKED COLORED FLOOR-PLAN GEOMETRY: preserve outer contour, wall/opening/furniture footprints, room shapes, room adjacency, circulation, cut-wall logic, visible labels/dimensions when useful, fixed fixtures, relative scale, material zones and plan orientation.",
+      "9) CAMERA: orthographic or weak-perspective axonometric floor-plan view with controlled 3D perspective depth; no human-eye camera. If a dragged paper view-angle reference is attached, its yaw, pitch, crop, silhouette, rotation, foreshortening and near/far edge scale override the default isometric angle; otherwise keep the complete visible plan readable.",
+      "10) MATERIALS: keep believable floor, wall, furniture and built-in material cues on the original locked footprints.",
+      "11) LIGHTING: clean even render lighting that clarifies volumes; subtle shadows only; avoid dramatic eye-level lighting or strong sun glare.",
+      "12) PALETTE: restrained coordinated material palette that supports axonometric readability without hiding the original structure.",
       "13) DETAIL DENSITY: enough proportional furniture volume, fixtures and surface detail to read scale, but no clutter or new objects that alter circulation.",
-      "14) QUALITY: realistic 3D floor plan, crisp cut walls, readable wall height, stable geometry, plan-faithful layout and no layout drift.",
-      "15) AVOID: no moved walls/openings/furniture, no added or missing rooms, no simplified/redesigned plan, no flat 2D-only plan, no final eye-level render, no rotated unrelated perspective."
+      "14) QUALITY: high-precision axonometric floor-plan view, crisp cut walls, stable projected footprint, readable wall height, controlled near/far depth and no layout drift.",
+      "15) AVOID: no moved walls/openings/furniture, no added or missing rooms, no simplified/redesigned plan, no flat 2D-only plan, no final eye-level render and no default-camera drift."
     ];
   }
   if (mode === "materialboard") {
@@ -4514,14 +9190,26 @@ function promptContractControlLines(mode) {
   }
   if (mode === "plan-render") {
     return [
-      "8) TARGET ZONE: use the selected red-box area when present; otherwise infer one clear functional zone from the 3D floor plan and make that source area explicit.",
+      "8) TARGET ZONE: use the selected red-box area when present; otherwise infer one clear functional zone from the axonometric guide and make that source area explicit.",
       "9) CAMERA: human-eye architectural/interior camera from a believable standing point inside or just outside the target zone; no full-plan or top-down camera.",
-      "10) SPATIAL FIDELITY: preserve room adjacency, circulation, openings, major furniture/display logic and scale cues from the 3D floor-plan guide.",
+      "10) SPATIAL FIDELITY: preserve room adjacency, circulation, openings, major furniture/display logic and scale cues from the axonometric guide.",
       "11) SCENE GRAMMAR: translate the zone into foreground, midground and background with clear view direction and depth.",
       "12) MATERIALS: use references for finish language only after target-zone geometry is stable.",
       "13) LIGHTING: controlled render lighting that clarifies the selected space and does not conflict with visible openings.",
       "14) QUALITY: realistic client-presentation effect render with crisp geometry and no plan-symbol residue.",
       "15) AVOID: no blueprint strokes, no plan labels, no diagram symbols, no unclear source zone, no copied reference room, no distorted perspective."
+    ];
+  }
+  if (mode === "panorama") {
+    return [
+      "8) PANORAMA FORMAT: output a 2:1 equirectangular 360-degree panorama for panorama viewers.",
+      "9) CAMERA: maintain a stable eye-level or intentionally stated viewpoint with full surround continuity; do not render a normal single-view wide-angle frame.",
+      "10) SPATIAL CONTINUITY: wrap the room or environment continuously around the viewer with seamless left/right edges and a level horizon.",
+      "11) MATERIALS: preserve coherent material scale and edge logic all around the surround space.",
+      "12) LIGHTING: keep lighting direction, exposure and atmosphere continuous across the full 360-degree wrap.",
+      "13) DETAIL DENSITY: enough contextual detail to read the environment from every direction, but no duplicated seam objects or accidental repeated doors/windows.",
+      "14) QUALITY: seamless panorama with stable horizon, no stitch seam, no pinched poles, no black borders and no cropped normal camera look.",
+      "15) AVOID: no fisheye single frame, no standard wide render, no visible stitch lines, no UI, no text overlays."
     ];
   }
   if (mode === "cadrender") {
@@ -4658,8 +9346,17 @@ function promptContractControlLines(mode) {
 
 function requiredVisualControlsForMode(mode) {
   mode = normalizeRenderMode(mode);
+  if (mode === "custom") {
+    return "Required visual controls: identify the requested artifact type first, then set the relevant controls for that artifact. Use layout and typography controls for posters/UI/diagrams, material and shadow controls for products/boards, camera and perspective controls for renders, and preserve/transform boundaries that match the user request; avoid forcing a spatial-render grammar when the artifact is not spatial.";
+  }
+  if (mode === "plan-color") {
+    return "Required visual controls: strict top-down orthographic colored floor plan, locked original linework/layout, preserved labels/dimensions where legible, low-saturation material/function color fills, readable furniture/wet-area/circulation zones and avoid-lines for no 3D/no tilt/no perspective/no layout drift.";
+  }
   if (mode === "plan-axonometric") {
-    return "Required visual controls: locked input plan invariants, original linework/layout preservation, orthographic/weak-perspective 3D floor-plan camera, full-plan visibility, cut-wall height, proportional furniture volumes, material cues, even render lighting and avoid-lines for no moved walls/no missing rooms/no eye-level view/no layout drift.";
+    return "Required visual controls: locked input plan invariants, original linework/layout preservation, default top-down or attached dragged-paper colored-plan camera, room/function/material color zones, wet-area and circulation readability, preserved labels/dimensions where legible and avoid-lines for no moved walls/no missing rooms/no 3D extrusion/no axonometric wall model/no eye-level view/no layout drift.";
+  }
+  if (mode === "plan-axonometric-view") {
+    return "Required visual controls: locked colored floor-plan invariants, wall/opening/furniture footprint preservation, orthographic/weak-perspective axonometric camera, dragged view-angle reference matching when provided, stable projected footprint, readable wall height, proportional furniture volumes, material cues, controlled near/far 3D perspective depth, even render lighting and avoid-lines for no moved walls/no missing rooms/no eye-level view/no layout drift/no default-camera drift.";
   }
   if (mode === "materialboard") {
     return "Required visual controls: board composition, material samples, texture close-ups, color swatches, lighting mood, FF&E references, visual hierarchy and avoid-lines for no text/logos/watermarks.";
@@ -4668,10 +9365,10 @@ function requiredVisualControlsForMode(mode) {
     return "Required visual controls: project DNA, spatial sequence, field/function matrix, per-image role, adjacency cues, recurring signatures, shared material system, shared palette, shared lighting logic, camera rhythm, render finish and avoid-lines for no unrelated style drift/no same-angle variations/no repeated hero composition.";
   }
   if (mode === "plan-render") {
-    return "Required visual controls: target zone selection or inferred functional zone, explicit source-area note, believable eye-level camera standing point, preserved 3D floor-plan adjacency/circulation/scale cues, foreground/midground/background, material and lighting system, and avoid-lines for no full-plan view/no plan symbols/no unclear source zone.";
+    return "Required visual controls: target zone selection or inferred functional zone, explicit source-area note, believable eye-level camera standing point, preserved axonometric adjacency/circulation/scale cues, foreground/midground/background, material and lighting system, and avoid-lines for no full-plan view/no plan symbols/no unclear source zone.";
   }
-  if (mode === "viewpoint") {
-    return "Required visual controls: marked camera standing point coordinates, yaw/view direction, eye-level camera height, changed camera position, preserved source-space structure/materials/lighting/furniture logic, inferred foreground/midground/background and avoid-lines for no UI marker/no visible person/no copied original camera/no bird's-eye view.";
+  if (mode === "panorama") {
+    return "Required visual controls: 2:1 equirectangular panorama, stable horizon, seamless left/right wrap, continuous 360-degree spatial logic, consistent material scale around the full surround, and avoid-lines for no fisheye single frame/no visible stitch seam/no black borders/no standard wide render.";
   }
   if (mode === "cadrender") {
     return "Required visual controls: CAD linework invariants, axes/walls/openings/scale, inferred height, camera, material system, lighting and avoid-lines for no visible CAD strokes/no layout drift.";
@@ -4712,11 +9409,13 @@ function promptEngineV2Contract({ mode, brief = {}, intent = "", referenceCount 
   const artifact = mode === "materialboard"
     ? "professional visual material board"
     : mode === "plan-axonometric"
-    ? "realistic 3D floor plan"
+    ? "clean colored architectural floor plan"
+    : mode === "plan-axonometric-view"
+    ? "high-precision axonometric view of the colored floor plan"
     : mode === "plan-render"
     ? "final eye-level architecture/interior effect render"
-    : mode === "viewpoint"
-    ? "new eye-level view from the marked camera standing point"
+    : mode === "panorama"
+    ? "2:1 equirectangular 360-degree panorama"
     : mode === "designseries"
     ? "single finished scene belonging to a coherent design series"
     : mode === "custom"
@@ -4889,14 +9588,23 @@ function primaryInstructionForCustomPrompt(referenceCount) {
 
 function outputInstructionForMode(mode) {
   mode = normalizeRenderMode(mode);
+  if (mode === "custom") {
+    return "Output must match the artifact type implied by the latest user request, such as render, product/mockup, UI/mockup, poster, diagram, board, edit, outpaint, facade, concept image or design series; do not force a spatial render unless the request is clearly spatial.";
+  }
+  if (mode === "plan-color") {
+    return "Output must be a clean top-down colored architectural floor plan intermediate: preserve the uploaded linework layout exactly, add flat material/function color zones, and do not create 3D, tilt, perspective, wall extrusion or an eye-level render.";
+  }
   if (mode === "plan-axonometric") {
-    return "Output must be a realistic 3D floor plan from the locked uploaded plan geometry: complete orthographic/isometric top-down cutaway, full plan visible, preserved linework/layout relationships, visible wall height, proportional furniture volumes and materials; not a flat 2D plan, not an eye-level render and not a redesigned layout.";
+    return "Output must be a clean colored architectural floor plan from the locked uploaded plan geometry: default top-down orthographic view, or the selected dragged-paper flat view when a paper view reference is attached; preserve linework/layout relationships, restrained semantic material/function color zones and readable furniture/wet-area/circulation zones; not a 3D extrusion, not an axonometric wall model, not an eye-level render and not a redesigned layout.";
+  }
+  if (mode === "plan-axonometric-view") {
+    return "Output must be a high-precision axonometric view from the locked uploaded colored floor-plan geometry: orthographic/weak-perspective view with controlled 3D perspective depth, preserved visible crop range, preserved wall/opening/furniture footprints, readable wall height, proportional furniture volumes and materials; use the dragged paper view-angle reference when attached instead of a default isometric camera; not a flat 2D plan, not an eye-level render and not a redesigned layout.";
   }
   if (mode === "plan-render") {
-    return "Output must be a final human-eye architecture/interior effect render derived from the selected or inferred zone of a 3D floor plan or plan-based spatial guide; it must be clear which area it represents; not a diagram, not a floor plan, not a collage.";
+    return "Output must be a final human-eye architecture/interior effect render derived from the selected or inferred zone of an axonometric view or plan-based spatial guide; it must be clear which area it represents; not a diagram, not a floor plan, not a collage.";
   }
-  if (mode === "viewpoint") {
-    return "Output must be a new eye-level architecture/interior view from the marked camera standing point in the source image: same spatial scene and design language, changed camera position and visible field; not the original camera copied, not a floor plan, not a bird's-eye view, not a UI screenshot and no visible marker/person.";
+  if (mode === "panorama") {
+    return "Output must be a 2:1 equirectangular 360-degree panorama with stable horizon, seamless horizontal wrap and continuous surrounding space for Pannellum-style viewing; not a normal single-camera wide-angle render, not a cropped scene and not a visible seam.";
   }
   if (mode === "materialboard") {
     return "Output must be a visual board/collage with material samples, color swatches, lighting mood and furniture references.";
@@ -4942,9 +9650,11 @@ function outputInstructionForMode(mode) {
 
 function creationInstructionForMode(mode) {
   mode = normalizeRenderMode(mode);
-  if (mode === "plan-axonometric") return "Create a polished realistic 3D floor plan for a professional spatial designer.";
-  if (mode === "plan-render") return "Create a realistic human-eye architecture/interior effect render from the provided 3D floor plan or plan-based spatial guide.";
-  if (mode === "viewpoint") return "Create a new realistic eye-level architecture/interior view from the user-marked camera standing point in the provided spatial source image.";
+  if (mode === "plan-color") return "Create a clean top-down colored architectural floor plan intermediate from the uploaded black-and-white plan.";
+  if (mode === "plan-axonometric") return "Create a clean colored architectural floor plan intermediate for a professional spatial designer.";
+  if (mode === "plan-axonometric-view") return "Create a polished high-precision axonometric view from the provided colored floor plan for a professional spatial designer.";
+  if (mode === "plan-render") return "Create a realistic human-eye architecture/interior effect render from the provided axonometric view or plan-based spatial guide.";
+  if (mode === "panorama") return "Create a seamless 2:1 equirectangular 360-degree panorama suitable for Pannellum-style viewing.";
   if (mode === "materialboard") return "Create a polished visual material and color board for a professional spatial designer.";
   if (mode === "custom") return "Create the most useful visual response for the user's request: spatial render, concept image, design board, material study, mood image, detail view, facade, product scene, edit, outpaint or design series.";
   if (mode === "designseries") return "Create one polished image that clearly belongs to one connected architecture/interior project series, with visible spatial continuity to the other images and a distinct field, function, viewpoint or spatial scale.";
@@ -4964,14 +9674,23 @@ function creationInstructionForMode(mode) {
 
 function qualityTargetForMode(mode) {
   mode = normalizeRenderMode(mode);
+  if (mode === "custom") {
+    return "Quality target: artifact-appropriate finish with the correct grammar for the requested output type; if the user asked for a board, poster, UI, product, diagram or mockup, optimize layout, hierarchy, legibility and visual clarity instead of spatial-render polish.";
+  }
+  if (mode === "plan-color") {
+    return "Quality target: accurate colored floor plan intermediate, top-down only, original linework readable, room/material/function zones clear, no 3D, no tilted camera, no redesigned layout and no lost labels.";
+  }
   if (mode === "plan-axonometric") {
-    return "Quality target: realistic 3D floor plan, locked plan-faithful layout, unchanged wall/opening/furniture footprints, orthographic/isometric top-down view, full-plan readability, readable wall height, proportional furniture volumes, believable material cues, clean lighting and no layout drift.";
+    return "Quality target: clean colored architectural floor plan, locked plan-faithful layout, unchanged wall/opening/furniture footprints, default top-down or attached dragged-paper flat view, readable room/material/function zones, legible furniture and wet-area cues, no 3D extrusion, no axonometric wall model, no eye-level render and no layout drift.";
+  }
+  if (mode === "plan-axonometric-view") {
+    return "Quality target: high-precision axonometric floor-plan view, locked colored-plan layout, unchanged wall/opening/furniture footprints, orthographic/weak-perspective projection with controlled 3D perspective depth, dragged-angle matching when provided, visible-plan/cropped-range readability, readable wall height, visible wall thickness, proportional furniture volumes, believable material cues, clean lighting, near/far hierarchy, no layout drift and no default-camera drift.";
   }
   if (mode === "plan-render") {
-    return "Quality target: final human-eye architecture/interior effect render, faithful to the input 3D floor plan or plan guide, clear target zone, believable camera standing point, believable scale, detailed foreground/midground/background, controlled lighting, no plan-symbol residue and crisp client-presentation finish.";
+    return "Quality target: final human-eye architecture/interior effect render, faithful to the input axonometric view or plan guide, clear target zone, believable camera standing point, believable scale, detailed foreground/midground/background, controlled lighting, no plan-symbol residue and crisp client-presentation finish.";
   }
-  if (mode === "viewpoint") {
-    return "Quality target: a believable new eye-level view from the marked standing point, same source-space identity and design language, stable perspective, plausible eye height, coherent foreground/midground/background, preserved materials/lighting/furniture logic, no UI marker, no person, no copied original camera and no warped geometry.";
+  if (mode === "panorama") {
+    return "Quality target: seamless 2:1 equirectangular 360-degree panorama with stable horizon, wrap-safe edges, continuous surround space, no visible stitch seam, no fisheye single-frame look, no black borders and no accidental seam duplicates.";
   }
   if (mode === "materialboard") {
     return "Quality target: refined visual material board, coordinated samples, restrained palette, tactile texture evidence, balanced spacing, no labels, no logos and no UI screenshot feel.";
@@ -5012,13 +9731,319 @@ function qualityTargetForMode(mode) {
   return "Quality target: photorealistic architectural visualization, believable material behavior, crisp geometry, controlled scene density, realistic shadows, professional presentation finish.";
 }
 
-function buildRenderPrompt({ mode, brief, intent, selection, viewpoint = null, referenceCount, references = [] }) {
+function normalizedViewAngle(view = null) {
+  const wrap = (value, fallback) => {
+    const numeric = Number(value);
+    const base = Number.isFinite(numeric) ? numeric : fallback;
+    return Math.round(((base % 360) + 360) % 360);
+  };
+  const zoom = Number(view?.zoom);
+  const panX = Number(view?.panX);
+  const panY = Number(view?.panY);
+  return {
+    yaw: wrap(view?.yaw, 332),
+    pitch: wrap(view?.pitch, 56),
+    zoom: Number.isFinite(zoom) ? Math.max(0.45, Math.min(3.2, zoom)) : 1,
+    panX: Number.isFinite(panX) ? Math.round(Math.max(-80, Math.min(80, panX))) : 0,
+    panY: Number.isFinite(panY) ? Math.round(Math.max(-80, Math.min(80, panY))) : 0
+  };
+}
+
+function viewAnglePromptLine(planPaperView = null, mode = "custom") {
+  if (!isPlanPaperRenderMode(mode)) return "";
+  if (!planPaperView || typeof planPaperView !== "object") return "";
+  const view = normalizedViewAngle(planPaperView);
+  const normalizedMode = normalizeRenderMode(mode);
+  const operation = normalizedMode === "plan-render"
+    ? "axonometric-view region to human-eye effect-render conversion"
+    : normalizedMode === "plan-axonometric-view"
+      ? "colored-floor-plan to axonometric-view conversion"
+      : "plan-to-colored-floor-plan conversion";
+  const target = normalizedMode === "plan-render"
+    ? "translating the selected or inferred axonometric/plan zone into a final human-eye render"
+    : normalizedMode === "plan-axonometric-view"
+      ? "re-expressing the locked colored floor plan as a clear axonometric view"
+      : "converting the locked floor plan into the colored floor plan";
+  const finalImage = normalizedMode === "plan-render"
+    ? "a realistic eye-level effect render of the corresponding visible zone"
+    : normalizedMode === "plan-axonometric-view"
+      ? "a cleaner axonometric view of the same colored floor plan"
+      : "a clean colored floor plan in the same flat paper view";
+  if (normalizedMode === "plan-render") {
+    return `PLAN_PAPER_VIEW_CONTROL: yaw=${view.yaw}deg, pitch=${view.pitch}deg, zoom=${view.zoom.toFixed(2)}, panX=${view.panX}, panY=${view.panY}. This control is only for ${operation}: use this exact paper/camera angle, zoom and crop offset when ${target}. The dragged view determines the source zone, near/far direction and composition bias for ${finalImage}; it must not be ignored in favor of a generic full-plan or default isometric view. Never render the control itself, arrows, markers, UI overlays or labels.`;
+  }
+  return `PLAN_PAPER_VIEW_CONTROL: yaw=${view.yaw}deg, pitch=${view.pitch}deg, zoom=${view.zoom.toFixed(2)}, panX=${view.panX}, panY=${view.panY}. This control is only for ${operation}: use this exact paper/camera angle, zoom and crop offset when ${target}. The final image should look like the dragged flat paper view after the printed plan has been replaced by ${finalImage}. This dragged view overrides any generic/default isometric, top-down, complete-plan or auto-centered camera language. Never render the control itself, arrows, markers, UI overlays or labels.`;
+}
+
+function viewAngleReferencePromptLine(viewAngleReference = null, mode = "custom", options = {}) {
+  const normalizedMode = normalizeRenderMode(mode);
+  if (!isPlanPaperRenderMode(normalizedMode) || !viewAngleReference?.dataUrl) return "";
+  if (normalizedMode === "plan-render") {
+    const view = normalizedViewAngle(viewAngleReference.viewAngle || viewAngleReference);
+    const clientPrompt = String(viewAngleReference.prompt || "").trim();
+    const quadText = targetQuadrilateralPromptText(viewAngleReference.targetQuadrilateral);
+    const perspectiveText = perspectiveMetricsPromptText(viewAngleReference.perspectiveMetrics);
+    const referenceWidth = Number(viewAngleReference.viewAngle?.referenceWidth || 0);
+    const referenceHeight = Number(viewAngleReference.viewAngle?.referenceHeight || 0);
+    const sourceWidth = Number(viewAngleReference.viewAngle?.sourceWidth || 0);
+    const sourceHeight = Number(viewAngleReference.viewAngle?.sourceHeight || 0);
+    const frameText = String(viewAngleReference.viewAngle?.frame || "").trim();
+    return [
+      "PLAN_RENDER_PAPER_VIEW_REFERENCE_IMAGE:",
+      "- Treat this as a reference-image edit/composition-lock task, not a loose style-reference task.",
+      "- Input image 1 is the system-rendered high-resolution dragged axonometric/plan view. It is the source-zone/crop/near-far authority for the final eye-level effect render.",
+      "- Input image 2 is the original axonometric view or plan-based spatial guide. It is the geometry/detail authority: zone location, room relationships, openings, circulation, main furniture/display logic and scale cues.",
+      referenceWidth && referenceHeight ? `- Input image 1 resolution: ${referenceWidth}x${referenceHeight}${frameText ? `, output crop frame ${frameText}` : ""}. Preserve the same visible crop range when deciding the target zone.` : "",
+      sourceWidth && sourceHeight ? `- Original spatial guide resolution available to verify details: ${sourceWidth}x${sourceHeight}. Use this detail source whenever the dragged base is visually compressed.` : "",
+      `- Paper view lock from input image 1: yaw=${view.yaw}deg, pitch=${view.pitch}deg, zoom=${view.zoom.toFixed(2)}, panX=${view.panX}, panY=${view.panY}. Use its visible crop, near/far edge relationship, rotation and vertical compression to infer the render's source zone and camera direction.`,
+      quadText ? `- Target visible area from input image 1: ${quadText}. Do not render zones outside this visible/cropped source area unless the user selected them with a red box.` : "",
+      perspectiveText ? `- Perspective scale cue from paper view: ${perspectiveText}. Use it to decide foreground/background relationship in the final render.` : "",
+      "- Required visual operation: translate the selected or inferred zone from the dragged axonometric/plan view into a realistic human-eye architecture/interior effect render.",
+      "- Priority order if constraints conflict: 1) red-box selection when present, 2) visible source zone/crop from input image 1, 3) spatial/detail logic from input image 2, 4) materials and render polish.",
+      "- Do not output the flat paper view, blueprint lines, plan symbols, UI arrows, control handles or an entire full-plan camera.",
+      clientPrompt ? `- Client angle note: ${clientPrompt}` : ""
+    ].filter(Boolean).join("\n");
+  }
+  if (normalizedMode === "plan-axonometric-view") {
+    const view = normalizedViewAngle(viewAngleReference.viewAngle || viewAngleReference);
+    const clientPrompt = String(viewAngleReference.prompt || "").trim();
+    const quadText = targetQuadrilateralPromptText(viewAngleReference.targetQuadrilateral);
+    const perspectiveText = perspectiveMetricsPromptText(viewAngleReference.perspectiveMetrics);
+    const referenceWidth = Number(viewAngleReference.viewAngle?.referenceWidth || 0);
+    const referenceHeight = Number(viewAngleReference.viewAngle?.referenceHeight || 0);
+    const sourceWidth = Number(viewAngleReference.viewAngle?.sourceWidth || 0);
+    const sourceHeight = Number(viewAngleReference.viewAngle?.sourceHeight || 0);
+    const frameText = String(viewAngleReference.viewAngle?.frame || "").trim();
+    return [
+      "PLAN_AXONOMETRIC_VIEW_REFERENCE_IMAGE:",
+      "- Treat this as a reference-image edit/composition-lock task, not a loose style-reference task.",
+      "- Input image 1 is the system-rendered high-resolution dragged colored-floor-plan view-angle base. It is the NON-NEGOTIABLE camera/crop/silhouette authority for the final axonometric image.",
+      "- Input image 2 is the original high-resolution colored floor plan or plan source. It is the geometry/material/detail authority: room relationships, walls, openings, cut-wall logic, furniture footprints, material zones and circulation.",
+      referenceWidth && referenceHeight ? `- Input image 1 resolution: ${referenceWidth}x${referenceHeight}${frameText ? `, output crop frame ${frameText}` : ""}. Preserve the same visible crop range.` : "",
+      sourceWidth && sourceHeight ? `- Original colored-plan resolution available to verify details: ${sourceWidth}x${sourceHeight}. Use this detail source whenever the angled base is visually compressed.` : "",
+      `- Camera lock from input image 1: yaw=${view.yaw}deg, pitch=${view.pitch}deg, zoom=${view.zoom.toFixed(2)}, panX=${view.panX}, panY=${view.panY}. Match its apparent paper silhouette, crop offset, near/far edge relationship, foreshortening, rotation and vertical compression in the final axonometric output.`,
+      quadText ? `- Target projected silhouette from input image 1: ${quadText}. Align the final floor slab/base-wall footprint to this quadrilateral; do not use a default rectangle as the final silhouette.` : "",
+      perspectiveText ? `- Forced perspective scale cue: ${perspectiveText}. The near edge, near walls and near furniture must be visibly larger/thicker; the far edge must be visibly smaller/shorter.` : "",
+      "- Required visual operation: keep input image 1 as the camera plate and re-render the same colored floor-plan geometry into a clearer axonometric view. Do not choose a new camera because it looks clearer or more complete.",
+      "- Priority order if constraints conflict: 1) camera/crop/silhouette from input image 1, 2) colored floor-plan geometry from input image 2, 3) materials and render polish. Never sacrifice item 1 to improve item 2 or 3.",
+      "- Do not recentre, unrotate, unskew, auto-zoom-out, show the full plan, flatten into a 2D plan, or expand the plan beyond the visible range in input image 1.",
+      "- Do not render the UI, arrow buttons, control handles, labels, sliders, dotted canvas or the flat paper reference itself as the final subject.",
+      clientPrompt ? `- Client angle note: ${clientPrompt}` : ""
+    ].filter(Boolean).join("\n");
+  }
+  const coloredPlanPipeline = Boolean(options.coloredPlanPipeline);
+  const coloredPlanDirect = Boolean(options.coloredPlanDirect);
+  const view = normalizedViewAngle(viewAngleReference.viewAngle || viewAngleReference);
+  const clientPrompt = String(viewAngleReference.prompt || "").trim();
+  const quadText = targetQuadrilateralPromptText(viewAngleReference.targetQuadrilateral);
+  const perspectiveText = perspectiveMetricsPromptText(viewAngleReference.perspectiveMetrics);
+  const referenceWidth = Number(viewAngleReference.viewAngle?.referenceWidth || 0);
+  const referenceHeight = Number(viewAngleReference.viewAngle?.referenceHeight || 0);
+  const sourceWidth = Number(viewAngleReference.viewAngle?.sourceWidth || 0);
+  const sourceHeight = Number(viewAngleReference.viewAngle?.sourceHeight || 0);
+  const frameText = String(viewAngleReference.viewAngle?.frame || "").trim();
+  return [
+    "PLAN_PAPER_VIEW_REFERENCE_IMAGE:",
+    "- Treat this as a reference-image edit/composition-lock task, not a loose style-reference task.",
+    "- Input image 1 is the system-rendered high-resolution dragged paper view-angle base. It is the NON-NEGOTIABLE camera/crop/silhouette authority for the final colored floor-plan image.",
+    coloredPlanPipeline
+      ? "- Input image 2 is the generated colored top-down floor-plan intermediate. It is the semantic/material/room-function authority and should be re-presented in the selected dragged paper view."
+      : coloredPlanDirect
+        ? "- Input image 2 is the uploaded colored top-down floor plan. It is already the semantic/material/room-function authority and should be re-presented directly in the selected dragged paper view."
+      : "- Input image 2 is the original high-resolution clean top-down floor plan. It is the layout-detail authority only: linework clarity, labels, room relationships, walls, openings, door swings and major furniture footprints.",
+    coloredPlanPipeline
+      ? "- Input image 3 is the original high-resolution clean top-down floor plan. It is the fine linework/detail authority only and must not reset the final camera."
+      : "",
+    referenceWidth && referenceHeight ? `- Input image 1 resolution: ${referenceWidth}x${referenceHeight}${frameText ? `, output crop frame ${frameText}` : ""}. Preserve the same visible crop range.` : "",
+    sourceWidth && sourceHeight ? `- Original layout resolution available to verify details: ${sourceWidth}x${sourceHeight}. Use this detail source whenever the angled base is visually compressed.` : "",
+    `- Camera lock from input image 1: yaw=${view.yaw}deg, pitch=${view.pitch}deg, zoom=${view.zoom.toFixed(2)}, panX=${view.panX}, panY=${view.panY}. Match its apparent paper silhouette, crop offset, near/far edge relationship, foreshortening, rotation and vertical compression in the final colored floor-plan output.`,
+    quadText ? `- Target projected silhouette from input image 1: ${quadText}. Align the final colored plan sheet to this quadrilateral; do not use the unprojected rectangle from input image 2 as the final silhouette.` : "",
+    perspectiveText ? `- Forced perspective scale cue: ${perspectiveText}. The near edge and nearby printed linework/material zones should read larger; the far edge should read smaller/shorter.` : "",
+    "- Required visual operation: keep input image 1 as the camera plate and replace the flat printed black-and-white plan content on that plate with a clean colored floor-plan surface. Do not choose a new camera because it looks clearer or more complete.",
+    "- Generate by recoloring and clarifying the same plan content inside input image 1, driven by input image 2. Keep the same camera, same crop, same page placement and same outer projected quadrilateral as input image 1.",
+    "- Priority order if constraints conflict: 1) camera/crop/silhouette from input image 1, 2) visible wall/opening/furniture layout from input image 2, 3) materials and render polish. Never sacrifice item 1 to improve item 2 or 3.",
+    "- Do not let input image 2 reset the camera back to default top-down/isometric. Do not recentre, unrotate, unskew, auto-zoom-out, show the full plan, or expand the plan beyond the visible range in input image 1.",
+    "- Do not render the UI, arrow buttons, control handles, labels, sliders, dotted canvas or the flat paper reference itself as the final subject.",
+    clientPrompt ? `- Client angle note: ${clientPrompt}` : ""
+  ].filter(Boolean).join("\n");
+}
+
+function targetQuadrilateralPromptText(quad = null) {
+  if (!quad || typeof quad !== "object") return "";
+  const keys = ["topLeft", "topRight", "bottomRight", "bottomLeft"];
+  const points = keys.map((key) => {
+    const point = quad[key];
+    const x = Number(point?.x);
+    const y = Number(point?.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return "";
+    return `${key}=(${x.toFixed(3)},${y.toFixed(3)})`;
+  }).filter(Boolean);
+  return points.length === keys.length ? points.join(", ") : "";
+}
+
+function perspectiveMetricsPromptText(metrics = null) {
+  if (!metrics || typeof metrics !== "object") return "";
+  const nearEdge = String(metrics.nearEdge || "").trim();
+  const farEdge = String(metrics.farEdge || "").trim();
+  const nearFarScaleRatio = Number(metrics.nearFarScaleRatio);
+  const sideScaleRatio = Number(metrics.sideScaleRatio);
+  const parts = [];
+  if (nearEdge && farEdge) parts.push(`nearEdge=${nearEdge}, farEdge=${farEdge}`);
+  if (Number.isFinite(nearFarScaleRatio)) parts.push(`near/far edge scale ratio about ${nearFarScaleRatio.toFixed(2)}x`);
+  if (Number.isFinite(sideScaleRatio)) parts.push(`side depth ratio about ${sideScaleRatio.toFixed(2)}x`);
+  return parts.join("; ");
+}
+
+function viewAngleReferenceFinalPromptFooter(viewAngleReference = null, mode = "custom", options = {}) {
+  const normalizedMode = normalizeRenderMode(mode);
+  if (!isPlanPaperRenderMode(normalizedMode) || !viewAngleReference?.dataUrl) return "";
+  if (normalizedMode === "plan-render") {
+    const view = normalizedViewAngle(viewAngleReference.viewAngle || viewAngleReference);
+    const quadText = targetQuadrilateralPromptText(viewAngleReference.targetQuadrilateral);
+    const perspectiveText = perspectiveMetricsPromptText(viewAngleReference.perspectiveMetrics);
+    const frameText = String(viewAngleReference.viewAngle?.frame || "").trim();
+    return [
+      "NON_NEGOTIABLE_PLAN_RENDER_VIEW_LOCK:",
+      "Input image 1 is the high-resolution dragged axonometric/plan paper view and must control source-zone crop, near/far direction, visible area and composition bias for the final human-eye effect render.",
+      "Input image 2 is the original axonometric or plan-based spatial guide and must control spatial logic, room/zone relationships, openings, circulation, furniture/display arrangement and scale cues.",
+      `Match input image 1 paper view when inferring the source zone: yaw=${view.yaw}deg, pitch=${view.pitch}deg, zoom=${view.zoom.toFixed(2)}, panX=${view.panX}, panY=${view.panY}.`,
+      frameText ? `Keep the output crop/frame ratio from the current generation setting: ${frameText}.` : "",
+      quadText ? `Use this projected visible area as the source-zone boundary unless a red-box selection overrides it: ${quadText}.` : "",
+      perspectiveText ? `Use this paper-view perspective cue for foreground/background relationship: ${perspectiveText}.` : "",
+      "If any earlier prompt text says default full-plan camera, full axonometric view, or unrelated render angle, ignore that text whenever it conflicts with input image 1 or the user's red-box selection.",
+      "Final image must be a realistic human-eye architecture/interior effect render of the selected or inferred zone. It must not reproduce the flat paper view, blueprint lines, UI arrows, whole plan or diagram symbols."
+    ].filter(Boolean).join("\n");
+  }
+  if (normalizedMode === "plan-axonometric-view") {
+    const coloredPlanPipeline = Boolean(options.coloredPlanPipeline);
+    const coloredPlanDirect = Boolean(options.coloredPlanDirect);
+    const view = normalizedViewAngle(viewAngleReference.viewAngle || viewAngleReference);
+    const quadText = targetQuadrilateralPromptText(viewAngleReference.targetQuadrilateral);
+    const perspectiveText = perspectiveMetricsPromptText(viewAngleReference.perspectiveMetrics);
+    const frameText = String(viewAngleReference.viewAngle?.frame || "").trim();
+    return [
+      "NON_NEGOTIABLE_VIEW_LOCK:",
+      "Input image 1 is the high-resolution axonometric/camera base and must control the final camera angle, crop, silhouette, page placement, projected quadrilateral and foreshortening.",
+      coloredPlanPipeline
+        ? "Input image 2 is the generated colored floor-plan intermediate and must control room/material/furniture semantic reading; input image 3 is the clean original floor-plan reference only and must preserve readable details without pulling the result back to a default isometric view."
+        : coloredPlanDirect
+          ? "Input image 2 is the uploaded colored floor-plan reference and must directly control layout, room/material/furniture semantic reading and fine detail without pulling the result back to a default isometric view."
+          : "Input image 2 is the high-resolution clean colored floor-plan reference only and must preserve readable details without pulling the result back to a default isometric view.",
+      `Match input image 1 camera: yaw=${view.yaw}deg, pitch=${view.pitch}deg, zoom=${view.zoom.toFixed(2)}, panX=${view.panX}, panY=${view.panY}.`,
+      frameText ? `Keep the output crop/frame ratio from the current generation setting: ${frameText}.` : "",
+      quadText ? `Align the floor slab and wall-base footprint to this projected quadrilateral: ${quadText}.` : "",
+      perspectiveText ? `Preserve perspective scale: ${perspectiveText}; near side larger, far side smaller.` : "",
+      "If any earlier prompt text says complete plan, default isometric, top-down, no crop or no rotation, ignore that earlier text whenever it conflicts with input image 1.",
+      "Final image must be a clean high-precision axonometric floor-plan view occupying the same projected angle and visible crop as input image 1, with walls/furniture re-expressed from input image 2. It should read as input image 1 transformed into a clearer axonometric model, not as a newly composed scene."
+    ].filter(Boolean).join("\n");
+  }
+  if (normalizedMode === "plan-axonometric") {
+    const view = normalizedViewAngle(viewAngleReference.viewAngle || viewAngleReference);
+    const quadText = targetQuadrilateralPromptText(viewAngleReference.targetQuadrilateral);
+    const perspectiveText = perspectiveMetricsPromptText(viewAngleReference.perspectiveMetrics);
+    const frameText = String(viewAngleReference.viewAngle?.frame || "").trim();
+    return [
+      "NON_NEGOTIABLE_COLORED_PLAN_VIEW_LOCK:",
+      "Input image 1 is the high-resolution dragged paper view and must control the final colored floor plan's flat-paper angle, crop, silhouette, page placement, projected quadrilateral and foreshortening.",
+      "Input image 2 is the high-resolution original plan and must control room relationships, walls, openings, labels, door swings, furniture footprints and all layout details.",
+      `Match input image 1 camera: yaw=${view.yaw}deg, pitch=${view.pitch}deg, zoom=${view.zoom.toFixed(2)}, panX=${view.panX}, panY=${view.panY}.`,
+      frameText ? `Keep the output crop/frame ratio from the current generation setting: ${frameText}.` : "",
+      quadText ? `Align the colored plan sheet to this projected quadrilateral: ${quadText}.` : "",
+      perspectiveText ? `Preserve flat-paper perspective scale: ${perspectiveText}; near side larger, far side smaller.` : "",
+      "If any earlier prompt text says strict top-down, complete plan, no crop or no rotation, ignore that earlier text whenever it conflicts with input image 1.",
+      "Final image must be a clean colored floor-plan surface occupying the same projected paper angle and visible crop as input image 1. Do not extrude walls, do not generate an axonometric wall model, and do not create an eye-level render."
+    ].filter(Boolean).join("\n");
+  }
+  const coloredPlanPipeline = Boolean(options.coloredPlanPipeline);
+  const coloredPlanDirect = Boolean(options.coloredPlanDirect);
+  const view = normalizedViewAngle(viewAngleReference.viewAngle || viewAngleReference);
+  const quadText = targetQuadrilateralPromptText(viewAngleReference.targetQuadrilateral);
+  const perspectiveText = perspectiveMetricsPromptText(viewAngleReference.perspectiveMetrics);
+  const frameText = String(viewAngleReference.viewAngle?.frame || "").trim();
+  return [
+    "NON_NEGOTIABLE_VIEW_LOCK:",
+    "Input image 1 is the high-resolution view/camera base and must control the final camera angle, crop, silhouette, page placement, projected quadrilateral and foreshortening.",
+    coloredPlanPipeline
+      ? "Input image 2 is the generated colored floor-plan intermediate and must control room/material/furniture semantic reading; input image 3 is the clean original layout reference only and must preserve readable details without pulling the result back to a default top-down/isometric view."
+      : coloredPlanDirect
+        ? "Input image 2 is the uploaded colored floor plan and must directly control layout, room/material/furniture semantic reading and fine detail without pulling the result back to a default top-down/isometric view."
+      : "Input image 2 is the high-resolution clean layout reference only and must preserve readable details without pulling the result back to a default top-down/isometric view.",
+    `Match input image 1 camera: yaw=${view.yaw}deg, pitch=${view.pitch}deg, zoom=${view.zoom.toFixed(2)}, panX=${view.panX}, panY=${view.panY}.`,
+    frameText ? `Keep the output crop/frame ratio from the current generation setting: ${frameText}.` : "",
+    quadText ? `Align the floor slab and wall-base footprint to this projected quadrilateral: ${quadText}.` : "",
+    perspectiveText ? `Preserve perspective scale: ${perspectiveText}; near side larger, far side smaller.` : "",
+    "If any earlier prompt text says complete plan, default isometric, top-down, no crop or no rotation, ignore that earlier text whenever it conflicts with input image 1.",
+    "Final image must be a high-precision axonometric floor-plan view occupying the same projected angle and visible crop as input image 1, with walls/furniture re-expressed from input image 2. It should read as input image 1 transformed into an axonometric model, not as a newly composed plan."
+  ].filter(Boolean).join("\n");
+}
+
+function normalizedMultiAngleView(view = null) {
+  const mode = view?.mode === "camera" ? "camera" : "subject";
+  const number = (value, fallback, min, max) => {
+    const numeric = Number(value);
+    return Math.round(Math.max(min, Math.min(max, Number.isFinite(numeric) ? numeric : fallback)));
+  };
+  const signedDegrees = (value, fallback) => {
+    const numeric = Number(value);
+    const base = Number.isFinite(numeric) ? numeric : fallback;
+    const wrapped = Math.round(((base % 360) + 360) % 360);
+    return wrapped > 180 ? wrapped - 360 : wrapped;
+  };
+  const sourceWidth = number(view?.sourceWidth, 0, 0, 20000);
+  const sourceHeight = number(view?.sourceHeight, 0, 0, 20000);
+  const aspectNumeric = Number(view?.sourceAspect);
+  const inferredAspect = sourceWidth > 0 && sourceHeight > 0 ? sourceWidth / sourceHeight : 1;
+  const sourceAspect = Math.max(0.2, Math.min(5, Number.isFinite(aspectNumeric) && aspectNumeric > 0 ? aspectNumeric : inferredAspect));
+  return {
+    mode,
+    subjectX: number(view?.subjectX, 0, -100, 100),
+    subjectY: number(view?.subjectY, 0, -100, 100),
+    subjectRotate: signedDegrees(view?.subjectRotate, -45),
+    cameraX: signedDegrees(view?.cameraX, -45),
+    cameraY: number(view?.cameraY, 35, -90, 90),
+    cameraDistance: number(view?.cameraDistance, 0, -100, 100),
+    sourceWidth,
+    sourceHeight,
+    sourceAspect
+  };
+}
+
+function cameraDistanceLabel(value = 0) {
+  if (value <= -42) return "near shot / close view";
+  if (value >= 42) return "far shot / distant view";
+  return "medium shot";
+}
+
+function multiAnglePromptLine(multiAngleView = null) {
+  if (!multiAngleView || typeof multiAngleView !== "object") return "";
+  const view = normalizedMultiAngleView(multiAngleView);
+  const sourceSizeText = view.sourceWidth > 0 && view.sourceHeight > 0
+    ? `${view.sourceWidth}x${view.sourceHeight}`
+    : "unknown source size";
+  return [
+    `MULTI_ANGLE_PLAN_PAPER_CONTROL: active=${view.mode}. This control is only for the floor-plan workflow family: floor plan to colored floor plan, colored floor plan to axonometric view, and axonometric region to final render. Do not apply this control to non-plan modes.`,
+    `Source aspect recognition: source=${sourceSizeText}, aspect=${view.sourceAspect.toFixed(2)}. First imagine/generate a 3D cuboid whose front face preserves this aspect ratio; place the input image on the foremost face. Do not force it into a square cube unless the source image is square.`,
+    `Subject transform: x=${view.subjectX}, y=${view.subjectY}, subjectTurn=${view.subjectRotate}deg. Treat the uploaded image's main subject like a standing person or object turning in place around its vertical axis. This is a 3D body/object facing-direction change, not a flat 2D sticker/image rotation.`,
+    `Camera orbit: orbitX=${view.cameraX}deg, orbitY=${view.cameraY}deg, distance=${view.cameraDistance} (${cameraDistanceLabel(view.cameraDistance)}). orbitX means the camera moves left/right around the subject; orbitY means the camera moves above/below around the subject; distance controls near/mid/far lens placement.`,
+    "Never render the UI panel, sliders, axes, camera icon, cube, orbit guide, labels or overlay. Preserve the selected mode's structural and visual constraints."
+  ].join(" ");
+}
+
+function buildRenderPrompt({ mode, brief, intent, selection, planPaperView = null, multiAngleView = null, viewAngleReference = null, referenceCount, references = [], coloredPlanPipeline = false, coloredPlanRecord = null, coloredPlanDirect = false }) {
   mode = normalizeRenderMode(mode);
   const modeInfo = renderModeKnowledge(mode);
   const workflowConfig = planWorkflowPromptConfig(mode);
   const fusionGuide = gptImage2PromptFusionGuide({ mode, referenceCount, references });
   const spatialSchema = architectureInteriorPromptSchema({ mode, brief, intent, referenceCount, references, selection });
   const designerThinking = designerAgentThinkingModel({ mode, brief, intent, referenceCount, references, selection });
+  const viewAngleLine = viewAnglePromptLine(planPaperView, mode);
+  const viewAngleReferenceLine = viewAngleReferencePromptLine(viewAngleReference, mode, {
+    coloredPlanPipeline,
+    coloredPlanDirect
+  });
+  const multiAngleLine = workflowConfig && !isPlanPaperRenderMode(mode)
+    ? multiAnglePromptLine(multiAngleView)
+    : "";
   const common = [
     fusionGuide,
     "",
@@ -5050,8 +10075,11 @@ function buildRenderPrompt({ mode, brief, intent, selection, viewpoint = null, r
       : outputInstructionForMode(mode),
     communityPromptBlueprintLines(mode).join("\n"),
     communityPromptPreflightLines(mode).join("\n"),
+    viewAngleLine,
+    viewAngleReferenceLine,
+    multiAngleLine,
     "No watermark, no readable text, no logos, no UI overlay."
-  ];
+  ].filter(Boolean);
 
   if (mode === "custom") {
     return [
@@ -5067,33 +10095,89 @@ function buildRenderPrompt({ mode, brief, intent, selection, viewpoint = null, r
 
   if (mode === "plan-axonometric") {
     return [
-      PLAN_TO_3D_FIXED_PROMPT,
+      PLAN_TO_COLORED_PLAN_FIXED_PROMPT,
       "",
       `Workflow config: step ${workflowConfig.step}, ${workflowConfig.label}; input ${workflowConfig.input}; output ${workflowConfig.output}.`,
       `Preserve from config: ${workflowConfig.preserve}.`,
       `Transform from config: ${workflowConfig.transform}.`,
       `Camera/output rule from config: ${workflowConfig.camera}. Avoid: ${workflowConfig.avoid}.`,
-      "The first input image is a black-and-white architectural floor plan line drawing or a colored floor plan.",
-      "This workflow converts the input plan into a realistic 3D floor plan, not a flat colored plan and not an eye-level render.",
-      "Use the input plan as a hard locked layout reference. Preserve all visible linework relationships, room relationships, wall boundaries, door/window openings, door swings, circulation, zoning and major furniture/display footprints.",
-      "Use an orthographic or high oblique isometric top-down 3D floor-plan camera with minimal perspective distortion and clear full-layout readability.",
+      viewAngleReference?.dataUrl
+        ? "The first input image is the dragged view-angle base generated from the uploaded plan. This mode outputs a clean colored floor plan in that selected flat paper view; preserve the dragged camera tilt, crop and projected silhouette without extruding walls."
+        : "The first input image is a black-and-white architectural floor plan line drawing or a colored floor plan.",
+      viewAngleReference?.dataUrl
+        ? coloredPlanPipeline
+          ? "The second input image is the generated colored top-down floor-plan intermediate. Use it as the main room/material/function semantic map."
+          : coloredPlanDirect
+            ? "The second input image is already a colored top-down floor plan. Use it directly as the locked layout, room/material/function semantic map and furniture-zone source; do not run a color-plan intermediate."
+            : "The second input image is the clean original top-down floor plan. Use it only to recover exact room/wall/opening/furniture layout details; do not use its top-down view as the final camera, crop or silhouette."
+        : "No dragged view-angle reference is attached, so use the default strict top-down orthographic colored-plan camera.",
+      viewAngleReference?.dataUrl && coloredPlanPipeline
+        ? "The third input image is the clean original top-down floor plan. Use it only to recover exact linework, labels, room/wall/opening/furniture layout details; do not use its top-down view as the final camera, crop or silhouette."
+        : "",
+      "This workflow converts the input plan into a clean colored floor plan intermediate, not an axonometric view and not an eye-level render.",
+      viewAngleReference?.dataUrl
+        ? coloredPlanPipeline
+          ? "Use input image 1 as the visible camera scaffold, input image 2 as the colored semantic/material floor-plan map, and input image 3 as the fine-detail layout verifier. Preserve all visible linework relationships, room relationships, wall boundaries, door/window openings, door swings, circulation, zoning and major furniture/display footprints while keeping the projected angle, crop and silhouette from input image 1. If these compete, camera/crop from input image 1 wins; do not zoom out to recover hidden areas."
+          : coloredPlanDirect
+            ? "Use input image 1 as the visible camera scaffold and input image 2 as the already-colored locked layout/material source. Preserve all colored plan zones, room relationships, wall boundaries, door/window openings, door swings, circulation, zoning and major furniture/display footprints from input image 2, while keeping the projected angle, crop and silhouette from input image 1. If these compete, camera/crop from input image 1 wins; do not zoom out to recover hidden areas."
+            : "Use input image 1 as the visible camera scaffold and input image 2 as the locked layout source. Preserve all visible linework relationships, room relationships, wall boundaries, door/window openings, door swings, circulation, zoning and major furniture/display footprints from input image 2, while keeping the projected angle, crop and silhouette from input image 1. If these compete, camera/crop from input image 1 wins; do not zoom out to recover hidden areas."
+        : "Use the input plan as a hard locked layout reference. Preserve all visible linework relationships, room relationships, wall boundaries, door/window openings, door swings, circulation, zoning and major furniture/display footprints.",
+      coloredPlanDirect ? "DIRECT_COLORED_PLAN_ROUTE: the uploaded original is already a colored floor plan, so preserve it as the colored-plan intermediate and only improve readability without changing layout." : "",
+      coloredPlanPipeline ? planColorPipelinePromptLine(coloredPlanRecord, { hasViewAngleReference: Boolean(viewAngleReference?.dataUrl) }) : "",
+      viewAngleReference?.dataUrl
+        ? "Use the selected dragged-paper colored-plan camera from input image 1; keep it flat as a plan surface and do not extrude walls or invent wall height."
+        : "Use a strict top-down orthographic colored-plan camera with clear full-layout readability.",
+      "Add restrained colored room/function/material zones, wet-area cues, furniture color hierarchy and circulation clarity while keeping every footprint plan-faithful.",
+      "Do not make a human-eye view render; do not rotate or crop the space into perspective; do not make an axonometric view in this step; do not invent, simplify or redesign the floor plan.",
+      ...common
+    ].join("\n");
+  }
+
+  if (mode === "plan-axonometric-view") {
+    const selectionText = selection
+      ? `The user selected a normalized region x=${selection.x}, y=${selection.y}, width=${selection.width}, height=${selection.height}. Generate the clean axonometric view for this zone while preserving its relationship to the surrounding colored floor plan.`
+      : "No region was selected. Use the full colored floor plan or the clearest inferred axonometric composition, then generate a clean high-precision axonometric view and state the source area in the prompt.";
+    return [
+      PLAN_TO_AXONOMETRIC_VIEW_PROMPT,
+      "",
+      `Workflow config: step ${workflowConfig.step}, ${workflowConfig.label}; input ${workflowConfig.input}; output ${workflowConfig.output}.`,
+      `Preserve from config: ${workflowConfig.preserve}.`,
+      `Transform from config: ${workflowConfig.transform}.`,
+      `Camera/output rule from config: ${workflowConfig.camera}. Avoid: ${workflowConfig.avoid}.`,
+      viewAngleReference?.dataUrl
+        ? "The first input image is the dragged view-angle base generated from the uploaded colored floor plan. Treat its camera angle, crop, projected silhouette, page placement, foreshortening and rotation as mandatory; the final image should be this exact view re-expressed as a high-precision axonometric floor-plan image."
+        : "The input image is the uploaded colored floor plan, floor plan or axonometric floor-plan source. Use it to recover exact room/wall/opening/furniture relationships, cut-wall logic and material zones while generating a high-precision axonometric view.",
+      viewAngleReference?.dataUrl
+        ? "The second input image is the original colored floor plan or axonometric floor-plan source. Use it to recover exact room/wall/opening/furniture relationships, cut-wall logic and material zones; do not use it as permission to change the final camera."
+        : "",
+      selectionText,
+      "This workflow converts the colored floor-plan geometry into a high-precision axonometric view, not an eye-level render and not a flat 2D plan.",
+      viewAngleReference?.dataUrl
+        ? "Use input image 1 as the visible camera scaffold and input image 2 as the geometry/detail source. Preserve all visible wall/opening/furniture footprints, room relationships, circulation, cut-wall logic and material zones while keeping the projected angle, crop and silhouette from input image 1. If these compete, camera/crop from input image 1 wins; do not zoom out to recover hidden areas."
+        : "Preserve all visible wall/opening/furniture footprints, room relationships, circulation, cut-wall logic and material zones while keeping the axonometric projection stable and readable.",
+      "Use an orthographic or weak-perspective axonometric camera with controlled perspective depth, clear near/far scale and high 3D readability.",
       "Add plausible wall height, proportional furniture volumes, floor materials, surface finishes, ceiling/lighting cues and spatial depth while keeping every footprint plan-faithful.",
-      "Do not make a human-eye view render; do not rotate or crop the space into an unrelated perspective; do not leave it as a flat 2D color plan; do not invent, simplify or redesign the floor plan.",
+      "Do not make a human-eye view render; do not rotate or crop the space into an unrelated perspective; do not revert to a default isometric camera; do not flatten it into a 2D plan; do not invent, simplify or redesign the floor plan.",
       ...common
     ].join("\n");
   }
 
   if (mode === "plan-render") {
     const selectionText = selection
-      ? `The user selected a normalized region x=${selection.x}, y=${selection.y}, width=${selection.width}, height=${selection.height}. Generate the final eye-level render for this zone while preserving its relationship to the surrounding 3D floor plan or plan-based spatial guide.`
-      : "No region was selected. Infer one clear functional zone from the 3D floor plan or plan-based spatial guide, then generate a final eye-level render for that zone and state the area source in the prompt.";
+      ? `The user selected a normalized region x=${selection.x}, y=${selection.y}, width=${selection.width}, height=${selection.height}. Generate the final eye-level render for this zone while preserving its relationship to the surrounding axonometric view or plan-based spatial guide.`
+      : "No region was selected. Infer one clear functional zone from the axonometric view or plan-based spatial guide, then generate a final eye-level render for that zone and state the area source in the prompt.";
     return [
       `Workflow config: step ${workflowConfig.step}, ${workflowConfig.label}; input ${workflowConfig.input}; output ${workflowConfig.output}.`,
       `Preserve from config: ${workflowConfig.preserve}.`,
       `Transform from config: ${workflowConfig.transform}.`,
       `Camera/output rule from config: ${workflowConfig.camera}. Avoid: ${workflowConfig.avoid}.`,
-      "The first input image is a 3D floor plan or selected plan-based spatial reference; legacy flat or colored plans may be used only when explicitly uploaded.",
-      "This is step 2 of the current floor-plan workflow: 3D spatial guide to final human-eye architecture/interior effect render.",
+      viewAngleReference?.dataUrl
+        ? "The first input image is the dragged axonometric/plan paper view reference and must control the source-zone crop, near/far relationship and composition bias for the final render."
+        : "The first input image is an axonometric view or selected plan-based spatial reference; legacy flat or colored plans may be used only when explicitly uploaded.",
+      viewAngleReference?.dataUrl
+        ? "The second input image is the original axonometric view or plan-based spatial guide; use it to preserve spatial relationships, openings, circulation, furniture/display logic and scale cues."
+        : "",
+      "This is step 3 of the current floor-plan workflow: axonometric spatial guide to final human-eye architecture/interior effect render.",
       selectionText,
       "Preserve the spatial relationship, target-zone location, circulation, functional logic, main display/furniture arrangement, room adjacency and scale cues from the input image.",
       "Improve success rate by describing the target scene in concrete elements: camera standing point, view direction, foreground, midground, background, furniture systems, display objects, wall/ceiling/floor materials, lighting fixtures, color temperature and clutter limits.",
@@ -5102,46 +10186,12 @@ function buildRenderPrompt({ mode, brief, intent, selection, viewpoint = null, r
     ].join("\n");
   }
 
-  if (mode === "viewpoint") {
-    const hasPoint = viewpoint && typeof viewpoint === "object";
-    const x = Number(viewpoint?.x);
-    const y = Number(viewpoint?.y);
-    const yaw = Number(viewpoint?.yaw || 0);
-    const intensity = String(viewpoint?.intensity || "medium");
-    const normalizedX = Number.isFinite(x) ? Math.max(0.05, Math.min(0.95, x)) : null;
-    const normalizedY = Number.isFinite(y) ? Math.max(0.08, Math.min(0.94, y)) : null;
-    const normalizedYaw = Number.isFinite(yaw) ? Math.max(-135, Math.min(135, Math.round(yaw))) : 0;
-    const horizontal = normalizedX == null ? "unknown horizontal position" : normalizedX < 0.34 ? "left side of the image" : normalizedX > 0.66 ? "right side of the image" : "center area of the image";
-    const depth = normalizedY == null ? "unknown depth" : normalizedY < 0.34 ? "far/deep part of the scene" : normalizedY > 0.66 ? "near foreground / viewer-side part of the scene" : "middle-depth part of the scene";
-    const direction = normalizedYaw <= -75
-      ? "strongly looking left from the standing point"
-      : normalizedYaw <= -25
-        ? "looking toward the left-front diagonal"
-        : normalizedYaw >= 75
-          ? "strongly looking right from the standing point"
-          : normalizedYaw >= 25
-            ? "looking toward the right-front diagonal"
-            : "looking forward into scene depth";
-    const intensityRule = intensity === "small"
-      ? "Viewpoint shift intensity: small. Stay conservative, keep close to visible source evidence, prioritize spatial/material stability over dramatic change."
-      : intensity === "large"
-        ? "Viewpoint shift intensity: large. Allow a clearly different camera position and plausible reconstruction of hidden side surfaces, but do not alter the source architecture, material system or design identity."
-        : "Viewpoint shift intensity: medium. Create a clearly new view while keeping source-scene identity stable.";
-    const point = hasPoint
-      ? `x=${normalizedX ?? viewpoint.x}, y=${normalizedY ?? viewpoint.y}, yaw=${normalizedYaw} degrees, intensity=${intensity}`
-      : "not provided; infer a useful eye-level standing point from the user's instruction";
+  if (mode === "panorama") {
     return [
-      "The first input image is a spatial source image to reinterpret from a new camera position.",
-      `VIEWPOINT_MARKER: ${point}. This marker is a UI control only; never render it, never render a person, mannequin, arrow, dot, label or overlay.`,
-      hasPoint ? `Spatial reading of the marker: standing point is in the ${horizontal}, ${depth}; camera direction is ${direction}.` : "No explicit marker was provided; choose a plausible human standing point and state it internally before prompting image generation.",
-      intensityRule,
-      "Coordinate semantics: x is left-to-right image position, y is image-depth proxy where higher y means nearer/viewer-side and lower y means deeper/farther. Yaw is horizontal view direction relative to the source image axis.",
-      "Treat the input image as a coherent 3D architecture/interior scene that can be entered, not as a flat picture to crop or rotate.",
-      "Infer walkable floor area, camera foot position, eye height around 1.55m, lens between 24-35mm full-frame equivalent, stable vanishing points and what foreground/midground/background would be visible from this location.",
-      "Create a new realistic eye-level view from that standing point with a changed visible field. The output should feel like moving a camera inside the same space, not generating a new unrelated room.",
-      "Preserve the source scene's spatial identity, major structure, openings, materials, lighting direction, furniture/display logic, scale cues and design atmosphere.",
-      "Allow only viewpoint-driven reconstruction: add plausible side faces, foreground objects, thresholds, adjacent rooms, doorways, ceiling/floor continuation and background continuity that would be visible from the marked point.",
-      "Failure modes to avoid: original camera copied, flat crop/zoom, bird's-eye view, floor plan, diagram, model viewport, collage, warped perspective, changed room type, changed openings, extra people, UI markers or marker shadows.",
+      "If a primary input image is provided, treat it as a spatial/material reference for 360-degree panorama generation; if no primary image exists, generate directly from the brief and references.",
+      "Generate a 2:1 equirectangular panorama with a stable horizon and seamless left/right wrap for panorama viewers such as Pannellum.",
+      "Preserve spatial continuity, opening logic, ceiling/floor flow, material scale and lighting continuity across the full surround image.",
+      "Do not output a normal single-camera wide render, a fisheye single frame, a cropped scene or a panorama with visible stitch seams.",
       ...common
     ].join("\n");
   }
@@ -5269,7 +10319,7 @@ function buildRenderPrompt({ mode, brief, intent, selection, viewpoint = null, r
 
   return [
     "The first input image is a plan-based spatial guide.",
-    "Use the selected workflow semantics to decide whether this should become a realistic 3D floor plan or final human-eye spatial render.",
+    "Use the selected workflow semantics to decide whether this should become a colored floor plan, a high-precision axonometric view or a final human-eye spatial render.",
     ...common
   ].join("\n");
 }
@@ -5321,7 +10371,6 @@ function summarizeTaskInput(body = {}) {
     skill: body.skill || null,
     useCase: body.useCase || null,
     intentKind: body.intentKind || null,
-    viewpoint: body.viewpoint || null,
     primaryRequest: truncateLogText(body.primaryRequest || "", 5000),
     userPrompt: truncateLogText(body.userPrompt || "", 5000),
     intent: truncateLogText(body.intent || body.imagePrompt || body.primaryRequest || "", 5000),
@@ -5332,8 +10381,8 @@ function summarizeTaskInput(body = {}) {
     primaryImage: summarizeImageForLog(body.primaryImage),
     referenceCount: references.length,
     referenceImages: references.map(summarizeImageForLog),
-    analysisTitle: body.analysis?.title || null,
-    analysisSummary: truncateLogText(body.analysis?.summary || body.analysis?.series_strategy || "", 2000)
+    analysisTitle: body.analysis?.title || body.modelingAnalysis?.subject || null,
+    analysisSummary: truncateLogText(body.analysis?.summary || body.analysis?.series_strategy || body.modelingAnalysis?.summary || "", 2000)
   };
 }
 
@@ -5354,7 +10403,7 @@ function summarizeTaskResult(result = {}) {
   const attempts = summarizeTaskAttempts(render?.attempts || result.attempts);
   return {
     outputUrl: render?.url || render?.outputUrl || null,
-    outputFile: render?.file || render?.outputFile || null,
+    outputFile: render?.file || render?.outputFile || render?.fileBase || null,
     title: render?.title || null,
     mode: render?.mode || result.mode || null,
     intent: truncateLogText(render?.intent || "", 3000),
@@ -5370,9 +10419,13 @@ function summarizeTaskResult(result = {}) {
     retryCount: attempts.filter((attempt) => attempt?.status === "failed").length,
     prompt: truncateLogText(render?.prompt || result.prompt || "", 12000),
     sourcePrompt: truncateLogText(render?.sourcePrompt || result.sourcePrompt || "", 12000),
-    thinking: truncateLogText(render?.thinking || result.thinking || "", 6000),
-    analysisTitle: result.analysis?.title || null,
-    analysisSummary: truncateLogText(result.analysis?.summary || result.analysis?.series_strategy || "", 3000)
+    thinking: truncateLogText(render?.thinking || result.thinking || render?.summary || "", 6000),
+    objectCount: render?.objectCount || (Array.isArray(render?.objects) ? render.objects.length : null),
+    analysisTitle: result.analysisTitle || result.analysis?.title || render?.modelingAnalysis?.subject || null,
+    analysisSummary: truncateLogText(
+      result.analysisSummary || result.analysis?.summary || result.analysis?.series_strategy || render?.modelingAnalysis?.summary || "",
+      3000
+    )
   };
 }
 
@@ -6179,7 +11232,9 @@ function healthBody() {
     providerProfiles: runtimeSettings.providerProfiles.map(publicRuntimeProviderProfile),
     publicApi: {
       version: "v1",
-      authenticationRequired: Boolean(config.publicApi.token),
+      authenticationRequired: Boolean(config.publicApi.token) || !config.publicApi.allowUnauthenticatedRemote,
+      tokenConfigured: Boolean(config.publicApi.token),
+      unauthenticatedRemoteAllowed: config.publicApi.allowUnauthenticatedRemote,
       corsEnabled: Boolean(config.publicApi.corsOrigin)
     }
   };
@@ -6428,6 +11483,26 @@ function publicApiRoutes() {
     },
     {
       method: "POST",
+      path: "/api/v1/modeling/3d-model",
+      description: "使用已经生成的白底主体图作为输入，把上传图片主体生成可预览、可导入 CAD 的参数化 3D 模型。"
+    },
+    {
+      method: "POST",
+      path: "/api/v1/modeling/forgecad",
+      description: "把图片建模结果生成 ForgeCAD 可交互项目脚本，或尝试打开 ForgeCAD Studio。"
+    },
+    {
+      method: "POST",
+      path: "/api/v1/modeling/cad-export",
+      description: "把图片建模结果转换为 text-to-cad/build123d 源码，并在配置引擎后导出 STEP/STL/GLB。"
+    },
+    {
+      method: "POST",
+      path: "/api/v1/modeling/analyze-subject",
+      description: "执行图片建模预处理：直接生成主体白底图，或先扩图完善主体；扩图结果可直接建模，白底图是可选步骤。"
+    },
+    {
+      method: "POST",
       path: "/api/v1/design-series/analyze",
       description: "分析参考图并整理设计系列策略。"
     },
@@ -6502,7 +11577,9 @@ function apiIndexBody(req) {
     version: "v1",
     baseUrl: `${baseUrl}/api/v1`,
     authentication: {
-      required: Boolean(config.publicApi.token),
+      required: Boolean(config.publicApi.token) || !config.publicApi.allowUnauthenticatedRemote,
+      tokenConfigured: Boolean(config.publicApi.token),
+      unauthenticatedRemoteAllowed: config.publicApi.allowUnauthenticatedRemote,
       headers: ["Authorization: Bearer <token>", "x-laogui-api-key: <token>"],
       env: "LAOGUI_API_TOKEN"
     },
@@ -6598,6 +11675,22 @@ function createOpenApiDocument(req) {
           security: auth,
           requestBody: { required: true, content: jsonContent(jsonSchemaRef("DesignSeriesGenerateRequest")) },
           responses: { 200: okJson(jsonSchemaRef("DesignSeriesGenerateResponse")), 400: errorResponse, 401: errorResponse, 500: errorResponse }
+        }
+      },
+      "/modeling/forgecad": {
+        post: {
+          summary: "生成或打开 ForgeCAD 项目",
+          security: auth,
+          requestBody: { required: true, content: jsonContent(jsonSchemaRef("CadIntegrationRequest")) },
+          responses: { 200: okJson(jsonSchemaRef("CadIntegrationResponse")), 400: errorResponse, 401: errorResponse, 500: errorResponse }
+        }
+      },
+      "/modeling/cad-export": {
+        post: {
+          summary: "用 text-to-cad 导出 CAD",
+          security: auth,
+          requestBody: { required: true, content: jsonContent(jsonSchemaRef("CadIntegrationRequest")) },
+          responses: { 200: okJson(jsonSchemaRef("CadIntegrationResponse")), 400: errorResponse, 401: errorResponse, 500: errorResponse }
         }
       },
       "/task-logs": {
@@ -6814,6 +11907,34 @@ function createOpenApiDocument(req) {
             render: { type: "object", additionalProperties: true }
           }
         },
+        CadIntegrationRequest: {
+          type: "object",
+          required: ["model"],
+          properties: {
+            model: {
+              type: "object",
+              required: ["objects"],
+              properties: {
+                title: { type: "string" },
+                units: { type: "string", default: "meters" },
+                objects: { type: "array", items: { type: "object", additionalProperties: true } }
+              },
+              additionalProperties: true
+            },
+            action: { type: "string", enum: ["script", "studio", "validate"], default: "script" },
+            formats: { type: "array", items: { type: "string", enum: ["step", "stl", "glb", "3mf"] } }
+          },
+          additionalProperties: true
+        },
+        CadIntegrationResponse: {
+          type: "object",
+          additionalProperties: true,
+          properties: {
+            ok: { type: "boolean" },
+            forgecad: { type: "object", additionalProperties: true },
+            cadExport: { type: "object", additionalProperties: true }
+          }
+        },
         HealthResponse: { type: "object", additionalProperties: true },
         TaskLogsResponse: {
           type: "object",
@@ -6939,19 +12060,13 @@ async function serveStatic(req, res) {
   }
 
   const url = new URL(req.url, `http://${req.headers.host}`);
-  const requested = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname);
+  const requested = url.pathname === "/" ? "/index.html" : url.pathname;
   if (externalDataDirEnabled && requested.startsWith("/generated/")) {
     await serveStaticFromDir(req, res, generatedDir, requested.replace(/^\/generated\/?/, ""));
     return;
   }
 
-  const safePath = path.normalize(requested).replace(/^(\.\.[/\\])+/, "");
-  const filePath = path.join(publicDir, safePath);
-
-  if (!filePath.startsWith(publicDir)) {
-    sendText(res, 403, "Forbidden");
-    return;
-  }
+  const filePath = staticFilePath(publicDir, requested);
 
   try {
     const stat = await fs.stat(filePath);
@@ -6968,36 +12083,25 @@ async function serveStatic(req, res) {
       ".jpg": "image/jpeg",
       ".jpeg": "image/jpeg",
       ".svg": "image/svg+xml; charset=utf-8",
-      ".json": "application/json; charset=utf-8"
+      ".json": "application/json; charset=utf-8",
+      ".glb": "model/gltf-binary",
+      ".gltf": "model/gltf+json; charset=utf-8",
+      ".dxf": "application/dxf",
+      ".scad": "text/plain; charset=utf-8",
+      ".step": "model/step",
+      ".stl": "model/stl",
+      ".py": "text/x-python; charset=utf-8"
     }[ext] || "application/octet-stream";
-    const cacheControl = [".html", ".css", ".js"].includes(ext)
-      ? "no-store, max-age=0"
-      : "public, max-age=31536000, immutable";
-    res.writeHead(200, {
-      "content-type": contentType,
-      "cache-control": cacheControl,
-      "content-length": stat.size,
-      "last-modified": stat.mtime.toUTCString()
+    await writeStaticResponse(req, res, filePath, stat, contentType, {
+      compressible: COMPRESSIBLE_STATIC_EXTENSIONS.has(ext)
     });
-    if (req.method === "HEAD") {
-      res.end();
-      return;
-    }
-    const stream = createReadStream(filePath);
-    stream.on("error", () => res.destroy());
-    stream.pipe(res);
   } catch {
     sendText(res, 404, "Not found");
   }
 }
 
 async function serveStaticFromDir(req, res, baseDir, requestedPath) {
-  const safePath = path.normalize(decodeURIComponent(requestedPath || "")).replace(/^(\.\.[/\\])+/, "");
-  const filePath = path.join(baseDir, safePath);
-  if (!filePath.startsWith(baseDir)) {
-    sendText(res, 403, "Forbidden");
-    return;
-  }
+  const filePath = staticFilePath(baseDir, requestedPath || "");
 
   try {
     const stat = await fs.stat(filePath);
@@ -7011,21 +12115,20 @@ async function serveStaticFromDir(req, res, baseDir, requestedPath) {
       ".jpg": "image/jpeg",
       ".jpeg": "image/jpeg",
       ".webp": "image/webp",
-      ".json": "application/json; charset=utf-8"
+      ".svg": "image/svg+xml; charset=utf-8",
+      ".json": "application/json; charset=utf-8",
+      ".js": "text/javascript; charset=utf-8",
+      ".glb": "model/gltf-binary",
+      ".gltf": "model/gltf+json; charset=utf-8",
+      ".dxf": "application/dxf",
+      ".scad": "text/plain; charset=utf-8",
+      ".step": "model/step",
+      ".stl": "model/stl",
+      ".py": "text/x-python; charset=utf-8"
     }[ext] || "application/octet-stream";
-    res.writeHead(200, {
-      "content-type": contentType,
-      "cache-control": "public, max-age=31536000, immutable",
-      "content-length": stat.size,
-      "last-modified": stat.mtime.toUTCString()
+    await writeStaticResponse(req, res, filePath, stat, contentType, {
+      compressible: COMPRESSIBLE_STATIC_EXTENSIONS.has(ext)
     });
-    if (req.method === "HEAD") {
-      res.end();
-      return;
-    }
-    const stream = createReadStream(filePath);
-    stream.on("error", () => res.destroy());
-    stream.pipe(res);
   } catch {
     sendText(res, 404, "Not found");
   }
@@ -7261,6 +12364,76 @@ async function handleExternalApi(req, res, routePath) {
     return;
   }
 
+  if (req.method === "POST" && routePath === "/images/cutout-analysis") {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const clientId = clientIdFromRequest(req, url);
+    const body = await readJson(req);
+    const analysis = await runLoggedTask({
+      type: "api-v1-ai-cutout-analysis",
+      body,
+      clientId,
+      run: () => analyzeCutoutSubject(body)
+    });
+    sendJson(res, 200, { ok: true, analysis });
+    return;
+  }
+
+  if (req.method === "POST" && routePath === "/modeling/analyze-subject") {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const clientId = clientIdFromRequest(req, url);
+    const body = await readJson(req);
+    const analysis = await runLoggedTask({
+      type: "api-v1-image-modeling-analysis",
+      body,
+      clientId,
+      run: () => analyzeImageModelingSubject(body)
+    });
+    sendJson(res, 200, { ok: true, analysis });
+    return;
+  }
+
+  if (req.method === "POST" && routePath === "/modeling/3d-model") {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const clientId = clientIdFromRequest(req, url);
+    const body = await readJson(req);
+    const model = await runLoggedTask({
+      type: "api-v1-image-modeling",
+      body,
+      clientId,
+      run: () => generateImageModel(body)
+    });
+    sendJson(res, 200, { ok: true, model });
+    return;
+  }
+
+  if (req.method === "POST" && routePath === "/modeling/forgecad") {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const clientId = clientIdFromRequest(req, url);
+    const body = await readJson(req);
+    const forgecad = await runLoggedTask({
+      type: "api-v1-forgecad-integration",
+      body,
+      clientId,
+      run: () => createForgeCadIntegration(body)
+    });
+    sendJson(res, 200, { ok: true, forgecad });
+    return;
+  }
+
+  if (req.method === "POST" && routePath === "/modeling/cad-export") {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const clientId = clientIdFromRequest(req, url);
+    const body = await readJson(req);
+    const cadExport = await runLoggedTask({
+      type: "api-v1-text-to-cad-export",
+      body,
+      clientId,
+      run: () => createTextToCadExport(body)
+    });
+    sendJson(res, 200, { ok: true, cadExport });
+    return;
+  }
+
   if (req.method === "POST" && routePath === "/design-series/generate") {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const clientId = clientIdFromRequest(req, url);
@@ -7363,6 +12536,20 @@ async function handleApi(req, res) {
         return;
       }
       sendJson(res, 200, publicTaskEntry(entry));
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/download-image") {
+      const sourceUrl = String(url.searchParams.get("url") || "");
+      if (!sourceUrl) {
+        sendJson(res, 400, { ok: false, error: "Missing url" });
+        return;
+      }
+      const image = await downloadImageUrlResult(sourceUrl);
+      sendBuffered(res, 200, image.buffer, {
+        "content-type": image.type,
+        "cache-control": "no-store"
+      });
       return;
     }
 
@@ -7555,6 +12742,71 @@ async function handleApi(req, res) {
       return;
     }
 
+    if (req.method === "POST" && url.pathname === "/api/ai-cutout-analysis") {
+      const clientId = clientIdFromRequest(req, url);
+      const body = await readJson(req);
+      const analysis = await runLoggedTask({
+        type: "ai-cutout-analysis",
+        body,
+        clientId,
+        run: () => analyzeCutoutSubject(body)
+      });
+      sendJson(res, 200, { ok: true, analysis });
+      return;
+    }
+
+    if (req.method === "POST" && (url.pathname === "/api/image-modeling/analyze" || url.pathname === "/api/modeling/analyze-subject")) {
+      const clientId = clientIdFromRequest(req, url);
+      const body = await readJson(req);
+      const analysis = await runLoggedTask({
+        type: "image-modeling-analysis",
+        body,
+        clientId,
+        run: () => analyzeImageModelingSubject(body)
+      });
+      sendJson(res, 200, { ok: true, analysis });
+      return;
+    }
+
+    if (req.method === "POST" && (url.pathname === "/api/image-modeling" || url.pathname === "/api/modeling/3d-model")) {
+      const clientId = clientIdFromRequest(req, url);
+      const body = await readJson(req);
+      const model = await runLoggedTask({
+        type: "image-modeling",
+        body,
+        clientId,
+        run: () => generateImageModel(body)
+      });
+      sendJson(res, 200, { ok: true, model });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/modeling/forgecad") {
+      const clientId = clientIdFromRequest(req, url);
+      const body = await readJson(req);
+      const forgecad = await runLoggedTask({
+        type: "forgecad-integration",
+        body,
+        clientId,
+        run: () => createForgeCadIntegration(body)
+      });
+      sendJson(res, 200, { ok: true, forgecad });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/modeling/cad-export") {
+      const clientId = clientIdFromRequest(req, url);
+      const body = await readJson(req);
+      const cadExport = await runLoggedTask({
+        type: "text-to-cad-export",
+        body,
+        clientId,
+        run: () => createTextToCadExport(body)
+      });
+      sendJson(res, 200, { ok: true, cadExport });
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/api/design-series") {
       const clientId = clientIdFromRequest(req, url);
       const body = await readJson(req);
@@ -7590,12 +12842,21 @@ async function handleApi(req, res) {
 }
 
 export const server = createServer(async (req, res) => {
-  const url = new URL(req.url || "/", `http://${req.headers.host || `localhost:${config.port}`}`);
-  if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
-    await handleApi(req, res);
-    return;
+  try {
+    res.laoguiRequest = req;
+    const url = new URL(req.url || "/", `http://${req.headers.host || `localhost:${config.port}`}`);
+    if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
+      await handleApi(req, res);
+      return;
+    }
+    await serveStatic(req, res);
+  } catch (error) {
+    const status = error.status || 500;
+    const logMethod = status >= 500 ? console.error : console.warn;
+    logMethod(`[static] ${req.method} ${req.url} failed: ${status} ${error.message || "Server error"}`);
+    if (res.writableEnded || res.destroyed) return;
+    sendText(res, status, status >= 500 ? "Server error" : error.message || "Bad request");
   }
-  await serveStatic(req, res);
 });
 
 export function closeLaoguiServer({ timeoutMs = 3000 } = {}) {
@@ -7614,7 +12875,7 @@ export function closeLaoguiServer({ timeoutMs = 3000 } = {}) {
   });
 }
 
-server.listen(config.port, async () => {
+server.listen(config.port, config.host, async () => {
   await loadRuntimeSettings().catch((error) => {
     console.warn(`[settings] runtime settings load failed: ${error.message || error}`);
   });
@@ -7624,7 +12885,7 @@ server.listen(config.port, async () => {
     if (active?.baseUrl) config.imageProvider.baseUrl = active.baseUrl;
   }
   hydrateImageEndpointStatsFromTaskLogs();
-  console.log(`老鬼AI running at http://localhost:${config.port}`);
+  console.log(`老鬼AI running at http://${config.host}:${config.port}`);
   console.log(`Reasoning model: ${config.reasoningModel} via ${config.reasoningProvider.baseUrl}`);
   console.log(`Image model: ${config.imageModel} via ${config.imageProvider.baseUrls.join(", ")}`);
   console.log(`Reasoning key configured: ${config.reasoningProvider.apiKey ? "yes" : "no"}`);

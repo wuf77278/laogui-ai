@@ -8,7 +8,7 @@
 
 - macOS Apple Silicon：下载 `LaoguiAI-v0.1.0-mac-arm64.dmg`
 - macOS Intel：下载 `LaoguiAI-v0.1.0-mac-intel.dmg`
-- Windows 10 / 11：下载 `LaoguiAI-v0.1.0-windows-setup.exe`
+- Windows 10 / 11：下载 `LaoguiAI-v0.1.0-windows-x64-setup.exe`
 
 首次打开后，在右上角“设置”里填入你自己的文本/思考 API 和生图 API。软件会把 API Key 保存在本机运行环境里，不会暴露给浏览器页面。
 
@@ -63,7 +63,8 @@ file only.
 When opening the app from another device, use the host machine address instead
 of `localhost`, for example `http://<host-lan-ip>:4177` or the mapped tunnel
 URL. The app keeps API keys on the host service, and remote browsers only call
-the local `/api/*` proxy.
+the local `/api/*` proxy. By default the service listens on `127.0.0.1`; set
+`HOST=0.0.0.0` only when you intentionally share it on LAN or through a tunnel.
 
 Remote-device stability notes:
 
@@ -73,8 +74,9 @@ Remote-device stability notes:
   `499 Client disconnected` with the request body size in logs.
 - API endpoint settings can only be changed from the host machine's
   `localhost` session; remote devices can generate tasks but cannot edit keys.
-- For LAN sharing or tunnel sharing, configure `LAOGUI_API_TOKEN` and
-  `API_CORS_ORIGIN` in `.env` before exposing the service.
+- For LAN sharing or tunnel sharing, configure `HOST=0.0.0.0`,
+  `LAOGUI_API_TOKEN` and `API_CORS_ORIGIN` in `.env` before exposing the
+  service. Remote API calls without a token are rejected by default.
 
 ## Daily Safety
 
@@ -88,6 +90,8 @@ npm run doctor
 
 The repository ignores `.env`, `logs/`, `public/generated/`, screenshots and
 other local artifacts. Generated images and logs are runtime data, not source.
+The `public/vendor` Three.js files are generated from the npm dependency during
+`npm install`; run `npm run vendor:sync` if they ever drift.
 
 Owner-only storage maintenance is available from the web Settings panel, or by
 calling `/api/storage/maintenance` from `localhost`. It can archive old generated
@@ -135,12 +139,22 @@ The app exposes stable external endpoints under `/api/v1`. The older `/api/*` ro
 - Image-to-render: `POST http://localhost:4177/api/v1/images/render-from-images`
 - Design series analysis: `POST http://localhost:4177/api/v1/design-series/analyze`
 - Design series generation: `POST http://localhost:4177/api/v1/design-series/generate`
+- Image-to-CAD in the web UI: upload a plan, drawing screenshot, or clean line image, then export DXF / SVG from the canvas.
+- Legacy 3D model API: `POST http://localhost:4177/api/v1/modeling/3d-model`
+- Legacy ForgeCAD/text-to-cad exports remain available by API, but the current canvas entry now focuses on image-to-CAD first.
 - Task logs: `GET http://localhost:4177/api/v1/task-logs?limit=20`
 - Canvas state: `GET/POST http://localhost:4177/api/v1/canvas-state`
 - Runtime settings: `GET http://localhost:4177/api/v1/settings`
 - Add Image Gen endpoint: `POST http://localhost:4177/api/v1/settings/image-endpoints`
 
 Custom Image Gen endpoints added from the web settings panel are saved locally in `logs/runtime-settings.json`. They can define direct `/images/generations` and `/images/edits` paths plus an optional Provider Manifest; Responses `image_generation` remains available as fallback.
+
+### Optional 3D/CAD Engines
+
+The canvas UI is currently focused on image-to-CAD DXF / SVG extraction. The older parametric 3D model path is kept as an API-level integration for later use:
+
+- ForgeCAD: set `FORGECAD_BIN=forgecad` after installing the ForgeCAD CLI. The UI can generate a `.forge.js` script and try to open `forgecad studio`.
+- text-to-cad: clone `https://github.com/earthtojake/text-to-cad`, install the CAD skill dependencies, then set `TEXT_TO_CAD_DIR=/absolute/path/to/text-to-cad`. If it is not configured, the app still downloads a build123d Python source file that can be run later.
 
 External access protection is required when sharing beyond localhost:
 

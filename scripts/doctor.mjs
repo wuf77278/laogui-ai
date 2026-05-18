@@ -36,6 +36,11 @@ function hasValue(key) {
   return Boolean(String(process.env[key] || "").trim());
 }
 
+function parseBooleanEnv(value, fallback = false) {
+  if (value === undefined || value === null || value === "") return fallback;
+  return !["0", "false", "no", "off"].includes(String(value).trim().toLowerCase());
+}
+
 function formatBytes(bytes = 0) {
   const value = Number(bytes) || 0;
   if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(1)}GB`;
@@ -116,10 +121,15 @@ async function main() {
   add(generated.bytes > 1024 ** 3 ? "warn" : "ok", "生成图占用", `${formatBytes(generated.bytes)} / ${generated.files} 文件`);
   add(logs.bytes > 200 * 1024 ** 2 ? "warn" : "ok", "日志占用", `${formatBytes(logs.bytes)} / ${logs.files} 文件`);
 
+  const host = String(process.env.HOST || process.env.LAOGUI_HOST || "127.0.0.1").trim();
+  const networkHost = !["127.0.0.1", "localhost", "::1", "[::1]"].includes(host);
   const tokenConfigured = hasValue("LAOGUI_API_TOKEN") || hasValue("API_ACCESS_TOKEN");
   const corsConfigured = hasValue("API_CORS_ORIGIN");
-  add(tokenConfigured ? "ok" : "warn", "外部访问口令", tokenConfigured ? "已配置" : "外部访问建议强制配置 LAOGUI_API_TOKEN");
-  add(corsConfigured ? "ok" : "warn", "外部访问 CORS", corsConfigured ? process.env.API_CORS_ORIGIN : "外部访问建议固定 API_CORS_ORIGIN");
+  const unauthenticatedRemoteAllowed = parseBooleanEnv(process.env.LAOGUI_ALLOW_UNAUTHENTICATED_REMOTE || process.env.API_ALLOW_UNAUTHENTICATED_REMOTE, false);
+  add(networkHost ? "warn" : "ok", "服务监听地址", networkHost ? `${host} 会暴露到网络，请确认已配置口令` : `${host}（仅本机）`);
+  add(!networkHost || tokenConfigured ? "ok" : "warn", "外部访问口令", tokenConfigured ? "已配置" : "局域网/内网穿透时请配置 LAOGUI_API_TOKEN");
+  add(!networkHost || corsConfigured ? "ok" : "warn", "外部访问 CORS", corsConfigured ? process.env.API_CORS_ORIGIN : "局域网/内网穿透时建议固定 API_CORS_ORIGIN");
+  add(unauthenticatedRemoteAllowed ? "warn" : "ok", "远程无口令访问", unauthenticatedRemoteAllowed ? "已显式允许，请仅用于受控内网" : "默认拒绝");
 
   const disk = diskFreeText();
   add(disk ? "ok" : "warn", "磁盘空间", disk || "无法读取 df 输出");

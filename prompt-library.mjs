@@ -1,11 +1,11 @@
-export const promptLibraryVersion = "community-prompt-library-v6-mode-alignment";
+export const promptLibraryVersion = "community-prompt-library-v9-panorama-expansion";
 
 const modeGroups = {
-  plan: new Set(["plan-axonometric", "plan-render", "cad", "cadrender"]),
+  plan: new Set(["plan-axonometric", "plan-axonometric-view", "plan-render", "cad", "cadrender"]),
   edit: new Set(["upscale", "detail", "materialreplace", "lightingadjust", "styletransfer", "sharpen", "outpaint"]),
   series: new Set(["designseries"]),
   board: new Set(["materialboard"]),
-  render: new Set(["custom", "photo", "whitemodel", "sketch", "plan-render", "cadrender"])
+  render: new Set(["photo", "panorama", "whitemodel", "sketch", "plan-axonometric-view", "plan-render", "cadrender"])
 };
 
 function hasMode(group, mode) {
@@ -22,6 +22,67 @@ const imagegenSkillLines = [
   "- For generic user prompts, add only practical composition, medium and quality details that directly support the request; do not add unrelated characters, brands, slogans or narrative objects."
 ];
 
+function communityPromptExpansionLines(mode = "custom") {
+  const lines = [
+    "OPEN_COMMUNITY_PROMPT_EXPANSION:",
+    "- Treat open prompt galleries as pattern libraries: extract artifact categories, hierarchy, invariants and control axes; do not copy viral prompt text verbatim.",
+    "- For production use, prefer short labeled segments when a prompt contains many systems; for simple one-shot outputs, keep the prompt direct and uncluttered.",
+    "- Decide one hero subject or artifact first; supporting details should clarify it, not compete with it.",
+    "- Pick only the relevant mini-schema below; do not force every request into every category.",
+    "ARTIFACT_MINI_SCHEMAS:",
+    "- Photoreal / campaign image: real-world moment, subject action, framing, lighting source, believable textures, natural imperfections and restrained retouching.",
+    "- Product / mockup: product geometry, label legibility, material finish, contact shadow, background, catalog or lifestyle context and no unintended restyling.",
+    "- UI / app mockup: product purpose, screen frame, layout hierarchy, spacing, real interface components, typography, state and no concept-art language.",
+    "- Typography / poster / ad: exact quoted copy, single occurrence count, type hierarchy, placement, contrast, composition, audience and no extra slogans.",
+    "- Infographic / diagram / slide: audience, learning goal, required parts, data labels, arrows or relationships, visual hierarchy, whitespace and readable text.",
+    "- Character / identity series: stable face/body/shape anchors, outfit or material anchors, expression/action changes, consistent camera rhythm and no identity drift.",
+    "- Composite / multi-image edit: source image index, transplanted element, target position, unchanged background, matched scale, perspective, light, shadow and occlusion."
+  ];
+
+  if (mode === "custom") {
+    lines.push("- Custom mode: preserve the user's implied artifact type, such as product shot, UI mockup, poster, diagram, logo, ad, character sheet or spatial render.");
+    lines.push("- Custom mode: add spatial-render camera/circulation grammar only when the request is clearly a spatial render; for product, UI, poster, diagram, board, logo or edit requests, keep that artifact grammar instead.");
+  }
+  if (hasMode("render", mode)) {
+    lines.push("- Spatial render expansion: define camera height, lens feel, vanishing-point discipline, focal zone, depth layers, circulation clearance and human-scale cues.");
+  }
+  if (mode === "panorama") {
+    lines.push("- Panorama expansion: specify 2:1 equirectangular output, wrap-safe left/right edges, stable horizon, 360-degree continuity and no single-view crop.");
+  }
+  if (hasMode("edit", mode)) {
+    lines.push("- Edit expansion: write CHANGE ONLY plus the named target, then repeat the untouched identity, geometry, camera, layout, color and non-target areas.");
+  }
+  if (hasMode("series", mode)) {
+    lines.push("- Series expansion: borrow the character-consistency pattern for spaces; repeat spatial DNA, material anchors, lighting philosophy and recurring details across every view.");
+  }
+  if (hasMode("board", mode)) {
+    lines.push("- Board expansion: treat the result as a design artifact with grid, hierarchy, sample scale and whitespace, not as a rendered room or random collage.");
+  }
+  return lines;
+}
+
+function communityPromptControlVocabulary(mode = "custom") {
+  const lines = [
+    "CONTROL_VOCABULARY:",
+    "- Camera: framing, distance, eye height, angle, lens feel, crop, subject placement, negative space, foreground/midground/background and perspective discipline.",
+    "- Lighting: time or condition, source direction, color temperature, shadow softness, indirect light, practical fixtures, exposure and highlight limits.",
+    "- Materials: base material, grain, roughness, reflectivity, translucency, edge detail, joint logic, pattern scale and construction plausibility.",
+    "- Palette: 4-6 bounded colors, contrast hierarchy, dominant/secondary/accent roles and no one-note hue wash.",
+    "- Text: quote required copy exactly, specify placement and typography, demand no extra characters, and use high quality for dense or small labels.",
+    "- Quality: choose concrete quality criteria such as crisp geometry, label legibility, clean silhouette, readable hierarchy, natural texture or stable identity."
+  ];
+  if (hasMode("plan", mode)) {
+    lines.push("- Plan-specific vocabulary: outer contour, wall thickness, room adjacency, openings, door swings, circulation, footprints, cut walls and orthographic or weak-perspective view.");
+  }
+  if (hasMode("edit", mode)) {
+    lines.push("- Edit-specific vocabulary: non-target areas, original crop, unchanged camera, unchanged object count, matched shadows, no saturation shift and no contrast drift.");
+  }
+  if (mode === "panorama") {
+    lines.push("- Panorama-specific vocabulary: equirectangular wrap, stable horizon, left/right seam safety, 360-degree continuity, full surround environment and no fisheye single-frame crop.");
+  }
+  return lines;
+}
+
 const modulePresetRules = {
   custom: [
     "- Custom mode: treat this as an open default preset, not a hidden workflow.",
@@ -30,13 +91,21 @@ const modulePresetRules = {
     "- State the chosen output clearly so the image model does not default to a generic interior render."
   ],
   "plan-axonometric": [
-    "- Fixed 3D floor-plan prompt: treat the uploaded plan as locked base geometry, not as loose inspiration.",
+    "- Fixed colored floor-plan prompt: treat the uploaded plan as locked base geometry, not as loose inspiration.",
     "- Preserve every visible linework relationship: outer contour, wall centerlines/thickness, room shapes, adjacency, openings, door swings, window/stair positions, circulation, labels/dimensions when visible, fixed fixtures and main furniture footprints.",
-    "- Convert the exact same footprints into a realistic 3D floor plan with orthographic or weak-perspective top-down cutaway camera, clear wall height, proportional furniture volumes and restrained material cues.",
-    "- Do not move, simplify, redraw, rotate, crop, add or remove any room, wall, opening or major furniture position."
+    "- Convert the exact same footprints into a clean top-down colored floor plan with semantic room/function/material zones, wet-area cues, furniture color hierarchy and circulation readability.",
+    "- Keep a strict top-down orthographic 2D plan camera; this step must not tilt, extrude or create perspective.",
+    "- Do not move, simplify, redraw, add or remove any room, wall, opening or major furniture position; do not turn this step into an axonometric or eye-level render."
+  ],
+  "plan-axonometric-view": [
+    "- Colored floor-plan to axonometric prompt: treat the uploaded colored floor plan as locked spatial geometry and semantic zoning, not as loose inspiration.",
+    "- Preserve the visible wall/opening/furniture footprints, room relationships, circulation, scale, cut-wall logic, stair/window positions and material zones.",
+    "- Re-express the same colored floor plan as a clearer high-precision axonometric view with orthographic or weak-perspective camera, stable projected footprint, readable wall height, visible wall thickness, proportional furniture volumes, controlled near/far depth, subtle 3D perspective compression and controlled shadows.",
+    "- If a dragged paper view-angle reference is attached, match its rotation, crop, silhouette, foreshortening and near/far edge scale instead of choosing a new default isometric view.",
+    "- Do not redraw, redesign, simplify, flatten to a 2D plan, turn into an eye-level render or change any major spatial/furniture position."
   ],
   "plan-render": [
-    "- 3D-plan-to-render: use the selected red-box region when present; otherwise infer one clear functional zone from the 3D floor plan or plan-based guide.",
+    "- Axonometric-to-render: use the selected red-box region when present; otherwise infer one clear functional zone from the axonometric or plan-based guide.",
     "- Translate only that target zone into a believable eye-level viewpoint, not a full-plan or top-down view.",
     "- Preserve functional relationships, adjacency and circulation while translating the target zone into foreground, midground and background.",
     "- Name source area, room role, camera standing point, view direction, main openings, furniture/display systems, materials, fixtures and clutter limits."
@@ -60,6 +129,11 @@ const modulePresetRules = {
     "- Site-photo render: preserve existing perspective, envelope, openings, columns, ceiling height, camera and scale cues.",
     "- Redesign finishes, furniture, lighting and styling as a renovation layer over the existing geometry.",
     "- Avoid shifting vanishing points, moving windows/columns or replacing the site with a copied reference room."
+  ],
+  panorama: [
+    "- Panorama render: treat the prompt as a 360-degree equirectangular scene with a continuous wrap-around environment.",
+    "- Preserve horizon stability, spatial continuity and believable left/right edge connection for seamless viewer rotation.",
+    "- Avoid fisheye single-frame composition, cropped perspective, broken seams, duplicated edge objects and black border artifacts."
   ],
   whitemodel: [
     "- White model polish: preserve massing, camera, levels, openings, proportions and spatial hierarchy.",
@@ -123,13 +197,19 @@ const modulePromptBlueprints = {
     risk: "do not default to generic interior render language when the user asks for board, product, facade, series, edit or concept output"
   },
   "plan-axonometric": {
-    output: "realistic 3D floor plan, orthographic or weak-perspective top-down cutaway",
+    output: "clean colored architectural floor plan, strict top-down orthographic view",
     invariant: "all original linework relationships, outer contour, wall thickness/centerlines, room adjacency, openings, door swings, windows, stairs, circulation, fixed fixtures, major furniture footprints, relative scale and orientation",
-    transform: "extrude only the locked original footprints into readable cut walls, proportional 3D furniture volumes, floor finishes, surface cues and clean render lighting",
-    risk: "reject flat 2D color plans, human-eye views, simplified/redesigned layouts, moved walls/openings, added/missing rooms, rotated/cropped perspectives and dramatic style over geometry"
+    transform: "add restrained semantic color fills, room/function/material zones, wet-area cues, furniture color hierarchy and circulation readability while keeping a strict top-down orthographic 2D plan",
+    risk: "reject axonometric views, 3D extrusion, human-eye views, simplified/redesigned layouts, moved walls/openings, added/missing rooms, perspective tilt and decorative style over geometry"
+  },
+  "plan-axonometric-view": {
+    output: "high-precision axonometric view of the existing colored floor plan, orthographic or weak-perspective, with controlled 3D perspective depth and dragged view-angle matching when supplied",
+    invariant: "all visible colored floor-plan relationships: wall/opening/furniture footprints, cut-wall logic, room adjacency, circulation, stair/window positions, scale, material zones and projected crop",
+    transform: "recompose the locked colored floor plan into a cleaner axonometric view with stable projection, readable wall height, visible wall thickness, proportional furniture volumes, material clarity, controlled shadows, near/far depth and a precise 3D perspective impression",
+    risk: "reject eye-level renders, flat 2D plans, redesigned layouts, moved walls/openings/furniture, default-camera drift, camera/crop mismatch with the supplied dragged reference and decorative style over geometry"
   },
   "plan-render": {
-    output: "final eye-level architecture/interior effect render from a selected or inferred 3D floor-plan zone",
+    output: "final eye-level architecture/interior effect render from a selected or inferred axonometric zone",
     invariant: "target zone, source-area clarity, room relationship, circulation, functional logic, openings, scale cues and main furniture/display arrangement",
     transform: "choose a believable camera standing point and translate the target zone into foreground, midground, background, materials, fixtures and atmosphere",
     risk: "reject remaining plan symbols, full-plan camera, unclear source zone, blueprint strokes, diagram labels, impossible perspective and copied reference rooms"
@@ -157,6 +237,12 @@ const modulePromptBlueprints = {
     invariant: "site perspective, envelope, openings, columns, ceiling height, camera, scale cues and major geometry",
     transform: "replace finishes, FF&E, lighting, fixtures and styling as a renovation layer over the existing space",
     risk: "reject shifted vanishing points, moved windows/columns, impossible ceiling changes and reference-room replacement"
+  },
+  panorama: {
+    output: "seamless 2:1 equirectangular 360-degree panorama",
+    invariant: "horizon stability, full surround continuity, wrap-safe edges, consistent perspective behavior and coherent scene geometry across the full rotation",
+    transform: "compose a believable 360-degree environment that reads cleanly in panorama viewers with stable lighting, geometry and edge continuity",
+    risk: "reject fisheye single-view crops, broken wrap seams, duplicated edge objects, black borders, unstable horizon and partial-scene framing"
   },
   whitemodel: {
     output: "polished realistic visualization from a white model screenshot",
@@ -245,7 +331,8 @@ export function communityPromptPreflightLines(mode = "custom") {
     "- Before final_prompt is accepted, verify it names the exact output artifact and does not contradict the selected workflow.",
     "- Verify preserve terms are more concrete than style terms whenever an input image exists.",
     "- Verify references are used as evidence and quality direction, not as permission to replace hard geometry.",
-    "- Verify camera/view language matches the artifact: flat plan, 3D floor-plan cutaway, eye-level render, board, edit or outpaint.",
+    "- Verify camera/view language matches the artifact: flat colored plan, axonometric view, eye-level render, board, edit or outpaint.",
+    "- Verify text-heavy, UI, product, poster, diagram or composite requests keep their own artifact grammar instead of being converted into a generic render.",
     "- Verify avoid-lines target the likely failure for this mode instead of adding a generic negative-prompt dump.",
     `- Mode-specific failure guard: ${modulePromptBlueprint(mode).risk}.`
   ];
@@ -257,11 +344,16 @@ export function communityPromptKernel(mode = "custom") {
     "- Use layered controls instead of one paragraph: subject/space, operation, composition, camera, materials, lighting, palette, details, quality, avoid-lines.",
     "- Make constraints concrete and visible: name exact zones, objects, surfaces, openings, scale cues and finish rather than generic adjectives.",
     "- Keep references evidence-based: describe what each image contributes, then say what must not be copied.",
+    "- Use artifact-specific grammar: a UI screen needs layout and state, a poster needs type hierarchy, a product shot needs material and shadow, and a render needs spatial order.",
     "- For image-to-image tasks, state preserve boundaries before transformation goals.",
     "- Use negative instructions sparingly for likely failures only: watermarks, logos, unreadable text, UI overlay, geometry drift, collage, blur or artifacts."
   ];
   if (hasMode("render", mode)) {
     lines.push("- For spatial renders, control viewpoint, lens feel, perspective discipline, foreground/midground/background, scale, material behavior and lighting hierarchy.");
+    lines.push("- For architecture/interior renders, tie every detail back to function, circulation, construction logic, material behavior or a deliberate focal point.");
+  }
+  if (mode === "panorama") {
+    lines.push("- For panoramas, output a true 2:1 equirectangular surround image; prioritize seamless left/right wrap, stable horizon and full-room or full-environment continuity over dramatic single-shot framing.");
   }
   if (hasMode("series", mode)) {
     lines.push("- For series outputs, define one design DNA, then vary room role, camera distance, focal moment or detail scale without drifting palette and materials.");
@@ -285,6 +377,9 @@ export function communityPromptCompactRules(mode = "custom") {
     "- Apply the same compact structure: artifact -> operation -> preserve/transform -> composition/camera -> materials -> lighting -> palette -> details -> quality -> avoid.",
     "- Prefer specific visible nouns and constraints over stacked style adjectives."
   ];
+  if (mode === "custom") {
+    lines.push("- Custom mode: keep the user's implied artifact family explicit, especially product, UI, typography, diagram, ad, logo, composite or character work.");
+  }
   if (hasMode("plan", mode)) {
     lines.push("- Plan modes: geometry fidelity outranks style; preserve layout before rendering or coloring.");
   }
@@ -325,10 +420,13 @@ export function communityPromptLibraryBlock({ mode = "custom", referenceCount = 
     "- Separate controllable visual systems; do not bury camera, material, light and palette in one vague sentence.",
     "- Use concrete nouns and measurable boundaries: room type, zone, opening, furniture system, surface finish, fixture type, color family, scale cue.",
     "- For edits and reference workflows, lead with invariants, then describe the allowed transformation.",
+    "- For exact text, UI screens, posters, diagrams and product mockups, keep layout, type hierarchy, label placement and legibility constraints explicit.",
     "- Keep negative prompts targeted to likely model failures instead of long generic ban lists.",
     referenceRule,
     ...imagegenSkillLines,
     ...communityPromptKernel(mode),
+    ...communityPromptExpansionLines(mode),
+    ...communityPromptControlVocabulary(mode),
     ...communityModeControlLines(mode)
   ].join("\n");
 }
