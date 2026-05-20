@@ -146,7 +146,7 @@ The app exposes stable external endpoints under `/api/v1`. The older `/api/*` ro
 - Runtime settings: `GET http://localhost:4177/api/v1/settings`
 - Add Image Gen endpoint: `POST http://localhost:4177/api/v1/settings/image-endpoints`
 
-Custom Image Gen endpoints added from the web settings panel are saved locally in `logs/runtime-settings.json`. They can define direct `/images/generations` and `/images/edits` paths plus an optional Provider Manifest; Responses `image_generation` remains available as fallback.
+Custom Image Gen endpoints added from the web settings panel are saved locally in `logs/runtime-settings.json`. They can define direct `/images/generations` and `/images/edits` paths plus an optional Provider Manifest; you can also paste a `gpt_image_playground` `customProviders` export and let the server extract the manifest automatically. Responses `image_generation` remains available as fallback.
 
 ### Optional 3D/CAD Engines
 

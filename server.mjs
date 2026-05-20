@@ -642,6 +642,40 @@ function normalizeResultMapping(value, fallback = defaultImageResultMapping) {
   };
 }
 
+function selectCustomProviderFromExport(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const providers = Array.isArray(input.customProviders)
+    ? input.customProviders.filter((item) => item && typeof item === "object" && !Array.isArray(item))
+    : [];
+  if (!providers.length) return null;
+
+  const preferredIds = [
+    input.providerId,
+    input.customProviderId,
+    input.selectedProviderId,
+    input.activeProviderId,
+    input.defaultProviderId
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+
+  for (const id of preferredIds) {
+    const match = providers.find((provider) => String(provider.id || "").trim() === id || String(provider.name || "").trim() === id);
+    if (match) return match;
+  }
+
+  if (Array.isArray(input.profiles)) {
+    const activeProfile = input.profiles.find((profile) => profile && typeof profile === "object" && profile.active && profile.provider);
+    if (activeProfile) {
+      const match = providers.find((provider) => String(provider.id || "").trim() === String(activeProfile.provider).trim());
+      if (match) return match;
+    }
+  }
+
+  if (providers.length === 1) return providers[0];
+  return providers[0];
+}
+
 function normalizeSubmitMapping(value, fallback = {}) {
   const record = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const contentType = normalizeContentType(record.contentType, fallback.contentType || "json");
@@ -677,6 +711,10 @@ function normalizePollMapping(value) {
 
 function normalizeProviderManifest(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  if (!input.submit && Array.isArray(input.customProviders) && input.customProviders.length) {
+    const selected = selectCustomProviderFromExport(input);
+    return selected ? normalizeProviderManifest(selected) : null;
+  }
   const submit = input.submit && typeof input.submit === "object" ? input.submit : null;
   if (!submit) return null;
   return {
