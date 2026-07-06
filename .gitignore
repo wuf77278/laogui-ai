@@ -11,6 +11,11 @@ public/generated/
 public/archive/
 public/vendor/
 archive/
+output/
+outputs/
+cadam/
+图片素材/
+.playwright-cli/
 
 .codex-screens/
 .codex/

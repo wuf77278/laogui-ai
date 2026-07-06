@@ -2,7 +2,7 @@ import * as THREE from "./vendor/three.module.js";
 import { GLTFExporter } from "./vendor/GLTFExporter.js";
 
 const referenceImageLimit = 8;
-const CANVAS_LAYOUT_VERSION = 12;
+const CANVAS_LAYOUT_VERSION = 16;
 const CANVAS_WORKSPACE_WIDTH = 4200;
 const CANVAS_WORKSPACE_HEIGHT = 3200;
 const IMAGE_UPLOAD_PRIMARY_MAX_EDGE = 2400;
@@ -77,6 +77,15 @@ const cropAspectOptions = [
 
 const state = {
   clientId: "",
+  anonymousClientId: "",
+  auth: {
+    configured: false,
+    authenticated: false,
+    user: null,
+    isAdmin: false,
+    users: [],
+    viewingClientId: ""
+  },
   canvases: [],
   activeCanvasId: "",
   nextCanvasIndex: 1,
@@ -111,20 +120,20 @@ const state = {
   projectLibraryFilter: "images",
   historyPanelOpen: false,
   statusPanelOpen: false,
-  imageEndpointHealth: [],
   activeImageBaseUrl: "",
-  recommendedImageEndpoint: null,
-  runtimeImageEndpoints: [],
   runtimeProviders: { reasoning: null, image: null },
-  providerProfiles: [],
+  storageSettings: null,
+  imageStudioEngine: null,
+  imageStudioFhlSkill: null,
   providerProbes: { reasoning: null, image: null },
   providerProbeBusy: { reasoning: false, image: false },
   imageApiProbeFeedback: null,
   canManageApiSettings: false,
+  storagePromptShown: false,
   apiReady: false,
-  endpointProbeBusyIds: new Set(),
-  endpointAutoProbeAt: 0,
-  theme: "day",
+  theme: window.__LAOGUI_INITIAL_THEME__ || "day",
+  canvasBackground: null,
+  workspaceGlass: null,
   outputSearch: "",
   outputFavoritesOnly: false,
   favoriteOutputIds: new Set(),
@@ -495,7 +504,25 @@ const els = {
   workspaceSettingsButton: $("workspaceSettingsButton"),
   appSettingsOverlay: $("appSettingsOverlay"),
   appSettingsModal: document.querySelector(".app-settings-modal"),
+  appSettingsBody: document.querySelector(".app-settings-body"),
   settingsCloseButton: $("settingsCloseButton"),
+  themeChoiceButtons: Array.from(document.querySelectorAll("[data-theme-choice]")),
+  themeSettingsStatus: $("themeSettingsStatus"),
+  workspaceGlassTransparencyInput: $("workspaceGlassTransparencyInput"),
+  workspaceGlassTransparencyValue: $("workspaceGlassTransparencyValue"),
+  workspaceGlassBlurInput: $("workspaceGlassBlurInput"),
+  workspaceGlassBlurValue: $("workspaceGlassBlurValue"),
+  canvasBackgroundStatus: $("canvasBackgroundStatus"),
+  canvasBackgroundPreview: $("canvasBackgroundPreview"),
+  canvasBackgroundPresetButtons: Array.from(document.querySelectorAll("[data-canvas-background-preset]")),
+  canvasBackgroundImageInput: $("canvasBackgroundImageInput"),
+  uploadCanvasBackgroundButton: $("uploadCanvasBackgroundButton"),
+  clearCanvasBackgroundButton: $("clearCanvasBackgroundButton"),
+  canvasBackgroundColorInput: $("canvasBackgroundColorInput"),
+  canvasGridColorInput: $("canvasGridColorInput"),
+  canvasGridOpacityInput: $("canvasGridOpacityInput"),
+  canvasGridSizeInput: $("canvasGridSizeInput"),
+  canvasBackgroundImageOpacityInput: $("canvasBackgroundImageOpacityInput"),
   homeView: $("homeView"),
   workspaceView: $("workspaceView"),
   assetLibraryView: $("assetLibraryView"),
@@ -517,10 +544,12 @@ const els = {
   canvasListPanel: $("canvasListPanel"),
   canvasList: $("canvasList"),
   newCanvasButton: $("newCanvasButton"),
+  topNewCanvasButton: $("topNewCanvasButton"),
   renameCanvasButton: $("renameCanvasButton"),
   deleteCanvasButton: $("deleteCanvasButton"),
   clearAllCanvasesButton: $("clearAllCanvasesButton"),
   toggleCanvasListButton: $("toggleCanvasListButton"),
+  agentPanel: document.querySelector(".brief-panel.agent-panel"),
   toggleAgentPanelButton: $("toggleAgentPanelButton"),
   agentPanelRailButton: $("agentPanelRailButton"),
   agentPanelContent: $("agentPanelContent"),
@@ -535,7 +564,6 @@ const els = {
   floatingAspectRatioSelect: $("floatingAspectRatioSelect"),
   floatingQualitySelect: $("floatingQualitySelect"),
   floatingImageCountSelect: $("floatingImageCountSelect"),
-  floatingNewCanvasButton: $("floatingNewCanvasButton"),
   floatingGenerateButton: $("floatingGenerateButton"),
   floatingThinkingModeButton: $("floatingThinkingModeButton"),
   floatingContinueEditButton: $("floatingContinueEditButton"),
@@ -582,42 +610,42 @@ const els = {
   stylePresetButtons: Array.from(document.querySelectorAll("[data-style-preset]")),
   storageSummary: $("storageSummary"),
   storageMaintenanceHint: $("storageMaintenanceHint"),
+  storageOutputDir: $("storageOutputDir"),
+  storagePathHint: $("storagePathHint"),
+  chooseStorageDirButton: $("chooseStorageDirButton"),
+  saveStorageSettingsButton: $("saveStorageSettingsButton"),
+  resetStorageDirButton: $("resetStorageDirButton"),
+  storagePromptButtons: Array.from(document.querySelectorAll("[data-storage-prompt-mode]")),
   refreshStorageButton: $("refreshStorageButton"),
   cleanupTestGeneratedButton: $("cleanupTestGeneratedButton"),
   archiveGeneratedButton: $("archiveGeneratedButton"),
   pruneLogsButton: $("pruneLogsButton"),
+  imageStudioKernelStatus: $("imageStudioKernelStatus"),
+  imageStudioKernelSummary: $("imageStudioKernelSummary"),
+  imageStudioKernelHint: $("imageStudioKernelHint"),
   refreshApiSettingsButton: $("refreshApiSettingsButton"),
   reasoningApiBaseUrl: $("reasoningApiBaseUrl"),
   reasoningApiModel: $("reasoningApiModel"),
   reasoningApiKey: $("reasoningApiKey"),
   primaryImageApiBaseUrl: $("primaryImageApiBaseUrl"),
   primaryImageApiModel: $("primaryImageApiModel"),
+  primaryImageApiMode: $("primaryImageApiMode"),
+  primaryImageResponsesTransport: $("primaryImageResponsesTransport"),
+  primaryImageRequestPolicy: $("primaryImageRequestPolicy"),
+  primaryImageReasoningEffort: $("primaryImageReasoningEffort"),
   primaryImageApiResponsesPath: $("primaryImageApiResponsesPath"),
   primaryImageApiGenerationPath: $("primaryImageApiGenerationPath"),
   primaryImageApiEditPath: $("primaryImageApiEditPath"),
   primaryImageApiKey: $("primaryImageApiKey"),
   primaryImageProviderManifest: $("primaryImageProviderManifest"),
-  saveLocalApiSettingsButton: $("saveLocalApiSettingsButton"),
   probeReasoningApiButton: $("probeReasoningApiButton"),
   probePrimaryImageApiButton: $("probePrimaryImageApiButton"),
   localApiConnectionStatus: $("localApiConnectionStatus"),
   localApiProbeFeedback: $("localApiProbeFeedback"),
   localApiSettingsSummary: $("localApiSettingsSummary"),
-  imageApiLabel: $("imageApiLabel"),
-  imageApiBaseUrl: $("imageApiBaseUrl"),
-  imageApiKey: $("imageApiKey"),
-  imageApiResponsesPath: $("imageApiResponsesPath"),
-  imageApiGenerationPath: $("imageApiGenerationPath"),
-  imageApiEditPath: $("imageApiEditPath"),
-  imageApiProviderManifest: $("imageApiProviderManifest"),
-  saveImageApiEndpointButton: $("saveImageApiEndpointButton"),
-  probeImageApiEndpointButton: $("probeImageApiEndpointButton"),
+  saveReasoningApiSettingsButton: $("saveReasoningApiSettingsButton"),
+  saveImageApiSettingsButton: $("saveImageApiSettingsButton"),
   imageApiProbeFeedback: $("imageApiProbeFeedback"),
-  currentImageEndpointName: $("currentImageEndpointName"),
-  currentImageEndpointUrl: $("currentImageEndpointUrl"),
-  currentImageEndpointStatus: $("currentImageEndpointStatus"),
-  currentImageEndpointMeta: $("currentImageEndpointMeta"),
-  imageApiEndpointList: $("imageApiEndpointList"),
   imageOptionsPanel: $("imageOptionsPanel"),
   imageCountOptions: $("imageCountOptions"),
   generationSummaryLabel: $("generationSummaryLabel"),
@@ -639,7 +667,6 @@ const els = {
   outputType: $("outputType"),
   canvasCommand: $("canvasCommand"),
   canvasFloatingParams: document.querySelector(".canvas-floating-params"),
-  agentNewCanvasButton: $("agentNewCanvasButton"),
   canvasGenerateButton: $("canvasGenerateButton"),
   thinkingModeButton: $("thinkingModeButton"),
   continueEditButton: $("continueEditButton"),
@@ -659,6 +686,7 @@ const els = {
   renderResultLink: $("renderResultLink"),
   infiniteCanvas: $("infiniteCanvas"),
   canvasViewport: $("canvasViewport"),
+  canvasZoomLayer: $("canvasZoomLayer"),
   canvasLinks: $("canvasLinks"),
   canvasNodes: $("canvasNodes"),
   canvasFitButton: $("canvasFitButton"),
@@ -716,14 +744,13 @@ const PLAN_PAPER_PAN_STEP = 8;
 const CANVAS_STATE_VERSION = 1;
 const CLIENT_ID_STORAGE_KEY = "laogui-client-id";
 const CANVAS_LIST_COLLAPSED_STORAGE_KEY = "laogui-canvas-list-collapsed";
-const ENDPOINT_AUTO_PROBE_INTERVAL_MS = 90000;
+const CANVAS_BACKGROUND_STORAGE_KEY = "laogui-canvas-background";
+const WORKSPACE_GLASS_STORAGE_KEY = "laogui-workspace-glass";
 const RECOVERABLE_API_PATHS = new Set(["/api/generate-image", "/api/render-from-images", "/api/design-series", "/api/image-modeling", "/api/image-modeling/analyze"]);
 const TASK_RESULT_POLL_INTERVAL_MS = 2500;
 const TASK_RESULT_POLL_TIMEOUT_MS = 10 * 60 * 1000;
 const TASK_RESULT_MISSING_TIMEOUT_MS = 15000;
 const DESIGN_SERIES_PARALLEL_LIMIT = 2;
-let endpointAutoProbePromise = null;
-
 function createClientId() {
   if (window.crypto?.randomUUID) return `client-${window.crypto.randomUUID()}`;
   return `client-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -1009,6 +1036,174 @@ function defaultMultiAngleViewState() {
     dragging: null
   };
 }
+
+function defaultCanvasBackgroundSettings() {
+  return {
+    preset: "default",
+    backgroundColor: "#f7f7f4",
+    gridColor: "#7f5d21",
+    gridOpacity: 8,
+    gridSize: 144,
+    imageDataUrl: "",
+    imageUrl: "",
+    imageOpacity: 18
+  };
+}
+
+function defaultWorkspaceGlassSettings() {
+  return {
+    transparency: 58,
+    blur: 68
+  };
+}
+
+const canvasBackgroundPresets = {
+  default: {
+    backgroundColor: "#f7f7f4",
+    gridColor: "#7f5d21",
+    gridOpacity: 8,
+    gridSize: 144,
+    imageOpacity: 18
+  },
+  "rice-paper": {
+    backgroundColor: "#fbfaf4",
+    gridColor: "#b88a42",
+    gridOpacity: 7,
+    gridSize: 160,
+    imageOpacity: 12
+  },
+  "ink-wash": {
+    backgroundColor: "#f4f3ee",
+    gridColor: "#5f665d",
+    gridOpacity: 9,
+    gridSize: 156,
+    imageOpacity: 16
+  },
+  "paper-map-xuan": {
+    backgroundColor: "#f7f3e9",
+    gridColor: "#b88a42",
+    gridOpacity: 5,
+    gridSize: 160,
+    imageUrl: "assets/canvas-backgrounds/laogui-paper-map-01-xuan-paper.png",
+    imageOpacity: 82
+  },
+  "paper-map-contour": {
+    backgroundColor: "#f7f0e2",
+    gridColor: "#9a8463",
+    gridOpacity: 4,
+    gridSize: 172,
+    imageUrl: "assets/canvas-backgrounds/laogui-paper-map-02-contour-lines.png",
+    imageOpacity: 78
+  },
+  "paper-map-cloth": {
+    backgroundColor: "#f4eddf",
+    gridColor: "#927b5c",
+    gridOpacity: 4,
+    gridSize: 168,
+    imageUrl: "assets/canvas-backgrounds/laogui-paper-map-03-white-cloth.png",
+    imageOpacity: 76
+  },
+  "paper-map-mist": {
+    backgroundColor: "#f7f4ee",
+    gridColor: "#8c9287",
+    gridOpacity: 4,
+    gridSize: 176,
+    imageUrl: "assets/canvas-backgrounds/laogui-paper-map-04-ink-mist.png",
+    imageOpacity: 72
+  },
+  "paper-map-route": {
+    backgroundColor: "#f8f1e2",
+    gridColor: "#b88a42",
+    gridOpacity: 4,
+    gridSize: 164,
+    imageUrl: "assets/canvas-backgrounds/laogui-paper-map-05-route-traces.png",
+    imageOpacity: 78
+  },
+  "paper-map-bamboo": {
+    backgroundColor: "#f4efe4",
+    gridColor: "#8f876f",
+    gridOpacity: 3,
+    gridSize: 168,
+    imageUrl: "assets/canvas-backgrounds/laogui-paper-map-06-bamboo-mountain.png",
+    imageOpacity: 54
+  },
+  plain: {
+    backgroundColor: "#fbfbf8",
+    gridColor: "#11110f",
+    gridOpacity: 3,
+    gridSize: 144,
+    imageOpacity: 0
+  }
+};
+
+const canvasBackgroundNightPresets = {
+  default: {
+    backgroundColor: "#080b10",
+    gridColor: "#d6b57c",
+    gridOpacity: 13,
+    imageOpacity: 12
+  },
+  "rice-paper": {
+    backgroundColor: "#11100c",
+    gridColor: "#d8b66f",
+    gridOpacity: 12,
+    imageOpacity: 10
+  },
+  "ink-wash": {
+    backgroundColor: "#0c1112",
+    gridColor: "#93a08f",
+    gridOpacity: 14,
+    imageOpacity: 12
+  },
+  "paper-map-xuan": {
+    backgroundColor: "#0e0d0a",
+    gridColor: "#d8b66f",
+    gridOpacity: 9,
+    imageOpacity: 16
+  },
+  "paper-map-contour": {
+    backgroundColor: "#0e0c08",
+    gridColor: "#d0b07a",
+    gridOpacity: 8,
+    imageOpacity: 15
+  },
+  "paper-map-cloth": {
+    backgroundColor: "#100d08",
+    gridColor: "#d0b07a",
+    gridOpacity: 8,
+    imageOpacity: 14
+  },
+  "paper-map-mist": {
+    backgroundColor: "#0c0e0e",
+    gridColor: "#a9b4a7",
+    gridOpacity: 9,
+    imageOpacity: 15
+  },
+  "paper-map-route": {
+    backgroundColor: "#0e0c08",
+    gridColor: "#d8b66f",
+    gridOpacity: 8,
+    imageOpacity: 15
+  },
+  "paper-map-bamboo": {
+    backgroundColor: "#0d0d0b",
+    gridColor: "#bcc1b2",
+    gridOpacity: 8,
+    imageOpacity: 12
+  },
+  plain: {
+    backgroundColor: "#07090d",
+    gridColor: "#d9e2ef",
+    gridOpacity: 6,
+    imageOpacity: 0
+  },
+  custom: {
+    backgroundColor: "#080b10",
+    gridColor: "#d6b57c",
+    gridOpacity: 12,
+    imageOpacity: 12
+  }
+};
 
 function resetImageViewStates() {
   state.planPaperView = defaultPlanPaperViewState();
@@ -1479,6 +1674,9 @@ function renderCanvasList() {
   }
   if (els.newCanvasButton) {
     els.newCanvasButton.disabled = taskRunning;
+  }
+  if (els.topNewCanvasButton) {
+    els.topNewCanvasButton.disabled = taskRunning;
   }
   if (els.renameCanvasButton) {
     els.renameCanvasButton.disabled = taskRunning || !activeCanvasRecord();
@@ -1984,7 +2182,7 @@ const layoutV11NodePositions = {
   direction2: { x: 1220, y: 1240, w: 330 }
 };
 
-const defaultNodePositions = {
+const layoutV12NodePositions = {
   brief: { x: 740, y: 120, w: 360 },
   source: { x: 220, y: 650, w: 340 },
   selection: { x: 220, y: 1110, w: 340 },
@@ -1994,12 +2192,30 @@ const defaultNodePositions = {
   planWorkflow: { x: 740, y: 120, w: 360 },
   command: { x: 740, y: 405, w: 360 },
   think: { x: 740, y: 675, w: 360 },
-  render: { x: 1280, y: 595, w: 420 },
-  cad: { x: 1880, y: 150, w: 420 },
+  render: { x: 1220, y: 590, w: 420 },
+  cad: { x: 1760, y: 150, w: 420 },
   plan: { x: 740, y: 970, w: 360 },
-  direction0: { x: 1280, y: 1320, w: 330 },
-  direction1: { x: 1640, y: 1320, w: 330 },
-  direction2: { x: 1280, y: 1565, w: 330 }
+  direction0: { x: 1220, y: 1010, w: 330 },
+  direction1: { x: 1580, y: 1010, w: 330 },
+  direction2: { x: 1220, y: 1240, w: 330 }
+};
+
+const defaultNodePositions = {
+  brief: { x: 120, y: 120, w: 360 },
+  source: { x: 120, y: 430, w: 340 },
+  selection: { x: 120, y: 860, w: 340 },
+  references: { x: 120, y: 1120, w: 320 },
+  resources: { x: 120, y: 1460, w: 340 },
+  seriesAdvice: { x: 540, y: 120, w: 360 },
+  planWorkflow: { x: 540, y: 120, w: 360 },
+  command: { x: 540, y: 430, w: 360 },
+  think: { x: 540, y: 700, w: 360 },
+  plan: { x: 540, y: 1010, w: 360 },
+  render: { x: 980, y: 430, w: 420 },
+  cad: { x: 1420, y: 430, w: 420 },
+  direction0: { x: 980, y: 1010, w: 330 },
+  direction1: { x: 1340, y: 1010, w: 330 },
+  direction2: { x: 980, y: 1260, w: 330 }
 };
 
 function sameCanvasPosition(a, b) {
@@ -2153,7 +2369,7 @@ function estimatedCanvasNodeWidth(id, fallback = 320) {
 
 function branchParentForRender(render) {
   const parentNodeId = String(render?.parentNodeId || "");
-  if (!parentNodeId || parentNodeId === "source") return "";
+  if (!parentNodeId) return "";
   return parentNodeId;
 }
 
@@ -2169,15 +2385,106 @@ function branchNodePosition(parentNodeId, childId, { width = 420, row = 0, step 
   const parentPos = state.canvas.positions[parentNodeId] || defaultPositionForNode(parentNodeId);
   if (!parentPos) return null;
   const parentWidth = estimatedCanvasNodeWidth(parentNodeId, parentPos.w || 320);
-  const gapX = 100;
-  const gapY = 92;
-  const rowHeight = 650;
-  const stepX = width + 86;
+  const sourceBranch = parentNodeId === "source";
+  const gapX = sourceBranch ? 112 : 72;
+  const gapY = sourceBranch ? 34 : 28;
+  const rowHeight = sourceBranch ? 520 : 470;
+  const stepX = width + (sourceBranch ? 40 : 34);
+  const sourceMinX = Math.max(
+    defaultNodePositions.command.x + defaultNodePositions.command.w + 96,
+    defaultNodePositions.think.x + defaultNodePositions.think.w + 96
+  );
+  const baseX = sourceBranch
+    ? Math.max(parentPos.x + parentWidth + gapX, sourceMinX)
+    : parentPos.x + parentWidth + gapX;
+  const baseY = sourceBranch ? parentPos.y - 18 : parentPos.y;
   return {
-    x: Math.round(parentPos.x + parentWidth + gapX + step * stepX),
-    y: Math.round(parentPos.y + row * rowHeight + (row ? gapY : 0)),
+    x: Math.round(baseX + step * stepX),
+    y: Math.round(baseY + row * rowHeight + (row ? gapY : 0)),
     w: width
   };
+}
+
+function layoutV12DynamicNodePosition(id) {
+  const renderPipelineMatch = id.match(/^render(\d+)Pipeline(\d+)$/);
+  const renderMatch = id.match(/^render(\d+)$/);
+  const cadMatch = id.match(/^cad(\d+)$/);
+  const whiteModelMatch = id.match(/^whiteModel(\d+)$/);
+  const referenceMatch = id.match(/^reference(\d+)$/);
+  const directionImageMatch = id.match(/^directionImage(\d+)$/);
+  if (renderPipelineMatch) {
+    const renderIndex = Number(renderPipelineMatch[1]);
+    const pipelineIndex = Number(renderPipelineMatch[2]);
+    return compactOutputGridPosition(pipelineIndex, renderIndex, {
+      width: 410,
+      baseX: 980,
+      baseY: 520,
+      colGap: 440,
+      rowGap: 470,
+      groupGap: 610
+    });
+  }
+  if (renderMatch) {
+    const index = Number(renderMatch[1]);
+    const render = state.renders[index];
+    const pipelineStepCount = renderPipelineImageSteps(render).length;
+    if (isPlanWorkflowMode(render?.stepMode || render?.mode)) {
+      const normalizedMode = normalizeClientMode(render.stepMode || render.mode);
+      const stepIndex = planWorkflowSteps[normalizedMode]?.index || 1;
+      const sameStepIndex = state.renders
+        .slice(0, index)
+        .filter((item) => normalizeClientMode(item?.stepMode || item?.mode) === normalizedMode && !branchParentForRender(item)).length;
+      return compactOutputGridPosition(stepIndex - 1 + pipelineStepCount, sameStepIndex, {
+        baseX: 980,
+        baseY: 520,
+        colGap: 440,
+        rowGap: 470,
+        groupGap: 610
+      });
+    }
+    return compactOutputGridPosition(pipelineStepCount, index, {
+      baseX: 980,
+      baseY: 520,
+      colGap: 440,
+      rowGap: 470,
+      groupGap: 610
+    });
+  }
+  if (cadMatch) {
+    const index = Number(cadMatch[1]);
+    return compactOutputGridPosition(index, 0, {
+      baseX: 1430,
+      baseY: 120,
+      colGap: 420,
+      rowGap: 210,
+      groupGap: 520
+    });
+  }
+  if (whiteModelMatch) {
+    const index = Number(whiteModelMatch[1]);
+    return compactOutputGridPosition(index, 0, {
+      width: 470,
+      baseX: 980,
+      baseY: 1180,
+      colGap: 490,
+      rowGap: 560,
+      groupGap: 620
+    });
+  }
+  if (referenceMatch) {
+    const index = Number(referenceMatch[1]);
+    return { x: 120 + (index % 2) * 270, y: 1130 + Math.floor(index / 2) * 260, w: 250 };
+  }
+  if (directionImageMatch) {
+    const index = Number(directionImageMatch[1]);
+    return compactOutputGridPosition(index, 0, {
+      baseX: 1340,
+      baseY: 1180,
+      colGap: 430,
+      rowGap: 470
+    });
+  }
+  return null;
 }
 
 function branchDynamicNodePosition(id) {
@@ -2352,6 +2659,17 @@ function compactOutputGridPosition(slot, group = 0, { width = 420, baseX = 960, 
   };
 }
 
+function compactCanvasOutputPosition(slot, group = 0, options = {}) {
+  return compactOutputGridPosition(slot, group, {
+    width: options.width || 420,
+    baseX: options.baseX || 960,
+    baseY: options.baseY || 430,
+    colGap: options.colGap || 450,
+    rowGap: options.rowGap || 360,
+    groupGap: options.groupGap || 440
+  });
+}
+
 function layoutV11DynamicNodePosition(id) {
   const renderPipelineMatch = id.match(/^render(\d+)Pipeline(\d+)$/);
   const renderMatch = id.match(/^render(\d+)$/);
@@ -2454,13 +2772,13 @@ function defaultDynamicNodePosition(id) {
   if (renderPipelineMatch) {
     const renderIndex = Number(renderPipelineMatch[1]);
     const pipelineIndex = Number(renderPipelineMatch[2]);
-    return compactOutputGridPosition(pipelineIndex, renderIndex, {
+    return compactCanvasOutputPosition(pipelineIndex, renderIndex, {
       width: 410,
-      baseX: 1280,
-      baseY: 595,
-      colGap: 500,
-      rowGap: 640,
-      groupGap: 790
+      baseX: 980,
+      baseY: 430,
+      colGap: 450,
+      rowGap: 540,
+      groupGap: 680
     });
   }
   if (renderMatch) {
@@ -2473,54 +2791,64 @@ function defaultDynamicNodePosition(id) {
       const sameStepIndex = state.renders
         .slice(0, index)
         .filter((item) => normalizeClientMode(item?.stepMode || item?.mode) === normalizedMode && !branchParentForRender(item)).length;
-      return compactOutputGridPosition(stepIndex - 1 + pipelineStepCount, sameStepIndex, {
-        baseX: 1280,
-        baseY: 595,
-        colGap: 500,
-        rowGap: 640,
-        groupGap: 790
+      return compactCanvasOutputPosition(stepIndex - 1 + pipelineStepCount, sameStepIndex, {
+        baseX: 980,
+        baseY: 430,
+        colGap: 450,
+        rowGap: 540,
+        groupGap: 680
       });
     }
-    return compactOutputGridPosition(pipelineStepCount, index, {
-      baseX: 1280,
-      baseY: 595,
-      colGap: 500,
-      rowGap: 640,
-      groupGap: 790
+    if (pipelineStepCount > 0) {
+      return compactCanvasOutputPosition(pipelineStepCount, index, {
+        baseX: 980,
+        baseY: 430,
+        colGap: 450,
+        rowGap: 540,
+        groupGap: 680
+      });
+    }
+    return compactCanvasOutputPosition(index, 0, {
+      baseX: 980,
+      baseY: 430,
+      colGap: 450,
+      rowGap: 540,
+      groupGap: 680
     });
   }
   if (cadMatch) {
     const index = Number(cadMatch[1]);
-    return compactOutputGridPosition(index, 0, {
-      baseX: 1880,
-      baseY: 150,
-      colGap: 470,
-      rowGap: 250,
-      groupGap: 620
+    return compactCanvasOutputPosition(index, 0, {
+      baseX: 1420,
+      baseY: 430,
+      colGap: 450,
+      rowGap: 500,
+      groupGap: 600
     });
   }
   if (whiteModelMatch) {
     const index = Number(whiteModelMatch[1]);
-    return compactOutputGridPosition(index, 0, {
+    return compactCanvasOutputPosition(index, 0, {
       width: 470,
-      baseX: 1280,
-      baseY: 1320,
-      colGap: 540,
-      rowGap: 720,
-      groupGap: 780
+      baseX: 980,
+      baseY: 1220,
+      colGap: 510,
+      rowGap: 600,
+      groupGap: 700
     });
   }
   if (referenceMatch) {
     const index = Number(referenceMatch[1]);
-    return { x: 220 + (index % 2) * 300, y: 1360 + Math.floor(index / 2) * 330, w: 250 };
+    return { x: 120 + (index % 2) * 270, y: 1120 + Math.floor(index / 2) * 280, w: 250 };
   }
   if (directionImageMatch) {
     const index = Number(directionImageMatch[1]);
-    return compactOutputGridPosition(index, 0, {
-      baseX: 1640,
-      baseY: 1565,
-      colGap: 500,
-      rowGap: 640
+    return compactCanvasOutputPosition(index, 0, {
+      baseX: 1340,
+      baseY: 1260,
+      colGap: 450,
+      rowGap: 540,
+      groupGap: 650
     });
   }
   return null;
@@ -2539,18 +2867,75 @@ function previousPositionsForNode(id) {
     layoutV8DynamicNodePosition(id) || layoutV8NodePositions[id] || null,
     layoutV9DynamicNodePosition(id) || layoutV9NodePositions[id] || null,
     layoutV10DynamicNodePosition(id) || layoutV10NodePositions[id] || null,
-    layoutV11DynamicNodePosition(id) || layoutV11NodePositions[id] || null
+    layoutV11DynamicNodePosition(id) || layoutV11NodePositions[id] || null,
+    layoutV12DynamicNodePosition(id) || layoutV12NodePositions[id] || null
   ].filter(Boolean);
+}
+
+function shouldResetForCompactCanvasLayout(id) {
+  return /^(brief|source|selection|references|resources|seriesAdvice|planWorkflow|command|think|render|cad|plan|direction\d+|render\d+(?:Pipeline\d+)?|cad\d+|whiteModel\d+|reference\d+|directionImage\d+)$/.test(String(id || ""));
+}
+
+function estimatedCanvasNodeHeight(id) {
+  if (/^whiteModel\d+$/.test(String(id || ""))) return 560;
+  if (/^(render\d+|directionImage\d+|cad\d+|render\d+Pipeline\d+)$/.test(String(id || ""))) return 390;
+  if (/^reference\d+$/.test(String(id || ""))) return 230;
+  if (id === "source") return hasVisiblePrimaryInput() && isPlanPaperMode(state.mode) ? 390 : 330;
+  if (id === "resources") return 260;
+  if (id === "references") return 250;
+  if (id === "plan") return 210;
+  if (/^direction\d+$/.test(String(id || ""))) return 190;
+  return 180;
+}
+
+function sortCanvasPositionIds(ids) {
+  return [...ids].sort((a, b) => {
+    const posA = state.canvas.positions[a] || defaultPositionForNode(a);
+    const posB = state.canvas.positions[b] || defaultPositionForNode(b);
+    return (posA.x - posB.x) || (posA.y - posB.y) || String(a).localeCompare(String(b));
+  });
+}
+
+function resolveDefaultCanvasPositionCollisions(ids) {
+  const columns = [];
+  let moved = false;
+  sortCanvasPositionIds(ids).forEach((id) => {
+    const pos = state.canvas.positions[id];
+    if (!pos) return;
+    const width = estimatedCanvasNodeWidth(id, pos.w || 320);
+    const height = estimatedCanvasNodeHeight(id);
+    let column = columns.find((item) => Math.abs(item.x - pos.x) < 90);
+    if (!column) {
+      column = { x: pos.x, bottom: -Infinity };
+      columns.push(column);
+    }
+    const minY = column.bottom + 34;
+    if (pos.y < minY) {
+      pos.y = Math.round(minY);
+      moved = true;
+    }
+    pos.x = Math.max(40, Math.min(pos.x, CANVAS_WORKSPACE_WIDTH - width - 40));
+    pos.y = Math.max(40, Math.min(pos.y, CANVAS_WORKSPACE_HEIGHT - height - 40));
+    column.bottom = pos.y + height;
+  });
+  return moved;
 }
 
 function normalizeCanvasLayoutPositions() {
   if (state.canvas.layoutVersion === CANVAS_LAYOUT_VERSION) return false;
+  const shouldForceCompactLayout = Number(state.canvas.layoutVersion || 0) < 16;
+  const migratedIds = [];
   Object.keys(state.canvas.positions || {}).forEach((id) => {
     const current = state.canvas.positions[id];
-    if (previousPositionsForNode(id).some((position) => sameCanvasPosition(current, position))) {
+    if (
+      (shouldForceCompactLayout && shouldResetForCompactCanvasLayout(id)) ||
+      previousPositionsForNode(id).some((position) => sameCanvasPosition(current, position))
+    ) {
       state.canvas.positions[id] = { ...defaultPositionForNode(id) };
+      migratedIds.push(id);
     }
   });
+  resolveDefaultCanvasPositionCollisions(migratedIds);
   state.canvas.layoutVersion = CANVAS_LAYOUT_VERSION;
   return true;
 }
@@ -2980,6 +3365,17 @@ function currentCanvasUserPrompt() {
   return els.canvasCommand?.value.trim() || "";
 }
 
+function hasCustomGenerationInput() {
+  return Boolean(
+    (state.canvasCommandUserEdited && currentCanvasUserPrompt()) ||
+    state.primaryImage ||
+    activeReferenceImages().length ||
+    state.selectedScenePreset ||
+    state.selectedProjectTemplate ||
+    state.selectedStylePreset
+  );
+}
+
 function knownSystemCanvasCommands() {
   return new Set([
     ...Object.values(defaultCanvasCommands),
@@ -3232,6 +3628,13 @@ function clientScopedApiPath(path) {
   return `${path}${separator}clientId=${encodeURIComponent(state.clientId)}`;
 }
 
+function taskLogScopedApiPath(path) {
+  const selectedClientId = state.auth?.viewingClientId || "";
+  const separator = path.includes("?") ? "&" : "?";
+  const base = `${path}${separator}clientId=${encodeURIComponent(state.clientId)}`;
+  return selectedClientId ? `${base}&userClientId=${encodeURIComponent(selectedClientId)}` : base;
+}
+
 function normalizeRecoverableApiResult(path, result) {
   if (path === "/api/generate-image") return { ok: true, image: result };
   if (path === "/api/render-from-images") return { ok: true, render: result };
@@ -3333,15 +3736,17 @@ async function refreshHealth() {
   try {
     const response = await fetch("/api/health");
     const data = await response.json();
-    state.imageEndpointHealth = Array.isArray(data.imageEndpointHealth) ? data.imageEndpointHealth : [];
     state.activeImageBaseUrl = data.imageBaseUrl || "";
-    state.runtimeImageEndpoints = Array.isArray(data.runtimeImageEndpoints) ? data.runtimeImageEndpoints : state.runtimeImageEndpoints;
     state.runtimeProviders = data.runtimeProviders || state.runtimeProviders;
-    state.providerProfiles = Array.isArray(data.providerProfiles) ? data.providerProfiles : state.providerProfiles;
-    state.recommendedImageEndpoint = data.recommendedImageEndpoint || null;
+    state.storageSettings = data.storage || state.storageSettings;
+    state.imageStudioEngine = data.imageStudioEngine || state.imageStudioEngine;
+    state.imageStudioFhlSkill = data.imageStudioFhlSkill || state.imageStudioFhlSkill;
     const reasoningReady = data.reasoningConfigured ?? data.keyConfigured;
     const imageReady = data.imageConfigured ?? data.keyConfigured;
-    const endpointLabel = shortEndpoint(data.imageBaseUrl || data.recommendedImageEndpoint?.baseUrl || "");
+    const apiDisplayLabel = [
+      data.reasoningBaseUrl ? `思考 ${shortEndpoint(data.reasoningBaseUrl)}` : "",
+      data.imageBaseUrl ? `生图 ${shortEndpoint(data.imageBaseUrl)}` : ""
+    ].filter(Boolean).join(" / ");
     const imageBackendLabel = data.imageBackend === "responses-image-generation-tool"
       ? "Image Gen"
       : data.imageBackend === "openai-compatible-images-api"
@@ -3349,12 +3754,12 @@ async function refreshHealth() {
         : "Image";
     state.apiReady = Boolean(reasoningReady && imageReady);
     els.modelStatus.textContent = reasoningReady && imageReady
-      ? "AI 就绪"
+      ? (apiDisplayLabel ? `AI · ${apiDisplayLabel}` : "AI 就绪")
       : reasoningReady || imageReady
         ? "服务配置待检查"
         : "服务未配置";
     els.modelStatus.title = reasoningReady && imageReady
-      ? (friendExperienceMode ? "AI 服务已连接" : `思考：${data.reasoningBaseUrl || "--"}；生图：${data.imageBaseUrl || "--"}；后端：${data.imageBackend || imageBackendLabel}`)
+      ? (friendExperienceMode ? `AI 服务已连接：${apiDisplayLabel || "--"}` : `思考：${data.reasoningBaseUrl || "--"}；生图：${data.imageBaseUrl || "--"}；后端：${data.imageBackend || imageBackendLabel}`)
       : els.modelStatus.textContent;
     els.modelStatus.className = `status-pill ${reasoningReady && imageReady ? "ready" : "error"}`;
     renderApiSettings();
@@ -3373,47 +3778,22 @@ async function refreshApiSettings({ silent = false } = {}) {
   try {
     const data = await requestJson("/api/settings");
     const settings = data.settings || {};
-    state.runtimeImageEndpoints = Array.isArray(settings.imageEndpoints) ? settings.imageEndpoints : [];
     state.runtimeProviders = settings.providers || state.runtimeProviders;
-    state.providerProfiles = Array.isArray(settings.providerProfiles) ? settings.providerProfiles : state.providerProfiles;
+    state.storageSettings = settings.storage || state.storageSettings;
     state.providerProbes = settings.providerProbes || state.providerProbes;
-    state.imageEndpointHealth = Array.isArray(settings.imageEndpointHealth) ? settings.imageEndpointHealth : state.imageEndpointHealth;
     state.activeImageBaseUrl = settings.activeImageBaseUrl || state.activeImageBaseUrl;
-    state.recommendedImageEndpoint = settings.recommendedImageEndpoint || state.recommendedImageEndpoint;
+    state.imageStudioEngine = settings.imageStudioEngine || state.imageStudioEngine;
+    state.imageStudioFhlSkill = settings.imageStudioFhlSkill || state.imageStudioFhlSkill;
     state.canManageApiSettings = settings.canManageSettings !== false;
     renderLocalApiSettings(settings);
     renderApiSettings();
+    renderStorageSettings(settings.storage);
     renderStorageAccess();
+    maybeShowFirstRunStoragePrompt();
     if (!silent) toast("API 设置已刷新");
   } catch (error) {
     if (!silent) toast(error.message);
   }
-}
-
-function normalizeEndpointValue(value) {
-  return String(value || "").replace(/\/+$/, "");
-}
-
-function endpointHealthFor(baseUrl) {
-  const normalized = normalizeEndpointValue(baseUrl);
-  return state.imageEndpointHealth.find((item) => normalizeEndpointValue(item.baseUrl) === normalized) || null;
-}
-
-function endpointLabelFor(baseUrl) {
-  const endpoint = (state.runtimeImageEndpoints || []).find((item) => normalizeEndpointValue(item.baseUrl) === normalizeEndpointValue(baseUrl));
-  const health = endpointHealthFor(baseUrl);
-  return endpoint?.label || health?.label || shortEndpoint(baseUrl) || "--";
-}
-
-function endpointStatusInfo(health, { active = false, enabled = true } = {}) {
-  if (!enabled) return { label: "已停用", className: "disabled" };
-  if (active && health?.status === "available") return { label: "当前连接", className: "available" };
-  const status = health?.status || "unknown";
-  if (status === "available") return { label: active ? "当前连接" : "可用", className: "available" };
-  if (status === "missing_api_key") return { label: "缺少 Key", className: "warning" };
-  if (status === "cooling") return { label: "冷却中", className: "warning" };
-  if (status === "image_unsupported") return { label: "生图不可用", className: "error" };
-  return { label: "未检测", className: "unknown" };
 }
 
 function formatEndpointCheckedAt(value) {
@@ -3426,32 +3806,6 @@ function formatEndpointCheckedAt(value) {
   if (seconds < 3600) return `${Math.round(seconds / 60)} 分钟前检测`;
   if (seconds < 86400) return `${Math.round(seconds / 3600)} 小时前检测`;
   return `${Math.round(seconds / 86400)} 天前检测`;
-}
-
-function endpointMetaText(health) {
-  if (!health) return "还没有检测记录";
-  const parts = [];
-  if (health.probeMs) parts.push(`检测 ${Math.round(health.probeMs)}ms`);
-  parts.push(`成功 ${health.successes || 0}`);
-  parts.push(`失败 ${health.failures || 0}`);
-  parts.push(formatEndpointCheckedAt(health.lastProbeAt));
-  const errorText = health.lastProbeError || health.lastError || health.imageUnsupportedReason || "";
-  if (errorText && health.status !== "available") parts.push(`原因：${errorText}`);
-  return parts.join(" · ");
-}
-
-function renderCurrentImageEndpoint() {
-  if (!els.currentImageEndpointName) return;
-  const activeBaseUrl = state.activeImageBaseUrl || state.recommendedImageEndpoint?.baseUrl || "";
-  const health = endpointHealthFor(activeBaseUrl) || state.recommendedImageEndpoint || null;
-  const statusInfo = endpointStatusInfo(health, { active: Boolean(activeBaseUrl), enabled: true });
-  els.currentImageEndpointName.textContent = endpointLabelFor(activeBaseUrl);
-  const imagePath = health?.imageGenerationPath || "/v1/images/generations";
-  els.currentImageEndpointUrl.textContent = activeBaseUrl ? `${shortEndpoint(activeBaseUrl)} · ${imagePath}` : "未连接生图端点";
-  els.currentImageEndpointUrl.title = activeBaseUrl || "";
-  els.currentImageEndpointStatus.textContent = statusInfo.label;
-  els.currentImageEndpointStatus.className = `api-endpoint-status ${statusInfo.className}`;
-  els.currentImageEndpointMeta.textContent = endpointMetaText(health);
 }
 
 function apiSettingsManageMessage() {
@@ -3472,32 +3826,22 @@ function renderApiSettingsAccess() {
     els.reasoningApiKey,
     els.primaryImageApiBaseUrl,
     els.primaryImageApiModel,
+    els.primaryImageApiMode,
+    els.primaryImageResponsesTransport,
+    els.primaryImageRequestPolicy,
+    els.primaryImageReasoningEffort,
     els.primaryImageApiResponsesPath,
     els.primaryImageApiGenerationPath,
     els.primaryImageApiEditPath,
     els.primaryImageProviderManifest,
     els.primaryImageApiKey,
-    els.saveLocalApiSettingsButton,
+    els.saveReasoningApiSettingsButton,
+    els.saveImageApiSettingsButton,
     els.probeReasoningApiButton,
-    els.probePrimaryImageApiButton,
-    els.imageApiLabel,
-    els.imageApiBaseUrl,
-    els.imageApiKey,
-    els.imageApiResponsesPath,
-    els.imageApiGenerationPath,
-    els.imageApiEditPath,
-    els.imageApiProviderManifest,
-    els.saveImageApiEndpointButton,
-    els.probeImageApiEndpointButton
+    els.probePrimaryImageApiButton
   ].forEach((control) => {
     if (control) control.disabled = disabled;
   });
-  if (els.currentImageEndpointMeta && disabled) {
-    const meta = els.currentImageEndpointMeta.textContent || "";
-    if (!meta.includes("公网只读")) {
-      els.currentImageEndpointMeta.textContent = `${meta} · 公网只读`;
-    }
-  }
 }
 
 function apiProviderLabel(kind) {
@@ -3571,7 +3915,7 @@ function apiProviderProbeDetail(kind, probe, busy = false) {
 function runtimeProviderConnectionDetail(kind, provider = {}, probe = null) {
   const baseUrl = provider.baseUrl || "";
   const model = provider.model || (kind === "image" ? "gpt-image-2" : "gpt-5.5");
-  const keyText = provider.configured ? `Key ${provider.keyPreview || "已保存"}` : "未保存 Key";
+  const keyText = provider.configured ? "Key 已保存" : "未保存 Key";
   const probeText = probe
     ? apiProviderProbeDetail(kind, probe, false)
     : "尚未检测连接";
@@ -3581,6 +3925,53 @@ function runtimeProviderConnectionDetail(kind, provider = {}, probe = null) {
     keyText,
     probeText
   ].filter(Boolean).join(" · ");
+}
+
+function imageStudioKernelStatusInfo(skill = null) {
+  if (!skill) return { label: "未读取", className: "unknown" };
+  if (!skill.enabled) return { label: "已停用", className: "disabled" };
+  if (!skill.available && skill.required) return { label: "引擎缺失", className: "error" };
+  if (!skill.available) return { label: "引擎未找到", className: "warning" };
+  return { label: "内置可用", className: "available" };
+}
+
+function renderImageStudioKernel() {
+  if (!els.imageStudioKernelSummary && !els.imageStudioKernelStatus) return;
+  const engine = state.imageStudioEngine || state.imageStudioFhlSkill || null;
+  const imageProvider = state.runtimeProviders?.image || {};
+  const reasoningProvider = state.runtimeProviders?.reasoning || {};
+  const statusInfo = imageStudioKernelStatusInfo(engine);
+  const modeLabel = engine?.mode === "required" ? "软件内核必经" : engine?.mode === "optional" ? "可选引擎" : engine?.mode || "--";
+  const providerLabel = engine?.required ? "required" : "optional";
+  const configLabel = imageProvider.baseUrl ? shortEndpoint(imageProvider.baseUrl) : "--";
+  const routeLabel = [
+    imageProvider.apiMode || "",
+    imageProvider.responsesTransport || ""
+  ].filter(Boolean).join(" · ") || "--";
+  const modelLabel = [
+    imageProvider.model || "gpt-image-2",
+    reasoningProvider.model || ""
+  ].filter(Boolean).join(" / ");
+  if (els.imageStudioKernelStatus) {
+    els.imageStudioKernelStatus.textContent = statusInfo.label;
+    els.imageStudioKernelStatus.className = `api-endpoint-status ${statusInfo.className}`;
+  }
+  if (els.imageStudioKernelSummary) {
+    els.imageStudioKernelSummary.innerHTML = `
+      <div><span>调用模式</span><strong>${escapeHtml(modeLabel)}</strong><small>${escapeHtml(`engine ${providerLabel}`)}</small></div>
+      <div><span>项目 API 配置</span><strong>${escapeHtml(configLabel)}</strong><small>${escapeHtml(routeLabel)}</small></div>
+      <div><span>模型</span><strong>${escapeHtml(modelLabel)}</strong><small>${escapeHtml(engine?.available ? "go-cli 已找到" : "go-cli 未找到")}</small></div>
+    `;
+  }
+  if (els.imageStudioKernelHint) {
+    if (!engine?.available && engine?.required) {
+      els.imageStudioKernelHint.textContent = "未找到 Image Studio go-cli 引擎；当前软件生图中枢不可用，请检查打包资源或 IMAGE_STUDIO_CLI_PATH。";
+    } else if (!engine?.available) {
+      els.imageStudioKernelHint.textContent = "未找到 Image Studio go-cli；可选模式下会使用开发后备或原生通道。";
+    } else {
+      els.imageStudioKernelHint.textContent = "已找到 Image Studio go-cli；朋友电脑上会使用老鬼AI设置中保存的 Base URL、Key 和模型驱动这个引擎。";
+    }
+  }
 }
 
 function renderLocalApiConnectionStatus() {
@@ -3666,7 +4057,9 @@ function readManifestTextareaValue(control) {
 function renderLocalApiSettings(settings = {}) {
   const providers = settings.providers || state.runtimeProviders || {};
   state.runtimeProviders = providers;
-  if (Array.isArray(settings.providerProfiles)) state.providerProfiles = settings.providerProfiles;
+  if (settings.storage) state.storageSettings = settings.storage;
+  if (settings.imageStudioEngine) state.imageStudioEngine = settings.imageStudioEngine;
+  if (settings.imageStudioFhlSkill) state.imageStudioFhlSkill = settings.imageStudioFhlSkill;
   state.providerProbes = settings.providerProbes || state.providerProbes || {};
   const reasoning = providers.reasoning || {};
   const image = providers.image || {};
@@ -3674,27 +4067,31 @@ function renderLocalApiSettings(settings = {}) {
   if (els.reasoningApiModel && !els.reasoningApiModel.value) els.reasoningApiModel.value = reasoning.model || "";
   if (els.primaryImageApiBaseUrl && !els.primaryImageApiBaseUrl.value) els.primaryImageApiBaseUrl.value = image.baseUrl || "";
   if (els.primaryImageApiModel && !els.primaryImageApiModel.value) els.primaryImageApiModel.value = image.model || "";
-  if (els.primaryImageApiResponsesPath && !els.primaryImageApiResponsesPath.value) els.primaryImageApiResponsesPath.value = image.responsesPath || "/responses";
+  if (els.primaryImageApiMode) els.primaryImageApiMode.value = image.apiMode || "responses";
+  if (els.primaryImageResponsesTransport) els.primaryImageResponsesTransport.value = image.responsesTransport || "sse";
+  if (els.primaryImageRequestPolicy) els.primaryImageRequestPolicy.value = image.requestPolicy || "openai";
+  if (els.primaryImageReasoningEffort) els.primaryImageReasoningEffort.value = image.reasoningEffort || "xhigh";
+  if (els.primaryImageApiResponsesPath && !els.primaryImageApiResponsesPath.value) {
+    els.primaryImageApiResponsesPath.value = image.responsesPath || defaultImageResponsesPathForBaseUrl(image.baseUrl);
+  }
   if (els.primaryImageApiGenerationPath && !els.primaryImageApiGenerationPath.value) els.primaryImageApiGenerationPath.value = image.imageGenerationPath || "/v1/images/generations";
   if (els.primaryImageApiEditPath && !els.primaryImageApiEditPath.value) els.primaryImageApiEditPath.value = image.imageEditPath || "/v1/images/edits";
   if (els.primaryImageProviderManifest && !els.primaryImageProviderManifest.value) els.primaryImageProviderManifest.value = manifestToTextareaValue(image.providerManifest);
   if (els.localApiSettingsSummary) {
     const dataDir = settings.dataDir ? ` · 数据目录：${settings.dataDir}` : "";
-    const reasoningText = reasoning.configured ? `思考 Key ${reasoning.keyPreview || "已保存"}` : "未保存思考 Key";
-    const imageText = image.configured ? `生图 Key ${image.keyPreview || "已保存"}` : "未保存生图 Key";
+    const reasoningText = reasoning.configured ? "思考 Key 已保存" : "未保存思考 Key";
+    const imageText = image.configured ? "生图 Key 已保存" : "未保存生图 Key";
     const probeText = ["reasoning", "image"]
       .map((kind) => apiProviderProbeSummary(kind, state.providerProbes?.[kind]))
       .filter(Boolean)
       .join("；");
-    const profileText = Array.isArray(state.providerProfiles) && state.providerProfiles.length
-      ? `已保存 ${state.providerProfiles.length} 套 API：${state.providerProfiles.map((profile) => `${profile.label}${profile.active ? " 当前" : ""}`).join("、")}`
-      : "";
-    els.localApiSettingsSummary.textContent = [reasoningText, imageText, profileText, probeText]
+    els.localApiSettingsSummary.textContent = [reasoningText, imageText, probeText]
       .filter(Boolean)
       .join("；") + dataDir;
   }
   renderLocalApiProbeFeedback();
   renderLocalApiConnectionStatus();
+  renderImageStudioKernel();
 }
 
 async function saveRuntimeProvider(kind, payload) {
@@ -3703,10 +4100,7 @@ async function saveRuntimeProvider(kind, payload) {
     body: JSON.stringify({ kind, ...payload })
   });
   state.runtimeProviders = data.settings?.providers || state.runtimeProviders;
-  state.providerProfiles = Array.isArray(data.settings?.providerProfiles) ? data.settings.providerProfiles : state.providerProfiles;
   state.providerProbes = data.settings?.providerProbes || state.providerProbes;
-  state.runtimeImageEndpoints = data.settings?.imageEndpoints || state.runtimeImageEndpoints;
-  state.imageEndpointHealth = data.settings?.imageEndpointHealth || state.imageEndpointHealth;
   state.activeImageBaseUrl = data.settings?.activeImageBaseUrl || state.activeImageBaseUrl;
   renderLocalApiSettings(data.settings || {});
   renderApiSettings();
@@ -3721,7 +4115,11 @@ function runtimeProviderProbePayload(kind) {
       kind,
       baseUrl: els.primaryImageApiBaseUrl?.value.trim() || saved.baseUrl || "",
       model: els.primaryImageApiModel?.value.trim() || saved.model || "gpt-image-2",
-      responsesPath: els.primaryImageApiResponsesPath?.value.trim() || saved.responsesPath || "/responses",
+      apiMode: els.primaryImageApiMode?.value || saved.apiMode || "responses",
+      responsesTransport: els.primaryImageResponsesTransport?.value || saved.responsesTransport || "sse",
+      requestPolicy: els.primaryImageRequestPolicy?.value || saved.requestPolicy || "openai",
+      reasoningEffort: els.primaryImageReasoningEffort?.value || saved.reasoningEffort || "xhigh",
+      responsesPath: els.primaryImageApiResponsesPath?.value.trim() || saved.responsesPath || defaultImageResponsesPathForBaseUrl(els.primaryImageApiBaseUrl?.value.trim() || saved.baseUrl),
       imageGenerationPath: els.primaryImageApiGenerationPath?.value.trim() || saved.imageGenerationPath || "/v1/images/generations",
       imageEditPath: els.primaryImageApiEditPath?.value.trim() || saved.imageEditPath || "/v1/images/edits",
       ...readManifestTextareaValue(els.primaryImageProviderManifest),
@@ -3735,6 +4133,31 @@ function runtimeProviderProbePayload(kind) {
     model: els.reasoningApiModel?.value.trim() || saved.model || "gpt-5.5",
     ...(apiKey ? { apiKey } : {})
   };
+}
+
+function currentReasoningApiPayload() {
+  return {
+    baseUrl: els.reasoningApiBaseUrl?.value.trim() || "",
+    model: els.reasoningApiModel?.value.trim() || "gpt-5.5",
+    apiKey: els.reasoningApiKey?.value.trim() || ""
+  };
+}
+
+function currentImageApiPayload() {
+  const payload = {
+    baseUrl: els.primaryImageApiBaseUrl?.value.trim() || "",
+    model: els.primaryImageApiModel?.value.trim() || "gpt-image-2",
+    apiMode: els.primaryImageApiMode?.value || "responses",
+    responsesTransport: els.primaryImageResponsesTransport?.value || "sse",
+    requestPolicy: els.primaryImageRequestPolicy?.value || "openai",
+    reasoningEffort: els.primaryImageReasoningEffort?.value || "xhigh",
+    responsesPath: els.primaryImageApiResponsesPath?.value.trim() || defaultImageResponsesPathForBaseUrl(els.primaryImageApiBaseUrl?.value.trim()),
+    imageGenerationPath: els.primaryImageApiGenerationPath?.value.trim() || "/v1/images/generations",
+    imageEditPath: els.primaryImageApiEditPath?.value.trim() || "/v1/images/edits",
+    apiKey: els.primaryImageApiKey?.value.trim() || ""
+  };
+  Object.assign(payload, readManifestTextareaValue(els.primaryImageProviderManifest));
+  return payload;
 }
 
 function runtimeProviderProbeReady(kind, payload) {
@@ -3762,13 +4185,10 @@ async function postRuntimeProviderProbe(payload) {
 function applyProbeSettings(data = {}) {
   const settings = data.settings || {};
   if (settings.providers) state.runtimeProviders = settings.providers;
-  if (Array.isArray(settings.providerProfiles)) state.providerProfiles = settings.providerProfiles;
+  if (settings.imageStudioEngine) state.imageStudioEngine = settings.imageStudioEngine;
+  if (settings.imageStudioFhlSkill) state.imageStudioFhlSkill = settings.imageStudioFhlSkill;
   if (settings.providerProbes) state.providerProbes = settings.providerProbes;
-  if (Array.isArray(settings.imageEndpoints)) state.runtimeImageEndpoints = settings.imageEndpoints;
-  if (Array.isArray(settings.imageEndpointHealth)) state.imageEndpointHealth = settings.imageEndpointHealth;
-  if (Array.isArray(data.imageEndpointHealth)) state.imageEndpointHealth = data.imageEndpointHealth;
   state.activeImageBaseUrl = settings.activeImageBaseUrl || data.imageBaseUrl || state.activeImageBaseUrl;
-  state.recommendedImageEndpoint = settings.recommendedImageEndpoint || data.recommendedImageEndpoint || state.recommendedImageEndpoint;
   if ("canManageSettings" in settings) state.canManageApiSettings = settings.canManageSettings !== false;
 }
 
@@ -3850,57 +4270,73 @@ async function probeRuntimeProvider(kind) {
   }
 }
 
-async function saveLocalApiSettings() {
+async function saveReasoningApiSettings() {
   if (!ensureCanManageApiSettings()) return;
-  const reasoningPayload = {
-    baseUrl: els.reasoningApiBaseUrl?.value.trim() || "",
-    model: els.reasoningApiModel?.value.trim() || "gpt-5.5",
-    apiKey: els.reasoningApiKey?.value.trim() || ""
-  };
-  const imagePayload = {
-    baseUrl: els.primaryImageApiBaseUrl?.value.trim() || "",
-    model: els.primaryImageApiModel?.value.trim() || "gpt-image-2",
-    responsesPath: els.primaryImageApiResponsesPath?.value.trim() || "/responses",
-    imageGenerationPath: els.primaryImageApiGenerationPath?.value.trim() || "/v1/images/generations",
-    imageEditPath: els.primaryImageApiEditPath?.value.trim() || "/v1/images/edits",
-    apiKey: els.primaryImageApiKey?.value.trim() || ""
-  };
-  try {
-    Object.assign(imagePayload, readManifestTextareaValue(els.primaryImageProviderManifest));
-  } catch (error) {
-    toast(error.message);
-    return;
-  }
+  const reasoningPayload = currentReasoningApiPayload();
   const savedReasoning = state.runtimeProviders?.reasoning || {};
-  const savedImage = state.runtimeProviders?.image || {};
   if (!reasoningPayload.baseUrl || (!reasoningPayload.apiKey && !savedReasoning.configured)) {
     toast("请填写思考 API 的 Base URL 和 Key");
     return;
   }
+  setBusy(els.saveReasoningApiSettingsButton, true, "保存中");
+  try {
+    if (!reasoningPayload.apiKey && savedReasoning.configured) delete reasoningPayload.apiKey;
+    await saveRuntimeProvider("reasoning", reasoningPayload);
+    if (els.reasoningApiKey) els.reasoningApiKey.value = "";
+    await refreshHealth();
+    toast("思考 API 已保存");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    setBusy(els.saveReasoningApiSettingsButton, false);
+  }
+}
+
+async function saveImageApiSettings() {
+  if (!ensureCanManageApiSettings()) return;
+  let imagePayload;
+  try {
+    imagePayload = currentImageApiPayload();
+  } catch (error) {
+    toast(error.message);
+    return;
+  }
+  const savedImage = state.runtimeProviders?.image || {};
   if (!imagePayload.baseUrl || (!imagePayload.apiKey && !savedImage.configured)) {
     toast("请填写生图 API 的 Base URL 和 Key");
     return;
   }
-  setBusy(els.saveLocalApiSettingsButton, true, "保存中");
+  setBusy(els.saveImageApiSettingsButton, true, "保存中");
   try {
-    if (!reasoningPayload.apiKey && savedReasoning.configured) delete reasoningPayload.apiKey;
     if (!imagePayload.apiKey && savedImage.configured) delete imagePayload.apiKey;
-    await saveRuntimeProvider("reasoning", reasoningPayload);
     await saveRuntimeProvider("image", imagePayload);
-    if (els.reasoningApiKey) els.reasoningApiKey.value = "";
     if (els.primaryImageApiKey) els.primaryImageApiKey.value = "";
     await refreshHealth();
-    await probeImageApiEndpoints({ silent: true, controlButton: false, includeDraft: false });
-    toast("本机 API 密钥已保存");
+    toast("生图 API 已保存");
   } catch (error) {
     toast(error.message);
   } finally {
-    setBusy(els.saveLocalApiSettingsButton, false);
+    setBusy(els.saveImageApiSettingsButton, false);
   }
+}
+
+async function saveLocalApiSettings() {
+  await saveReasoningApiSettings();
+  await saveImageApiSettings();
 }
 
 function renderStorageSummary(summary = null) {
   if (!els.storageSummary) return;
+  if (summary?.outputDir) {
+    state.storageSettings = {
+      ...(state.storageSettings || {}),
+      outputDir: summary.outputDir,
+      defaultOutputDir: summary.defaultOutputDir || state.storageSettings?.defaultOutputDir || "",
+      firstRunStoragePrompted: summary.firstRunStoragePrompted ?? state.storageSettings?.firstRunStoragePrompted,
+      savePromptMode: summary.savePromptMode || state.storageSettings?.savePromptMode || "ask"
+    };
+    renderStorageSettings(state.storageSettings);
+  }
   if (!summary) {
     els.storageSummary.innerHTML = `
       <div><span>生成图</span><strong>--</strong></div>
@@ -3916,9 +4352,116 @@ function renderStorageSummary(summary = null) {
   `;
 }
 
+function renderStorageSettings(storage = state.storageSettings) {
+  if (!storage) return;
+  state.storageSettings = storage;
+  if (els.storageOutputDir && !els.storageOutputDir.matches(":focus")) {
+    els.storageOutputDir.value = storage.outputDir || "";
+  }
+  const mode = storage.savePromptMode === "never" || storage.promptOnFirstRun === false ? "never" : "ask";
+  els.storagePromptButtons.forEach((button) => {
+    const active = button.dataset.storagePromptMode === mode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+  if (els.storagePathHint) {
+    const defaultText = storage.defaultOutputDir && storage.defaultOutputDir !== storage.outputDir
+      ? `默认：${storage.defaultOutputDir}`
+      : "当前使用默认目录";
+    els.storagePathHint.textContent = `${storage.outputDir || "未设置保存位置"} · ${mode === "ask" ? "首次使用会提醒选择位置" : "首次使用不再提醒"} · ${defaultText}`;
+  }
+}
+
+async function saveStorageSettings({ outputDir = null, promptMode = null, markPrompted = false } = {}) {
+  if (!ensureCanManageApiSettings()) return false;
+  const current = state.storageSettings || {};
+  const nextOutputDir = outputDir ?? els.storageOutputDir?.value.trim() ?? current.outputDir ?? "";
+  if (!nextOutputDir) {
+    toast("请填写或选择输出目录");
+    return false;
+  }
+  const mode = promptMode || (current.savePromptMode === "never" ? "never" : "ask");
+  setBusy(els.saveStorageSettingsButton, true, "保存中");
+  try {
+    const data = await requestJson("/api/settings/storage", {
+      method: "POST",
+      body: JSON.stringify({
+        outputDir: nextOutputDir,
+        promptOnFirstRun: mode !== "never",
+        firstRunStoragePrompted: markPrompted || current.firstRunStoragePrompted || false,
+        savePromptMode: mode
+      })
+    });
+    state.storageSettings = data.settings?.storage || data.storage || state.storageSettings;
+    renderStorageSettings(state.storageSettings);
+    await refreshStorageSummary({ silent: true });
+    toast("输出目录已保存");
+    return true;
+  } catch (error) {
+    toast(error.message);
+    return false;
+  } finally {
+    setBusy(els.saveStorageSettingsButton, false);
+  }
+}
+
+async function chooseStorageDirectory() {
+  if (!ensureCanManageApiSettings()) return;
+  const picker = window.laoguiDesktop?.selectDirectory;
+  if (typeof picker !== "function") {
+    toast("当前浏览器不能直接选择目录，请手动填写完整路径后保存。");
+    focusElement(els.storageOutputDir);
+    return;
+  }
+  try {
+    const dir = await picker();
+    if (!dir) return;
+    if (els.storageOutputDir) els.storageOutputDir.value = dir;
+    await saveStorageSettings({ outputDir: dir, markPrompted: true });
+  } catch (error) {
+    toast(error.message || "选择目录失败");
+  }
+}
+
+async function resetStorageDirectory() {
+  const defaultDir = state.storageSettings?.defaultOutputDir || "";
+  if (!defaultDir) {
+    toast("未读取到默认目录");
+    return;
+  }
+  if (els.storageOutputDir) els.storageOutputDir.value = defaultDir;
+  await saveStorageSettings({ outputDir: defaultDir });
+}
+
+async function setStoragePromptMode(mode) {
+  const safeMode = mode === "never" ? "never" : "ask";
+  await saveStorageSettings({ promptMode: safeMode, markPrompted: safeMode === "never" });
+}
+
+function maybeShowFirstRunStoragePrompt() {
+  const storage = state.storageSettings;
+  if (state.storagePromptShown) return;
+  if (!storage?.needsFirstRunPrompt || !state.canManageApiSettings) return;
+  state.storagePromptShown = true;
+  openSettings(els.settingsButton || els.workspaceSettingsButton);
+  setTimeout(() => {
+    els.storageOutputDir?.focus();
+    toast("第一次使用请确认生成图片保存位置");
+  }, 180);
+}
+
 function renderStorageAccess() {
   const disabled = !state.canManageApiSettings;
-  [els.cleanupTestGeneratedButton, els.archiveGeneratedButton, els.pruneLogsButton].forEach((button) => {
+  [
+    els.storageOutputDir,
+    els.chooseStorageDirButton,
+    els.saveStorageSettingsButton,
+    els.resetStorageDirButton,
+    ...els.storagePromptButtons,
+    els.cleanupTestGeneratedButton,
+    els.archiveGeneratedButton,
+    els.pruneLogsButton
+  ].forEach((button) => {
     if (button) button.disabled = disabled;
   });
   if (els.storageMaintenanceHint) {
@@ -3963,317 +4506,15 @@ async function runStorageMaintenance(action, payload = {}, button = null) {
 }
 
 function renderApiSettings() {
-  renderCurrentImageEndpoint();
   renderApiSettingsAccess();
   renderImageApiProbeFeedback();
-  if (!els.imageApiEndpointList) return;
-  const endpoints = state.runtimeImageEndpoints || [];
-  if (!endpoints.length) {
-    const readonlyHint = state.canManageApiSettings ? "" : "公网访问为只读，朋友不能修改 API 配置。";
-    els.imageApiEndpointList.innerHTML = `<p class="settings-hint">还没有自定义 Image Gen API，当前使用环境变量里的端点池。${readonlyHint}</p>`;
-    return;
-  }
-
-  els.imageApiEndpointList.innerHTML = endpoints.map((endpoint) => {
-    const health = endpointHealthFor(endpoint.baseUrl);
-    const active = normalizeEndpointValue(state.activeImageBaseUrl) === normalizeEndpointValue(endpoint.baseUrl) || health?.active;
-    const statusInfo = endpointStatusInfo(health, { active, enabled: endpoint.enabled });
-    const probing = state.endpointProbeBusyIds.has(endpoint.id);
-    const disabled = !state.canManageApiSettings;
-    return `
-      <article class="api-endpoint-item ${active ? "active" : ""}">
-        <div class="api-endpoint-main">
-          <div class="api-endpoint-title-row">
-            <strong>${escapeHtml(endpoint.label || endpoint.baseUrl)}</strong>
-            <span class="api-endpoint-status ${escapeAttr(statusInfo.className)}">${escapeHtml(statusInfo.label)}</span>
-          </div>
-          <span title="${escapeAttr(endpoint.baseUrl)}">${escapeHtml(shortEndpoint(endpoint.baseUrl))} · ${escapeHtml(endpoint.imageGenerationPath || health?.imageGenerationPath || "/v1/images/generations")}</span>
-          <small>${escapeHtml(endpoint.keyPreview || "已保存 Key")} · ${escapeHtml(endpoint.providerManifestName || health?.providerManifestName || "OpenAI-compatible")} · ${escapeHtml(endpointMetaText(health))}</small>
-        </div>
-        <div class="api-endpoint-actions">
-          <button class="text-button" type="button" data-api-endpoint-probe="${escapeAttr(endpoint.id)}" ${probing || disabled ? "disabled" : ""}>${probing ? "检测中" : "检测"}</button>
-          <button class="text-button" type="button" data-api-endpoint-activate="${escapeAttr(endpoint.id)}" ${active || disabled ? "disabled" : ""}>启用</button>
-          <button class="text-button icon-only" type="button" data-api-endpoint-delete="${escapeAttr(endpoint.id)}" title="删除端点" aria-label="删除端点" ${disabled ? "disabled" : ""}><svg><use href="#icon-trash"></use></svg></button>
-        </div>
-      </article>
-    `;
-  }).join("");
-}
-
-function imageEndpointDraftProbePayload() {
-  return {
-    label: els.imageApiLabel?.value.trim() || "",
-    baseUrl: els.imageApiBaseUrl?.value.trim() || "",
-    apiKey: els.imageApiKey?.value.trim() || "",
-    responsesPath: els.imageApiResponsesPath?.value.trim() || "/v1/responses",
-    imageGenerationPath: els.imageApiGenerationPath?.value.trim() || "/v1/images/generations",
-    imageEditPath: els.imageApiEditPath?.value.trim() || "/v1/images/edits",
-    ...readManifestTextareaValue(els.imageApiProviderManifest)
-  };
-}
-
-function hasImageEndpointDraftInput(payload) {
-  return Boolean(payload.baseUrl || payload.apiKey);
-}
-
-function endpointProbeToastFromProbe(probe) {
-  const label = probe?.label || shortEndpoint(probe?.baseUrl || "") || "端点";
-  const elapsed = apiProbeElapsedText(probe);
-  if (probe?.ok) return `${label} 检测成功${elapsed ? ` · ${elapsed}` : ""}`;
-  return `${label} 检测失败${elapsed ? ` · ${elapsed}` : ""}：${compactApiProbeMessage(probe?.error || probe?.message || "请求失败", 96)}`;
-}
-
-function endpointProbeToastFromHealth(health) {
-  if (!health) return "端点检测完成";
-  return endpointProbeToastFromProbe({
-    ok: health.status === "available",
-    label: health.label,
-    baseUrl: health.baseUrl,
-    ms: health.probeMs,
-    message: health.lastProbeError || health.lastError || health.imageUnsupportedReason || ""
-  });
-}
-
-function endpointProbePoolToast(endpoints = []) {
-  const configured = endpoints.filter((endpoint) => endpoint.configured);
-  const pool = configured.length ? configured : endpoints;
-  if (!pool.length) return "没有可检测的生图端点，请先保存 Base URL 和 Key";
-  const available = pool.filter((endpoint) => endpoint.status === "available").length;
-  const active = pool.find((endpoint) => endpoint.active) || pool.find((endpoint) => endpoint.status === "available");
-  const activeText = active ? ` · 当前 ${active.label || shortEndpoint(active.baseUrl)}` : "";
-  return `端点检测完成：可用 ${available}/${pool.length}${activeText}`;
-}
-
-async function saveImageApiEndpoint() {
-  if (!ensureCanManageApiSettings()) return;
-  const payload = {
-    label: els.imageApiLabel?.value.trim() || "",
-    baseUrl: els.imageApiBaseUrl?.value.trim() || "",
-    apiKey: els.imageApiKey?.value.trim() || "",
-    responsesPath: els.imageApiResponsesPath?.value.trim() || "/v1/responses",
-    imageGenerationPath: els.imageApiGenerationPath?.value.trim() || "/v1/images/generations",
-    imageEditPath: els.imageApiEditPath?.value.trim() || "/v1/images/edits",
-    enabled: true
-  };
-  try {
-    Object.assign(payload, readManifestTextareaValue(els.imageApiProviderManifest));
-  } catch (error) {
-    toast(error.message);
-    return;
-  }
-  setBusy(els.saveImageApiEndpointButton, true, "保存中");
-  try {
-    const data = await requestJson("/api/settings/image-endpoints", {
-      method: "POST",
-      body: JSON.stringify(payload)
-    });
-    state.runtimeImageEndpoints = data.settings?.imageEndpoints || state.runtimeImageEndpoints;
-    state.imageEndpointHealth = data.settings?.imageEndpointHealth || state.imageEndpointHealth;
-    state.activeImageBaseUrl = data.settings?.activeImageBaseUrl || payload.baseUrl;
-    state.recommendedImageEndpoint = data.settings?.recommendedImageEndpoint || state.recommendedImageEndpoint;
-    if (els.imageApiKey) els.imageApiKey.value = "";
-    renderApiSettings();
-    setBusy(els.saveImageApiEndpointButton, true, "检测中");
-    await probeImageApiEndpoints({ silent: true, controlButton: false, includeDraft: false });
-    toast("已保存并完成端点检测");
-  } catch (error) {
-    toast(error.message);
-  } finally {
-    setBusy(els.saveImageApiEndpointButton, false);
-  }
-}
-
-async function activateImageApiEndpoint(id) {
-  if (!ensureCanManageApiSettings()) return;
-  try {
-    const data = await requestJson(`/api/settings/image-endpoints/${encodeURIComponent(id)}/activate`, { method: "POST" });
-    state.runtimeImageEndpoints = data.settings?.imageEndpoints || state.runtimeImageEndpoints;
-    state.imageEndpointHealth = data.settings?.imageEndpointHealth || state.imageEndpointHealth;
-    state.activeImageBaseUrl = data.settings?.activeImageBaseUrl || state.activeImageBaseUrl;
-    state.recommendedImageEndpoint = data.settings?.recommendedImageEndpoint || state.recommendedImageEndpoint;
-    renderApiSettings();
-    await probeImageApiEndpoint(id, { silent: true });
-    refreshHealth();
-    toast("已切换生图 API，并完成检测");
-  } catch (error) {
-    toast(error.message);
-  }
-}
-
-async function deleteImageApiEndpoint(id) {
-  if (!ensureCanManageApiSettings()) return;
-  if (!window.confirm("删除这个自定义生图 API 配置？删除后本机不再保存这个端点和 Key。")) return;
-  try {
-    const data = await requestJson(`/api/settings/image-endpoints/${encodeURIComponent(id)}`, { method: "DELETE" });
-    state.runtimeImageEndpoints = data.settings?.imageEndpoints || [];
-    state.imageEndpointHealth = data.settings?.imageEndpointHealth || state.imageEndpointHealth;
-    state.activeImageBaseUrl = data.settings?.activeImageBaseUrl || state.activeImageBaseUrl;
-    state.recommendedImageEndpoint = data.settings?.recommendedImageEndpoint || state.recommendedImageEndpoint;
-    renderApiSettings();
-    refreshHealth();
-    toast("已删除自定义生图 API");
-  } catch (error) {
-    toast(error.message);
-  }
-}
-
-async function probeImageApiEndpoints({ silent = false, controlButton = true, includeDraft = true } = {}) {
-  if (!state.canManageApiSettings) {
-    if (!silent) toast(apiSettingsManageMessage());
-    return false;
-  }
-  let draftPayload;
-  try {
-    draftPayload = imageEndpointDraftProbePayload();
-  } catch (error) {
-    if (!silent) toast(error.message);
-    return false;
-  }
-  const probingDraft = includeDraft && hasImageEndpointDraftInput(draftPayload);
-  if (probingDraft && (!draftPayload.baseUrl || !draftPayload.apiKey)) {
-    setImageApiProbeFeedback({
-      ok: false,
-      title: "端点检测",
-      status: "检测失败",
-      detail: "请填写端点 Base URL 和 API Key 后再检测"
-    });
-    if (!silent) toast("请填写端点 Base URL 和 API Key 后再检测");
-    return false;
-  }
-  if (controlButton) setBusy(els.probeImageApiEndpointButton, true, "检测中");
-  if (!silent) {
-    setImageApiProbeFeedback({
-      busy: true,
-      title: probingDraft ? "端点检测" : "端点池检测",
-      status: "检测中",
-      detail: probingDraft && draftPayload.baseUrl ? `正在连接 ${shortEndpoint(draftPayload.baseUrl)}` : "正在检测可用生图端点"
-    });
-  }
-  if (!silent) toast(probingDraft ? "端点开始检测" : "端点池开始检测");
-  try {
-    const data = await requestJson("/api/image-endpoints/probe", {
-      method: "POST",
-      body: JSON.stringify(probingDraft
-        ? { ...draftPayload, autoActivate: false }
-        : { autoActivate: true })
-    });
-    state.imageEndpointHealth = Array.isArray(data.imageEndpointHealth) ? data.imageEndpointHealth : [];
-    state.activeImageBaseUrl = data.imageBaseUrl || state.activeImageBaseUrl;
-    state.recommendedImageEndpoint = data.recommendedImageEndpoint || state.recommendedImageEndpoint;
-    state.endpointAutoProbeAt = Date.now();
-    renderApiSettings();
-    refreshHealth();
-    if (!silent) {
-      const message = probingDraft
-        ? endpointProbeToastFromProbe(data.draftProbe)
-        : endpointProbePoolToast(state.imageEndpointHealth);
-      setImageApiProbeFeedback({
-        ok: probingDraft ? Boolean(data.draftProbe?.ok) : true,
-        title: probingDraft ? (data.draftProbe?.label || "端点检测") : "端点池检测",
-        status: probingDraft ? (data.draftProbe?.ok ? "连接成功" : "检测失败") : "检测完成",
-        detail: message
-      });
-      toast(probingDraft
-        ? endpointProbeToastFromProbe(data.draftProbe)
-        : endpointProbePoolToast(state.imageEndpointHealth));
-    }
-    return probingDraft ? Boolean(data.draftProbe?.ok) : true;
-  } catch (error) {
-    if (!silent) {
-      setImageApiProbeFeedback({
-        ok: false,
-        title: probingDraft ? "端点检测" : "端点池检测",
-        status: "检测失败",
-        detail: error.message
-      });
-    }
-    if (!silent) toast(error.message);
-    return false;
-  } finally {
-    if (controlButton) setBusy(els.probeImageApiEndpointButton, false);
-  }
-}
-
-async function probeImageApiEndpoint(id, { silent = false } = {}) {
-  if (!id) return false;
-  if (!state.canManageApiSettings) {
-    if (!silent) toast(apiSettingsManageMessage());
-    return false;
-  }
-  state.endpointProbeBusyIds.add(id);
-  if (!silent) {
-    const endpoint = (state.runtimeImageEndpoints || []).find((item) => item.id === id);
-    setImageApiProbeFeedback({
-      busy: true,
-      title: endpoint?.label || "端点检测",
-      status: "检测中",
-      detail: endpoint?.baseUrl ? `正在连接 ${shortEndpoint(endpoint.baseUrl)}` : "正在检测端点"
-    });
-  }
-  renderApiSettings();
-  try {
-    const data = await requestJson("/api/image-endpoints/probe", {
-      method: "POST",
-      body: JSON.stringify({ endpointId: id, autoActivate: false })
-    });
-    state.imageEndpointHealth = Array.isArray(data.imageEndpointHealth) ? data.imageEndpointHealth : state.imageEndpointHealth;
-    state.activeImageBaseUrl = data.imageBaseUrl || state.activeImageBaseUrl;
-    state.recommendedImageEndpoint = data.recommendedImageEndpoint || state.recommendedImageEndpoint;
-    const checked = state.imageEndpointHealth.find((endpoint) => endpoint.runtimeId === id);
-    renderApiSettings();
-    refreshHealth();
-    if (!silent) {
-      const message = endpointProbeToastFromHealth(checked);
-      setImageApiProbeFeedback({
-        ok: checked ? checked.status === "available" : true,
-        title: checked?.label || "端点检测",
-        status: checked?.status === "available" ? "连接成功" : "检测失败",
-        detail: message
-      });
-      toast(message);
-    }
-    return checked ? checked.status === "available" : true;
-  } catch (error) {
-    if (!silent) {
-      setImageApiProbeFeedback({
-        ok: false,
-        title: "端点检测",
-        status: "检测失败",
-        detail: error.message
-      });
-    }
-    if (!silent) toast(error.message);
-    return false;
-  } finally {
-    state.endpointProbeBusyIds.delete(id);
-    renderApiSettings();
-  }
-}
-
-function maybeAutoProbeImageEndpoints({ force = false } = {}) {
-  if (endpointAutoProbePromise) return endpointAutoProbePromise;
-  if (!state.canManageApiSettings) return Promise.resolve(false);
-  const hasConfiguredEndpoint = state.imageEndpointHealth.some((endpoint) => endpoint.configured)
-    || state.runtimeImageEndpoints.some((endpoint) => endpoint.keyConfigured || endpoint.keyPreview);
-  if (!hasConfiguredEndpoint) return Promise.resolve(false);
-  const now = Date.now();
-  const stale = state.imageEndpointHealth.some((endpoint) => endpoint.configured && (!endpoint.lastProbeAt || now - Number(endpoint.lastProbeAt) > ENDPOINT_AUTO_PROBE_INTERVAL_MS));
-  if (!force && !stale && now - state.endpointAutoProbeAt < ENDPOINT_AUTO_PROBE_INTERVAL_MS) {
-    return Promise.resolve(false);
-  }
-  state.endpointAutoProbeAt = now;
-  endpointAutoProbePromise = probeImageApiEndpoints({ silent: true, controlButton: false, includeDraft: false })
-    .catch(() => false)
-    .finally(() => {
-      endpointAutoProbePromise = null;
-    });
-  return endpointAutoProbePromise;
+  renderImageStudioKernel();
 }
 
 async function refreshTaskLogs({ silent = false } = {}) {
   if (!els.taskLogList) return;
   try {
-    const response = await fetch(clientScopedApiPath("/api/task-logs?limit=200"));
+    const response = await fetch(taskLogScopedApiPath("/api/task-logs?limit=200"));
     const data = await response.json();
     if (!response.ok || data.ok === false) {
       throw new Error(data.error || "任务日志读取失败");
@@ -4899,6 +5140,11 @@ function formatActualImageParams(params = null, imageApi = "") {
   return parts.join(" · ");
 }
 
+function compactTaskLogText(value, maxLength = 128) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}...` : text;
+}
+
 function renderTaskLogItem(log) {
   const statusText = log.status === "success" ? "成功" : "失败";
   const typeText = taskTypeLabel(log.type);
@@ -4923,12 +5169,28 @@ function renderTaskLogItem(log) {
   const imageApi = log.result?.imageApi || "";
   const revisedPrompt = log.result?.revisedPrompt || "";
   const actualParamText = formatActualImageParams(actualParams, imageApi);
+  const outputFilePath = log.result?.outputFile || "";
+  const primaryMetaItems = [
+    formatTaskTime(timeText),
+    `参考图 ${refCount} 张`,
+    shortEndpoint(endpoint)
+  ].filter(Boolean);
+  const secondaryMetaItems = [
+    retryCount ? `重试 ${retryCount} 次` : "",
+    actualParamText
+  ].filter(Boolean);
+  const contextItems = [
+    workflowId ? `工作流 ${workflowId}` : "",
+    inputType ? `输入 ${inputType}` : "",
+    renderRegion ? `区域 ${renderRegion}` : "",
+    parentImageId ? `父图 ${parentImageId}` : "",
+    outputFilePath ? `文件 ${shortPath(outputFilePath)}` : ""
+  ].filter(Boolean);
+  const intentSummary = log.input?.intent || userPrompt || log.result?.analysisSummary || sourcePrompt || "";
+  const promptSummary = finalPrompt || sourcePrompt || userPrompt || "";
   const nextMode = nextPlanWorkflowModes(logMode)[0];
   const output = log.result?.outputUrl
     ? uiIconLink({ href: log.result.outputUrl, icon: "icon-export", label: "打开结果", attrs: `target="_blank" rel="noreferrer"` })
-    : "";
-  const outputFile = log.result?.outputFile
-    ? `<span title="${escapeAttr(log.result.outputFile)}">${escapeHtml(shortPath(log.result.outputFile))}</span>`
     : "";
   const error = log.error?.message ? `<p class="task-log-error">${escapeHtml(log.error.message)}</p>` : "";
   const attempts = logAttempts.length
@@ -4944,25 +5206,28 @@ function renderTaskLogItem(log) {
     : "";
   return `
     <article class="task-log-item ${log.status === "success" ? "success" : "failed"}">
-      <div class="task-log-row">
-        <strong>${escapeHtml(typeText)}${escapeHtml(mode)}</strong>
-        <span>${escapeHtml(statusText)} · ${escapeHtml(duration)}</span>
+      <div class="task-log-row task-log-title-row">
+        <div>
+          <strong>${escapeHtml(typeText)}${escapeHtml(mode)}</strong>
+        </div>
+        <span class="task-log-status ${log.status === "success" ? "success" : "failed"}">${escapeHtml(statusText)} · ${escapeHtml(duration)}</span>
       </div>
-      <p>${escapeHtml(formatTaskTime(timeText))} · 参考图 ${refCount} 张 · 端点 ${escapeHtml(endpoint)}${retryCount ? ` · 重试 ${retryCount} 次` : ""}</p>
-      ${actualParamText ? `<p>实际生图参数：${escapeHtml(actualParamText)}</p>` : ""}
-      ${workflowId || inputType || parentImageId || renderRegion ? `<p>${workflowId ? `工作流：${escapeHtml(workflowId)}` : ""}${inputType ? ` · 输入类型：${escapeHtml(inputType)}` : ""}${renderRegion ? ` · 区域：${escapeHtml(renderRegion)}` : ""}${parentImageId ? ` · 父图：${escapeHtml(parentImageId)}` : ""}</p>` : ""}
-      ${userPrompt ? `<p>用户原始指令：${escapeHtml(userPrompt)}</p>` : ""}
-      ${log.input?.intent ? `<p>任务意图：${escapeHtml(log.input.intent)}</p>` : ""}
-      ${log.result?.analysisSummary ? `<p>分析：${escapeHtml(log.result.analysisSummary)}</p>` : ""}
+      ${primaryMetaItems.length ? `<div class="task-log-meta">${primaryMetaItems.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
+      ${secondaryMetaItems.length ? `<div class="task-log-context task-log-params">${secondaryMetaItems.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
+      ${intentSummary ? `<p class="task-log-summary">${escapeHtml(intentSummary)}</p>` : ""}
+      ${promptSummary ? `<p class="task-log-prompt-preview">${escapeHtml(promptSummary)}</p>` : ""}
+      ${contextItems.length ? `<div class="task-log-context">${contextItems.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
       ${error}
       <div class="task-log-actions">
         ${output}
-        ${outputFile}
         ${finalPrompt ? uiIconButton({ icon: "icon-copy", label: "复制提示词", attrs: `data-log-action="copy-prompt" data-log-id="${escapeAttr(log.id)}"` }) : ""}
         ${nextMode && log.result?.outputUrl ? uiIconButton({ icon: "icon-continue", label: "继续下一步", attrs: `data-log-action="continue-next" data-next-mode="${escapeAttr(nextMode)}" data-log-id="${escapeAttr(log.id)}"` }) : ""}
         ${uiIconButton({ icon: "icon-refresh", label: "复跑", attrs: `data-log-action="rerun" data-log-id="${escapeAttr(log.id)}"` })}
         ${uiIconButton({ icon: "icon-trash", label: "删除记录", attrs: `data-log-action="delete-log" data-log-id="${escapeAttr(log.id)}"` })}
       </div>
+      ${userPrompt ? `<details><summary>用户原始指令</summary><p>${escapeHtml(userPrompt)}</p></details>` : ""}
+      ${log.input?.intent ? `<details><summary>任务意图</summary><p>${escapeHtml(log.input.intent)}</p></details>` : ""}
+      ${log.result?.analysisSummary ? `<details><summary>分析摘要</summary><p>${escapeHtml(log.result.analysisSummary)}</p></details>` : ""}
       ${attempts}
       ${revisedPrompt ? `<details><summary>API 改写提示词</summary><p>${escapeHtml(revisedPrompt)}</p></details>` : ""}
       ${prompt}
@@ -4993,7 +5258,7 @@ function bindTaskLogEvents() {
 async function deleteTaskLogRecord(log) {
   if (!log?.id) return;
   if (!window.confirm("从方案资产库删除这条生成记录？生成图片文件不会被删除。")) return;
-  await requestJson(clientScopedApiPath(`/api/task-logs/${encodeURIComponent(log.id)}`), { method: "DELETE" });
+  await requestJson(taskLogScopedApiPath(`/api/task-logs/${encodeURIComponent(log.id)}`), { method: "DELETE" });
   state.taskLogs = state.taskLogs.filter((item) => item.id !== log.id);
   renderWorkspaceHistoryPanel();
   renderAssetLibraryPage();
@@ -5341,8 +5606,7 @@ function setInputAdviceThinking(analysis) {
 }
 
 function getActiveImageEndpoint() {
-  const active = state.imageEndpointHealth.find((endpoint) => endpoint.active);
-  return active?.baseUrl || state.activeImageBaseUrl || "";
+  return state.runtimeProviders?.image?.baseUrl || state.activeImageBaseUrl || "";
 }
 
 function getReasoningEndpointLabel() {
@@ -5433,10 +5697,10 @@ async function generateImage(directionId) {
     target: direction.name,
     text: useThinkingMode
       ? `正在为「${direction.name}」推理空间镜头、材料表达、灯光层次和画面风险。`
-      : `思考模式已关闭，正在使用预设提示词直接生成「${direction.name}」。`
+      : `思考模式已关闭，正在使用快速预设直接生成「${direction.name}」。`
   };
   render();
-  toast(`${useThinkingMode ? "gpt-5.5 → Image Gen" : "预设提示词 → Image Gen"} 正在生成「${direction.name}」`);
+  toast(`${useThinkingMode ? "gpt-5.5 → Image Gen" : "快速预设 → Image Gen"} 正在生成「${direction.name}」`);
   try {
     const data = await api("/api/generate-image", {
       brief: readBrief(),
@@ -6664,6 +6928,17 @@ async function renderFromImages(options = {}) {
       };
       state.render = record;
       state.renders.push(record);
+      const latestOutputItem = {
+        id: record.id,
+        nodeId: `render${state.renders.length - 1}`,
+        url: record.url,
+        title: record.title,
+        intent: record.intent || "",
+        workflowId,
+        parentImageId,
+        parentNodeId
+      };
+      setCanvasBranchAnchor(outputItemToSelectedImage(latestOutputItem), latestOutputItem);
       updateActiveTask({
         success: state.activeTask.success + 1,
         phase: "保存结果",
@@ -6795,7 +7070,7 @@ async function generateDesignSeries(options = {}) {
       : `${useThinkingMode ? "正在根据参考图识别结果组织成套设计策略" : "思考模式已关闭，正在使用设计系列预设"}，并调用 Image Gen 生成一套设计图。`
   };
   renderWorkflowCanvas();
-  toast(outputCount > 1 ? `${useThinkingMode ? "gpt-5.5 → Image Gen" : "预设提示词 → Image Gen"} 正在生成 ${outputCount} 张设计系列图，最多并发 ${DESIGN_SERIES_PARALLEL_LIMIT} 张` : `${useThinkingMode ? "gpt-5.5 → Image Gen" : "预设提示词 → Image Gen"} 正在生成设计系列图`);
+  toast(outputCount > 1 ? `${useThinkingMode ? "gpt-5.5 → Image Gen" : "快速预设 → Image Gen"} 正在生成 ${outputCount} 张设计系列图，最多并发 ${DESIGN_SERIES_PARALLEL_LIMIT} 张` : `${useThinkingMode ? "gpt-5.5 → Image Gen" : "快速预设 → Image Gen"} 正在生成设计系列图`);
   try {
     let latestRecord = null;
     let reusableAnalysis = useThinkingMode ? state.designSeriesAnalysis : null;
@@ -6957,6 +7232,15 @@ async function runPrimaryAction(options = {}) {
   if (!inputRequirement.ready) {
     setUploadStatus("error", inputRequirement.message, { target: inputRequirement.target || "primary" });
     toast(inputRequirement.message);
+    refreshGenerationControls();
+    renderWorkflowCanvas();
+    return;
+  }
+  if (mode === "custom" && !hasCustomGenerationInput()) {
+    const message = "请先描述设计目标，或上传主图 / 参考图后再生成。";
+    setUploadStatus("error", message, { target: "primary" });
+    toast(message);
+    focusElement(els.canvasCommand);
     refreshGenerationControls();
     renderWorkflowCanvas();
     return;
@@ -7735,12 +8019,38 @@ function buildCurrentIntent() {
     : "";
   const hiddenPrompt = hiddenCanvasPromptBlock({ mode: state.mode });
   const userPrompt = userPromptPriorityBlock();
+  const fastDirectMode = !state.thinkingModeEnabled;
+  if (fastDirectMode) {
+    return [
+      `当前能力按钮：${meaning.label}`,
+      `按钮意义：${meaning.meaning}`,
+      "思考模式：关闭。不做额外提示词融合，使用快速预设和用户描述直接生图。",
+      `保留重点：${meaning.preserve}`,
+      `变化重点：${meaning.change}`,
+      inputAnalysisText,
+      workflowText,
+      selectionText,
+      planRenderRegionText,
+      planPaperViewText,
+      multiAngleViewText,
+      referenceText,
+      `输出类型：${els.outputType.value}`,
+      generationText,
+      designSeriesCountText,
+      designSeriesVisualTypeText,
+      scenePresetText ? compactTaskLogText(scenePresetText, 240) : "",
+      styleText ? compactTaskLogText(styleText, 180) : "",
+      resourceText ? compactTaskLogText(resourceText, 220) : "",
+      els.renderIntent.value.trim(),
+      userPrompt
+    ].filter(Boolean).join("\n");
+  }
   return [
     `当前能力按钮：${meaning.label}`,
     `按钮意义：${meaning.meaning}`,
     state.thinkingModeEnabled
       ? "思考模式：开启。先用 gpt-5.5 读取输入图、参考图、当前按钮功能、用户描述和预设模板，再优化最终提示词交给 Image Gen。"
-      : "思考模式：关闭。不做额外提示词融合，只把当前网页预设提示词、隐藏模板和用户描述作为直接生图提示词。",
+      : "思考模式：关闭。不做额外提示词融合，使用快速预设和用户描述直接生图。",
     featureOptimizationNotes[normalizeClientMode(state.mode)],
     `保留重点：${meaning.preserve}`,
     `变化重点：${meaning.change}`,
@@ -8381,7 +8691,7 @@ function selectedGenerationQuality() {
 }
 
 function thinkingPipelineLabel() {
-  return state.thinkingModeEnabled ? "gpt-5.5 → Image Gen" : "预设提示词 → Image Gen";
+  return state.thinkingModeEnabled ? "gpt-5.5 → Image Gen" : "快速预设 → Image Gen";
 }
 
 function refreshThinkingModeButtons() {
@@ -8409,7 +8719,7 @@ function setThinkingModeEnabled(enabled) {
     target: state.thinkingModeEnabled ? "思考模式" : "预设模式",
     text: state.thinkingModeEnabled
       ? "思考模式已开启：本次访问期间会先调用 gpt-5.5 读取输入图、参考图、当前按钮意义和用户描述；重新打开页面后默认关闭。"
-      : "思考模式已关闭：不做额外提示词融合，只使用网页内置预设提示词、隐藏模板和用户描述直接交给 Image Gen。"
+      : "思考模式已关闭：不做额外提示词融合，使用快速预设提示词和用户描述直接交给 Image Gen。"
   };
   refreshThinkingModeButtons();
   renderWorkflowCanvas();
@@ -10754,28 +11064,15 @@ function showHome() {
 
 async function showWorkspace(mode = "canvas") {
   mode = mode === "canvas" ? mode : publicModeOrFallback(mode);
-  const enteringFromHome = els.workspaceView.hidden;
   document.body.classList.remove("asset-library-active");
   document.body.classList.add("workspace-active");
   applyAgentPanelCollapsed(state.agentPanelCollapsed);
-  applyCanvasListCollapsed(friendExperienceMode && enteringFromHome ? true : state.canvasListCollapsed, { persist: false });
+  applyCanvasListCollapsed(true, { persist: false });
   els.homeView.hidden = true;
   els.workspaceView.hidden = false;
   if (els.assetLibraryView) els.assetLibraryView.hidden = true;
-  const hadCanvases = state.canvases.length > 0;
   ensureCanvasCollection(mode === "canvas" ? state.mode || "custom" : mode);
-  const activeMode = normalizeClientMode(activeCanvasRecord()?.snapshot?.mode || state.mode || "custom");
-  const requestedMode = normalizeClientMode(mode);
-  const freshFriendStart = friendExperienceMode && enteringFromHome && mode !== "canvas";
-  if (mode !== "canvas" && hadCanvases && (freshFriendStart || !enteringFromHome || requestedMode !== activeMode)) {
-    captureActiveCanvasState();
-    const record = createCanvasRecord(mode);
-    state.canvases.push(record);
-    state.activeCanvasId = record.id;
-    await restoreCanvasRecord(record);
-  } else {
-    await restoreCanvasRecord(activeCanvasRecord());
-  }
+  await restoreCanvasRecord(activeCanvasRecord());
   requestAnimationFrame(() => {
     drawSelectionCanvas();
     renderWorkflowCanvas();
@@ -11532,6 +11829,50 @@ function outputItemForSelectedImage(selected = null) {
     || null;
 }
 
+function latestRenderBranchOutputItem() {
+  const index = state.renders.length - 1;
+  if (index < 0) return null;
+  const render = state.renders[index];
+  const outputId = render?.id || `render-${index}`;
+  return findOutputItem(outputId) || {
+    id: outputId,
+    nodeId: `render${index}`,
+    url: render?.url || "",
+    title: render?.title || `效果图 ${index + 1}`,
+    intent: render?.intent || "",
+    workflowId: render?.workflowId || "",
+    parentImageId: render?.parentImageId || "",
+    parentNodeId: render?.parentNodeId || ""
+  };
+}
+
+function referenceCanvasSelectedImage(index) {
+  const referenceIndex = Number(index);
+  const image = state.referenceImages[referenceIndex];
+  if (!image?.dataUrl) return null;
+  const weightLabel = referenceWeightOptions.find((item) => item.value === (image.weight || "default"))?.label || "默认参考";
+  return {
+    id: `reference${referenceIndex}`,
+    url: image.dataUrl,
+    title: image.name || `参考图 ${referenceIndex + 1}`,
+    caption: `${weightLabel} · ${image.name || `参考图 ${referenceIndex + 1}`}`,
+    kind: "Reference"
+  };
+}
+
+function selectedCanvasBranchSource(selected = state.canvas.selectedImage) {
+  if (!selected?.id || selected.id === "source") return null;
+  if (/^reference\d+$/.test(selected.id)) {
+    return { selectedImage: selected, outputItem: null };
+  }
+  const outputItem = outputItemForSelectedImage(selected);
+  if (!outputItem?.nodeId) return null;
+  return {
+    selectedImage: outputItemToSelectedImage(outputItem),
+    outputItem
+  };
+}
+
 function attachDerivedCanvasResultMetadata(result, selected = null, outputItem = null) {
   if (!result || typeof result !== "object") return result;
   const parentItem = outputItem || outputItemForSelectedImage(selected);
@@ -11543,6 +11884,16 @@ function attachDerivedCanvasResultMetadata(result, selected = null, outputItem =
   result.inputAnalysis = parentItem?.inputAnalysis || result.inputAnalysis || null;
   result.referenceCount = result.referenceCount ?? activeReferenceImages().length;
   return result;
+}
+
+async function focusReferenceImageForEditing(index, { openEditor = false } = {}) {
+  const selectedImage = referenceCanvasSelectedImage(index);
+  if (!selectedImage) return false;
+  state.canvas.selectedImage = selectedImage;
+  state.canvas.imageActionBusy = "";
+  renderWorkflowCanvas();
+  if (openEditor) await openDeepEdit(selectedImage, { focusTarget: "canvas" });
+  return true;
 }
 
 function isPanoramaOutput(item = {}) {
@@ -11786,6 +12137,19 @@ function setCanvasBranchAnchor(selectedImage = null, outputItem = null) {
   state.canvas.branchAnchorNodeId = nodeId;
   state.canvas.branchAnchorOutputId = outputItem?.id || selectedImage?.outputId || "";
   scheduleCanvasStateSave({ delay: 160 });
+}
+
+function ensureSessionCanvasBranchAnchor({ preferSelected = true } = {}) {
+  const selectedSource = preferSelected ? selectedCanvasBranchSource() : null;
+  if (selectedSource?.selectedImage) {
+    setCanvasBranchAnchor(selectedSource.selectedImage, selectedSource.outputItem);
+    return selectedSource;
+  }
+  const latestOutput = latestRenderBranchOutputItem();
+  if (!latestOutput?.nodeId) return null;
+  const selectedImage = outputItemToSelectedImage(latestOutput);
+  setCanvasBranchAnchor(selectedImage, latestOutput);
+  return { selectedImage, outputItem: latestOutput };
 }
 
 function clearCanvasBranchAnchor() {
@@ -12125,7 +12489,9 @@ function buildCanvasNodes() {
 
   const hasCanvasContent = Boolean(
     visiblePrimary ||
+    hasCustomGenerationInput() ||
     isPlanWorkflowMode(state.mode) ||
+    normalizedMode === "designseries" ||
     state.referenceImages.length ||
     state.assets.length ||
     visibleSelection ||
@@ -13018,7 +13384,7 @@ function ensureDeepEditOverlay() {
         ${uiIconButton({ icon: "icon-eraser", label: "清除标记", attrs: `data-deep-edit-action="clear"` })}
       </div>
       <div class="deep-edit-stage">
-        <canvas data-deep-edit-canvas></canvas>
+        <canvas data-deep-edit-canvas tabindex="0"></canvas>
         <span data-deep-edit-hint>在图上框选或涂鸦需要修改的区域</span>
       </div>
       <footer class="deep-edit-agent">
@@ -13064,7 +13430,7 @@ function ensureDeepEditOverlay() {
   return overlay;
 }
 
-async function openDeepEdit(selected) {
+async function openDeepEdit(selected, { focusTarget = "prompt" } = {}) {
   if (!selected?.url) return;
   const outputItem = findOutputItem(selected.outputId) || getOutputItems().find((item) => item.url === selected.url) || null;
   state.deepEdit = {
@@ -13087,7 +13453,7 @@ async function openDeepEdit(selected) {
   overlay.hidden = false;
   syncOverlayOpenClass();
   renderDeepEditOverlay();
-  focusOverlayControl(overlay, "[data-deep-edit-prompt]");
+  focusOverlayControl(overlay, focusTarget === "canvas" ? "[data-deep-edit-canvas]" : "[data-deep-edit-prompt]");
   try {
     state.deepEdit.image = await loadImage(selected.url);
     drawDeepEditCanvas();
@@ -15583,11 +15949,41 @@ function routeHorizontalCanvasLink(fromBox, toBox) {
   ]);
 }
 
+function routeCompactCanvasLink(fromBox, toBox) {
+  const dx = toBox.cx - fromBox.cx;
+  const dy = toBox.cy - fromBox.cy;
+  const horizontalBias = Math.abs(dx) >= Math.abs(dy) * 0.72;
+  if (horizontalBias) return routeHorizontalCanvasLink(fromBox, toBox);
+  return routeVerticalCanvasLink(fromBox, toBox);
+}
+
+function routeOutputCanvasLink(fromBox, toBox) {
+  const start = getNodeAnchor(fromBox.id, "right");
+  const end = getNodeAnchor(toBox.id, "left");
+  const lift = Math.max(44, Math.min(96, Math.abs(end.y - start.y) * 0.22));
+  const laneY = Math.min(start.y, end.y) - lift;
+  const midX = Math.max(fromBox.right + 42, Math.min(toBox.left - 42, (fromBox.right + toBox.left) / 2));
+  return canvasLinkRoute([
+    start,
+    { x: midX, y: start.y },
+    { x: midX, y: laneY },
+    { x: end.x, y: laneY },
+    end
+  ]);
+}
+
 function routeCanvasLink(from, to) {
   const fromBox = getNodeBox(from);
   fromBox.id = from;
   const toBox = getNodeBox(to);
   toBox.id = to;
+  if (
+    from === "think" &&
+    /^(render\d+|cad\d+|whiteModel\d+|render\d+Pipeline\d+)$/.test(String(to || "")) &&
+    toBox.left > fromBox.right
+  ) {
+    return routeOutputCanvasLink(fromBox, toBox);
+  }
   const overlapX = intervalOverlap(fromBox.left, fromBox.right, toBox.left, toBox.right);
   const overlapY = intervalOverlap(fromBox.top, fromBox.bottom, toBox.top, toBox.bottom);
   const horizontalGap = toBox.left > fromBox.right
@@ -15605,16 +16001,27 @@ function routeCanvasLink(from, to) {
 
   if (stackedVertically) return routeVerticalCanvasLink(fromBox, toBox);
   if (stackedHorizontally) return routeHorizontalCanvasLink(fromBox, toBox);
-  if (verticalGap > 150 && Math.abs(toBox.cy - fromBox.cy) > Math.abs(toBox.cx - fromBox.cx) * 0.42) {
-    return routeVerticalCanvasLink(fromBox, toBox);
-  }
-  if (verticalGap > horizontalGap && overlapX > 36) return routeVerticalCanvasLink(fromBox, toBox);
-  return routeHorizontalCanvasLink(fromBox, toBox);
+  return routeCompactCanvasLink(fromBox, toBox);
+}
+
+function supportsCanvasCssZoom() {
+  return Boolean(els.canvasZoomLayer && "zoom" in els.canvasZoomLayer.style);
 }
 
 function applyCanvasTransform({ refreshMinimap = true } = {}) {
   const { x, y, zoom } = state.canvas;
-  els.canvasViewport.style.transform = `translate(${x}px, ${y}px) scale(${zoom})`;
+  if (!els.canvasZoomLayer) {
+    els.canvasViewport.style.transform = `translate(${x}px, ${y}px) scale(${zoom})`;
+  } else {
+    els.canvasViewport.style.transform = `translate(${x}px, ${y}px)`;
+    if (supportsCanvasCssZoom()) {
+      els.canvasZoomLayer.style.zoom = String(zoom);
+      els.canvasZoomLayer.style.transform = "";
+    } else {
+      els.canvasZoomLayer.style.zoom = "";
+      els.canvasZoomLayer.style.transform = `scale(${zoom})`;
+    }
+  }
   els.zoomLabel.textContent = `${Math.round(zoom * 100)}%`;
   if (refreshMinimap) scheduleCanvasMinimapRender();
 }
@@ -15645,11 +16052,17 @@ function focusCanvasToNodes(nodeIds = []) {
   const maxX = Math.max(...boxes.map((box) => box.x + box.w));
   const maxY = Math.max(...boxes.map((box) => box.y + box.h));
   const rect = els.infiniteCanvas.getBoundingClientRect();
-  const pad = 120;
-  const minFocusZoom = rect.width < 900 ? 0.38 : 0.55;
-  const zoom = clamp(Math.min((rect.width - 64) / Math.max(1, maxX - minX + pad), (rect.height - 120) / Math.max(1, maxY - minY + pad)), minFocusZoom, 1.25);
+  const floatingComposerOpen = document.body.classList.contains("agent-panel-collapsed")
+    && !document.body.classList.contains("canvas-floating-collapsed");
+  const occludedRight = floatingComposerOpen && rect.width >= 900 ? 430 : 0;
+  const padX = 180 + occludedRight;
+  const padY = 170;
+  const availableWidth = Math.max(320, rect.width - 72 - occludedRight);
+  const availableHeight = Math.max(260, rect.height - 132);
+  const minFocusZoom = rect.width < 900 ? 0.34 : 0.48;
+  const zoom = clamp(Math.min(availableWidth / Math.max(1, maxX - minX + padX), availableHeight / Math.max(1, maxY - minY + padY)), minFocusZoom, 1.18);
   state.canvas.zoom = zoom;
-  state.canvas.x = (rect.width - (maxX - minX) * zoom) / 2 - minX * zoom;
+  state.canvas.x = (rect.width - occludedRight - (maxX - minX) * zoom) / 2 - minX * zoom;
   state.canvas.y = Math.max(84, (rect.height - (maxY - minY) * zoom) / 2) - minY * zoom;
   applyCanvasTransform();
   scheduleCanvasStateSave({ delay: 300 });
@@ -16096,17 +16509,14 @@ function setMode(mode) {
     state.viewControlOpen = isPlanSeriesDynamicMode(mode) && Boolean(state.primaryImage?.dataUrl);
     closeColorGradeOverlay();
     closeCutoutOverlay();
+    if (state.primaryImage?.dataUrl && !state.primaryImage?.parentNodeId && !state.primaryImage?.detachedPanelInput && state.renders.length) {
+      ensureSessionCanvasBranchAnchor();
+    }
   }
   state.generation.count = clampImageCount(state.generation.count, mode);
   if (mode === "panorama") {
     state.generation.aspect = PANORAMA_ASPECT_RATIO;
     state.generation.customSize = "";
-  }
-  const modeSwitcher = document.querySelector(".mode-switcher");
-  const restoreModeSwitcherFocus = modeSwitcher?.open && modeSwitcher.contains(document.activeElement);
-  modeSwitcher?.removeAttribute("open");
-  if (restoreModeSwitcherFocus) {
-    requestAnimationFrame(() => focusElement(modeSwitcher.querySelector("summary")));
   }
   syncDefaultCanvasCommand(mode);
   syncModeControls(mode);
@@ -16184,25 +16594,28 @@ function imageProcessMenuHtml(busyAttrs = "") {
 
 function canvasNodeImageToolsHtml(node = {}) {
   if (!node.imageUrl) return "";
-  if (!node.outputId) return "";
+  const showBaseTools = Boolean(node.outputId) || node.kind === "Reference" || node.id === "source";
+  if (!showBaseTools) return "";
   const outputItem = findOutputItem(node.outputId) || getOutputItems().find((item) => item.url === node.imageUrl);
   const favorite = outputItem ? state.favoriteOutputIds.has(outputItem.id) : false;
   const previewLabel = outputItem && isPanoramaOutput(outputItem) ? "全景预览" : "放大查看";
   const busy = state.canvas.selectedImage?.id === node.id ? state.canvas.imageActionBusy : "";
   const busyAttrs = busy ? "disabled" : "";
-  const showMultiAngle = !isPlanWorkflowMode(state.mode)
+  const showOutputTools = Boolean(outputItem);
+  const showMultiAngle = showOutputTools
+    && !isPlanWorkflowMode(state.mode)
     && !isPlanWorkflowMode(outputItem?.stepMode || outputItem?.mode)
     && !isPanoramaOutput(outputItem);
   return `
     <div class="canvas-node-image-tools" aria-label="图片操作">
-      ${iconActionButton({ action: "send-to-panel", icon: "icon-panel-show", label: "加入创作面板", attrs: busyAttrs })}
       ${imageProcessMenuHtml(busyAttrs)}
       ${iconActionButton({ action: "deep-edit", icon: "icon-spark", label: "图像处理", attrs: busyAttrs })}
+      ${showOutputTools ? iconActionButton({ action: "send-to-panel", icon: "icon-panel-show", label: "加入创作面板", attrs: busyAttrs }) : ""}
       ${showMultiAngle ? iconActionButton({ action: "multi-angle", icon: "icon-series", label: "多角度", attrs: busyAttrs }) : ""}
       ${iconActionButton({ className: "text-button", action: "open-original", icon: "icon-image", label: "打开原图" })}
       ${iconActionButton({ className: "text-button", action: "preview", icon: "icon-focus", label: previewLabel })}
-      ${iconActionButton({ action: "favorite", icon: "icon-star", label: favorite ? "已收藏" : "收藏", attrs: `aria-pressed="${favorite ? "true" : "false"}"` })}
-      ${iconActionButton({ action: "regenerate", icon: "icon-refresh", label: "重新生成", attrs: busyAttrs })}
+      ${showOutputTools ? iconActionButton({ action: "favorite", icon: "icon-star", label: favorite ? "已收藏" : "收藏", attrs: `aria-pressed="${favorite ? "true" : "false"}"` }) : ""}
+      ${showOutputTools ? iconActionButton({ action: "regenerate", icon: "icon-refresh", label: "重新生成", attrs: busyAttrs }) : ""}
     </div>
   `;
 }
@@ -16926,6 +17339,7 @@ async function handleReferenceUpload(files) {
     };
   }));
   state.referenceImages = [...state.referenceImages, ...nextImages].slice(0, referenceImageLimit);
+  if (state.renders.length) ensureSessionCanvasBranchAnchor();
   refreshGenerationControls();
   renderReferenceStrip();
   renderWorkflowCanvas();
@@ -16935,6 +17349,10 @@ async function handleReferenceUpload(files) {
   setUploadStatus("ready", incoming.length > selected.length
     ? `已添加 ${selected.length} 张参考图；还有 ${incoming.length - selected.length} 张因数量上限未加入。`
     : `已添加 ${selected.length} 张参考图，当前共 ${state.referenceImages.length}/${referenceImageLimit} 张。`, { target: "reference" });
+  if (selected.length === 1) {
+    await focusReferenceImageForEditing(startIndex, { openEditor: true });
+    toast("参考图已加入画布，已直接打开框选编辑");
+  }
   if (state.mode === "designseries" && state.referenceImages.length) {
     analyzeDesignSeriesReferences();
   }
@@ -19221,6 +19639,15 @@ function shortEndpoint(value) {
   return String(value || "").replace(/^https?:\/\//, "").replace(/\/+$/, "");
 }
 
+function defaultImageResponsesPathForBaseUrl(baseUrl = "") {
+  try {
+    const host = new URL(String(baseUrl || "")).host.toLowerCase();
+    return /(^|\.)yybb\.(codes|dog)$/.test(host) ? "/responses" : "/v1/responses";
+  } catch {
+    return "/v1/responses";
+  }
+}
+
 function applyDayTheme() {
   state.theme = "day";
   document.body.dataset.theme = state.theme;
@@ -19231,8 +19658,318 @@ function applyDayTheme() {
   } catch {}
 }
 
+function renderThemeControls() {
+  els.themeChoiceButtons.forEach((button) => {
+    const active = button.dataset.themeChoice === state.theme;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+  if (els.themeSettingsStatus) {
+    els.themeSettingsStatus.textContent = state.theme === "day" ? "白天玻璃" : "黑夜玻璃";
+    els.themeSettingsStatus.className = `api-endpoint-status ${state.theme === "day" ? "available" : "unknown"}`;
+  }
+}
+
+function applyTheme(theme = "day") {
+  if (theme === "day") {
+    applyDayTheme();
+    renderThemeControls();
+    applyCanvasBackgroundSettings();
+    return;
+  }
+  state.theme = "night";
+  document.body.dataset.theme = state.theme;
+  document.documentElement.dataset.theme = state.theme;
+  document.documentElement.style.colorScheme = "dark";
+  try {
+    localStorage.setItem("laogui-theme", state.theme);
+  } catch {}
+  renderThemeControls();
+  applyCanvasBackgroundSettings();
+}
+
 function loadThemePreference() {
-  applyDayTheme();
+  const stored = (() => {
+    try {
+      const value = localStorage.getItem("laogui-theme");
+      return value === "day" || value === "night" ? value : "";
+    } catch {
+      return "";
+    }
+  })();
+  const bootTheme = window.__LAOGUI_INITIAL_THEME__ === "night" ? "night" : "day";
+  applyTheme(stored || bootTheme || "day");
+}
+
+function clampWorkspaceGlassSettings(settings = {}) {
+  const defaults = defaultWorkspaceGlassSettings();
+  const merged = { ...defaults, ...(settings || {}) };
+  const transparency = Number(merged.transparency ?? defaults.transparency);
+  const blur = Number(merged.blur ?? defaults.blur);
+  return {
+    transparency: clamp(Number.isFinite(transparency) ? transparency : defaults.transparency, 0, 100),
+    blur: clamp(Number.isFinite(blur) ? blur : defaults.blur, 0, 100)
+  };
+}
+
+function loadWorkspaceGlassSettings() {
+  try {
+    const raw = localStorage.getItem(WORKSPACE_GLASS_STORAGE_KEY);
+    state.workspaceGlass = clampWorkspaceGlassSettings(raw ? JSON.parse(raw) : {});
+  } catch {
+    state.workspaceGlass = defaultWorkspaceGlassSettings();
+  }
+  applyWorkspaceGlassSettings();
+}
+
+function saveWorkspaceGlassSettings() {
+  try {
+    localStorage.setItem(WORKSPACE_GLASS_STORAGE_KEY, JSON.stringify(state.workspaceGlass));
+  } catch {}
+}
+
+function rgbaFromRgb(rgb, alpha) {
+  return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${clamp(Number(alpha), 0, 1).toFixed(3)})`;
+}
+
+function applyWorkspaceGlassSettings(options = {}) {
+  const settings = clampWorkspaceGlassSettings(state.workspaceGlass || defaultWorkspaceGlassSettings());
+  state.workspaceGlass = settings;
+  const transparency = settings.transparency / 100;
+  const blur = settings.blur / 100;
+  const isNight = state.theme === "night";
+  const canvasSettings = resolvedCanvasBackgroundSettings(state.canvasBackground || defaultCanvasBackgroundSettings(), state.theme);
+  const canvasRgb = hexToRgb(canvasSettings.backgroundColor);
+  const surfaceRgb = isNight ? { r: 24, g: 28, b: 38 } : { r: 255, g: 255, b: 255 };
+  const softSurfaceRgb = isNight ? { r: 36, g: 42, b: 55 } : { r: 255, g: 255, b: 255 };
+  const mainAlpha = isNight
+    ? clamp(0.48 - transparency * 0.4, 0.08, 0.44)
+    : clamp(0.56 - transparency * 0.52, 0.06, 0.5);
+  const strongAlpha = isNight
+    ? clamp(0.56 - transparency * 0.42, 0.12, 0.52)
+    : clamp(0.64 - transparency * 0.54, 0.1, 0.58);
+  const softAlpha = isNight
+    ? clamp(0.4 - transparency * 0.32, 0.06, 0.36)
+    : clamp(0.46 - transparency * 0.42, 0.04, 0.4);
+  const fieldAlpha = isNight
+    ? clamp(0.42 - transparency * 0.34, 0.08, 0.38)
+    : clamp(0.5 - transparency * 0.44, 0.06, 0.44);
+  const canvasWashAlpha = isNight
+    ? clamp(0.18 - transparency * 0.11, 0.055, 0.16)
+    : clamp(0.2 - transparency * 0.13, 0.06, 0.18);
+  const highlightAlpha = isNight
+    ? clamp(0.22 - transparency * 0.08, 0.11, 0.2)
+    : clamp(0.36 - transparency * 0.18, 0.16, 0.32);
+  const borderAlpha = isNight
+    ? clamp(0.34 - transparency * 0.12, 0.16, 0.3)
+    : clamp(0.72 - transparency * 0.2, 0.46, 0.68);
+  const blurPx = Math.round(2 + blur * 58);
+  const innerBlurPx = Math.round(1 + blur * 43);
+  const fieldBlurPx = Math.round(1 + blur * 28);
+  const saturate = (1.08 + blur * 0.34).toFixed(2);
+
+  document.body.style.setProperty("--workspace-glass-tint", rgbaFromRgb(surfaceRgb, mainAlpha));
+  document.body.style.setProperty("--workspace-glass-tint-strong", rgbaFromRgb(surfaceRgb, strongAlpha));
+  document.body.style.setProperty("--workspace-glass-tint-soft", rgbaFromRgb(softSurfaceRgb, softAlpha));
+  document.body.style.setProperty("--workspace-glass-field", rgbaFromRgb(surfaceRgb, fieldAlpha));
+  document.body.style.setProperty("--workspace-glass-canvas-wash", rgbaFromRgb(canvasRgb, canvasWashAlpha));
+  document.body.style.setProperty("--workspace-glass-highlight", `rgba(255, 255, 255, ${highlightAlpha.toFixed(3)})`);
+  document.body.style.setProperty("--workspace-glass-border", isNight ? `rgba(236, 242, 250, ${borderAlpha.toFixed(3)})` : `rgba(255, 255, 255, ${borderAlpha.toFixed(3)})`);
+  document.body.style.setProperty("--workspace-glass-blur", `blur(${blurPx}px) saturate(${saturate})`);
+  document.body.style.setProperty("--workspace-glass-inner-blur", `blur(${innerBlurPx}px) saturate(${saturate})`);
+  document.body.style.setProperty("--workspace-glass-field-blur", `blur(${fieldBlurPx}px) saturate(${saturate})`);
+
+  if (els.workspaceGlassTransparencyInput) {
+    els.workspaceGlassTransparencyInput.value = String(Math.round(settings.transparency));
+  }
+  if (els.workspaceGlassTransparencyValue) {
+    els.workspaceGlassTransparencyValue.textContent = `${Math.round(settings.transparency)}%`;
+  }
+  if (els.workspaceGlassBlurInput) {
+    els.workspaceGlassBlurInput.value = String(Math.round(settings.blur));
+  }
+  if (els.workspaceGlassBlurValue) {
+    els.workspaceGlassBlurValue.textContent = `${Math.round(settings.blur)}%`;
+  }
+  if (els.themeSettingsStatus) {
+    els.themeSettingsStatus.textContent = `${state.theme === "day" ? "白天" : "黑夜"} · 透${Math.round(settings.transparency)} · 糊${Math.round(settings.blur)}`;
+    els.themeSettingsStatus.className = `api-endpoint-status ${state.theme === "day" ? "available" : "unknown"}`;
+  }
+  if (options.persist) saveWorkspaceGlassSettings();
+}
+
+function updateWorkspaceGlassSettings(partial = {}, options = {}) {
+  state.workspaceGlass = clampWorkspaceGlassSettings({
+    ...(state.workspaceGlass || defaultWorkspaceGlassSettings()),
+    ...partial
+  });
+  applyWorkspaceGlassSettings({ persist: options.persist !== false });
+}
+
+function clampCanvasBackgroundSettings(settings = {}) {
+  const defaults = defaultCanvasBackgroundSettings();
+  const merged = { ...defaults, ...(settings || {}) };
+  const preset = canvasBackgroundPresets[merged.preset] ? merged.preset : "custom";
+  return {
+    ...merged,
+    preset,
+    backgroundColor: normalizeHexColor(merged.backgroundColor, defaults.backgroundColor),
+    gridColor: normalizeHexColor(merged.gridColor, defaults.gridColor),
+    gridOpacity: clamp(Number(merged.gridOpacity ?? defaults.gridOpacity), 0, 100),
+    gridSize: clamp(Number(merged.gridSize ?? defaults.gridSize), 72, 220),
+    imageDataUrl: String(merged.imageDataUrl || "").startsWith("data:image") ? String(merged.imageDataUrl) : "",
+    imageUrl: normalizeCanvasBackgroundImageUrl(merged.imageUrl),
+    imageOpacity: clamp(Number(merged.imageOpacity ?? defaults.imageOpacity), 0, 100)
+  };
+}
+
+function normalizeCanvasBackgroundImageUrl(value) {
+  const url = String(value || "").trim().replace(/^\//, "");
+  if (!url) return "";
+  if (/^assets\/canvas-backgrounds\/[-\w./]+\.png$/i.test(url)) return url;
+  return "";
+}
+
+function normalizeHexColor(value, fallback = "#000000") {
+  const color = String(value || "").trim();
+  if (/^#[0-9a-f]{6}$/i.test(color)) return color.toLowerCase();
+  if (/^#[0-9a-f]{3}$/i.test(color)) {
+    const [, r, g, b] = color.toLowerCase();
+    return `#${r}${r}${g}${g}${b}${b}`;
+  }
+  return fallback;
+}
+
+function hexToRgb(hex) {
+  const color = normalizeHexColor(hex, "#000000").slice(1);
+  return {
+    r: parseInt(color.slice(0, 2), 16),
+    g: parseInt(color.slice(2, 4), 16),
+    b: parseInt(color.slice(4, 6), 16)
+  };
+}
+
+function colorWithOpacity(hex, opacityPercent) {
+  const { r, g, b } = hexToRgb(hex);
+  const opacity = clamp(Number(opacityPercent || 0), 0, 100) / 100;
+  return `rgba(${r}, ${g}, ${b}, ${opacity.toFixed(3)})`;
+}
+
+function resolvedCanvasBackgroundSettings(settings = state.canvasBackground, theme = state.theme) {
+  const base = clampCanvasBackgroundSettings(settings || defaultCanvasBackgroundSettings());
+  if (theme !== "night") return base;
+  const nightPreset = canvasBackgroundNightPresets[base.preset] || canvasBackgroundNightPresets.custom;
+  const usingPreset = Boolean(canvasBackgroundPresets[base.preset]) && !base.imageDataUrl;
+  return clampCanvasBackgroundSettings({
+    ...base,
+    backgroundColor: usingPreset ? nightPreset.backgroundColor : blendHexColors(base.backgroundColor, nightPreset.backgroundColor, 0.78),
+    gridColor: usingPreset ? nightPreset.gridColor : blendHexColors(base.gridColor, nightPreset.gridColor, 0.72),
+    gridOpacity: usingPreset ? nightPreset.gridOpacity : clamp(Math.max(base.gridOpacity, nightPreset.gridOpacity), 0, 100),
+    imageOpacity: base.imageDataUrl ? Math.min(base.imageOpacity, nightPreset.imageOpacity) : nightPreset.imageOpacity
+  });
+}
+
+function blendHexColors(from, to, amount = 0.5) {
+  const a = hexToRgb(from);
+  const b = hexToRgb(to);
+  const t = clamp(Number(amount), 0, 1);
+  const channel = (start, end) => Math.round(start + (end - start) * t).toString(16).padStart(2, "0");
+  return `#${channel(a.r, b.r)}${channel(a.g, b.g)}${channel(a.b, b.b)}`;
+}
+
+function loadCanvasBackgroundSettings() {
+  try {
+    const raw = localStorage.getItem(CANVAS_BACKGROUND_STORAGE_KEY);
+    state.canvasBackground = clampCanvasBackgroundSettings(raw ? JSON.parse(raw) : {});
+  } catch {
+    state.canvasBackground = defaultCanvasBackgroundSettings();
+  }
+  applyCanvasBackgroundSettings();
+}
+
+function saveCanvasBackgroundSettings() {
+  try {
+    localStorage.setItem(CANVAS_BACKGROUND_STORAGE_KEY, JSON.stringify(state.canvasBackground));
+  } catch {}
+}
+
+function applyCanvasBackgroundSettings(options = {}) {
+  const settings = clampCanvasBackgroundSettings(state.canvasBackground || defaultCanvasBackgroundSettings());
+  state.canvasBackground = settings;
+  const resolvedSettings = resolvedCanvasBackgroundSettings(settings, state.theme);
+  applyCanvasBackgroundVariables(document.body, "canvas", resolvedSettings);
+  applyCanvasBackgroundVariables(els.infiniteCanvas, "canvas", resolvedSettings);
+  applyCanvasBackgroundVariables(els.canvasBackgroundPreview, "canvas-preview", resolvedSettings);
+  renderCanvasBackgroundControls();
+  applyWorkspaceGlassSettings();
+  if (options.persist) saveCanvasBackgroundSettings();
+}
+
+function applyCanvasBackgroundVariables(element, prefix, settings) {
+  if (!element) return;
+  const majorColor = colorWithOpacity(settings.gridColor, settings.gridOpacity);
+  const minorColor = colorWithOpacity(settings.gridColor, settings.gridOpacity * 0.45);
+  const gridSize = `${Math.round(settings.gridSize)}px`;
+  const subGridSize = `${Math.max(12, Math.round(settings.gridSize / 4))}px`;
+  const presetImageUrl = canvasBackgroundPresets[settings.preset]?.imageUrl || "";
+  const imageUrl = settings.imageUrl || presetImageUrl;
+  const imageValue = settings.imageDataUrl
+    ? `url("${settings.imageDataUrl}")`
+    : imageUrl
+      ? `url(${JSON.stringify(imageUrl)})`
+      : "none";
+  const imageOpacity = settings.imageDataUrl || imageUrl ? String(settings.imageOpacity / 100) : "0";
+  element.style.setProperty(`--${prefix}-bg`, settings.backgroundColor);
+  element.style.setProperty(`--${prefix}-bg-color`, settings.backgroundColor);
+  element.style.setProperty(`--${prefix}-grid-major`, majorColor);
+  element.style.setProperty(`--${prefix}-grid-major-color`, majorColor);
+  element.style.setProperty(`--${prefix}-grid-minor`, minorColor);
+  element.style.setProperty(`--${prefix}-grid-minor-color`, minorColor);
+  element.style.setProperty(`--${prefix}-grid-size`, gridSize);
+  element.style.setProperty(`--${prefix}-grid-sub-size`, subGridSize);
+  element.style.setProperty(`--${prefix}-image`, imageValue);
+  element.style.setProperty(`--${prefix}-bg-image`, imageValue);
+  element.style.setProperty(`--${prefix}-image-opacity`, imageOpacity);
+  element.style.setProperty(`--${prefix}-bg-image-opacity`, imageOpacity);
+}
+
+function renderCanvasBackgroundControls() {
+  const settings = clampCanvasBackgroundSettings(state.canvasBackground || defaultCanvasBackgroundSettings());
+  const presetImageUrl = canvasBackgroundPresets[settings.preset]?.imageUrl || "";
+  const hasBackgroundImage = Boolean(settings.imageDataUrl || settings.imageUrl || presetImageUrl);
+  if (els.canvasBackgroundStatus) {
+    const baseLabel = settings.imageDataUrl
+      ? "自定义底图"
+      : hasBackgroundImage
+        ? "内置底图"
+      : canvasBackgroundPresets[settings.preset]
+        ? "预设底图"
+        : "自定义网格";
+    els.canvasBackgroundStatus.textContent = `${baseLabel} · ${state.theme === "night" ? "黑夜" : "白天"}`;
+    els.canvasBackgroundStatus.className = `api-endpoint-status ${settings.imageDataUrl ? "available" : "unknown"}`;
+  }
+  els.canvasBackgroundPresetButtons.forEach((button) => {
+    const active = button.dataset.canvasBackgroundPreset === settings.preset && !settings.imageDataUrl;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+  if (els.canvasBackgroundColorInput) els.canvasBackgroundColorInput.value = settings.backgroundColor;
+  if (els.canvasGridColorInput) els.canvasGridColorInput.value = settings.gridColor;
+  if (els.canvasGridOpacityInput) els.canvasGridOpacityInput.value = String(Math.round(settings.gridOpacity));
+  if (els.canvasGridSizeInput) els.canvasGridSizeInput.value = String(Math.round(settings.gridSize));
+  if (els.canvasBackgroundImageOpacityInput) {
+    els.canvasBackgroundImageOpacityInput.value = String(Math.round(settings.imageOpacity));
+    els.canvasBackgroundImageOpacityInput.disabled = !hasBackgroundImage;
+  }
+  if (els.clearCanvasBackgroundButton) els.clearCanvasBackgroundButton.disabled = !hasBackgroundImage;
+}
+
+function updateCanvasBackgroundSettings(partial = {}, options = {}) {
+  state.canvasBackground = clampCanvasBackgroundSettings({
+    ...(state.canvasBackground || defaultCanvasBackgroundSettings()),
+    ...partial
+  });
+  applyCanvasBackgroundSettings({ persist: options.persist !== false });
 }
 
 function isSettingsOpen() {
@@ -19250,13 +19987,14 @@ function openSettings(trigger = document.activeElement) {
   settingsReturnFocus = isFocusableTarget(trigger) ? trigger : els.workspaceSettingsButton || els.settingsButton;
   els.appSettingsOverlay.hidden = false;
   els.appSettingsOverlay.setAttribute("aria-hidden", "false");
+  if (els.appSettingsBody) els.appSettingsBody.scrollTop = 0;
   document.body.classList.add("settings-open");
   setSettingsButtonState(true);
   renderStorageAccess();
+  renderLocalApiSettings({ providers: state.runtimeProviders, providerProbes: state.providerProbes });
+  renderApiSettings();
   refreshStorageSummary({ silent: true });
-  refreshApiSettings({ silent: true }).then(() => {
-    maybeAutoProbeImageEndpoints();
-  });
+  refreshApiSettings({ silent: true });
   requestAnimationFrame(() => {
     if (!focusElement(els.appSettingsModal)) focusFirstControl(els.appSettingsOverlay);
   });
@@ -19658,6 +20396,7 @@ function closeTransientDetails(target) {
   ];
   let closed = false;
   document.querySelectorAll(selectors.map((selector) => `${selector}[open]`).join(",")).forEach((details) => {
+    if (details.classList.contains("task-log-drawer")) return;
     if (!details.contains(element)) {
       details.removeAttribute("open");
       closed = true;
@@ -19766,6 +20505,78 @@ els.workspaceStatusCloseButton?.addEventListener("click", () => {
 });
 els.settingsButton?.addEventListener("click", () => openSettings(els.settingsButton));
 els.workspaceSettingsButton?.addEventListener("click", () => openSettings(els.workspaceSettingsButton));
+els.themeChoiceButtons.forEach((button) => {
+  button.addEventListener("click", () => applyTheme(button.dataset.themeChoice === "day" ? "day" : "night"));
+});
+const handleWorkspaceGlassTransparencyInput = () => {
+  updateWorkspaceGlassSettings({ transparency: els.workspaceGlassTransparencyInput.value });
+};
+els.workspaceGlassTransparencyInput?.addEventListener("input", handleWorkspaceGlassTransparencyInput);
+els.workspaceGlassTransparencyInput?.addEventListener("change", handleWorkspaceGlassTransparencyInput);
+const handleWorkspaceGlassBlurInput = () => {
+  updateWorkspaceGlassSettings({ blur: els.workspaceGlassBlurInput.value });
+};
+els.workspaceGlassBlurInput?.addEventListener("input", handleWorkspaceGlassBlurInput);
+els.workspaceGlassBlurInput?.addEventListener("change", handleWorkspaceGlassBlurInput);
+els.canvasBackgroundPresetButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    const preset = button.dataset.canvasBackgroundPreset || "default";
+    updateCanvasBackgroundSettings({
+      ...canvasBackgroundPresets[preset],
+      preset,
+      imageDataUrl: ""
+    });
+  });
+});
+els.uploadCanvasBackgroundButton?.addEventListener("click", () => els.canvasBackgroundImageInput?.click());
+els.clearCanvasBackgroundButton?.addEventListener("click", () => {
+  updateCanvasBackgroundSettings({
+    preset: "custom",
+    imageDataUrl: "",
+    imageUrl: "",
+    imageOpacity: canvasBackgroundPresets[state.canvasBackground?.preset]?.imageOpacity ?? 18
+  });
+});
+els.canvasBackgroundImageInput?.addEventListener("change", async (event) => {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (!file) return;
+  try {
+    const dataUrl = await fileToDataUrl(file);
+    const optimized = await optimizeImageDataUrl(dataUrl, {
+      maxEdge: 1800,
+      targetBytes: 900 * 1024,
+      force: true,
+      cacheLabel: "canvas-background"
+    });
+    updateCanvasBackgroundSettings({
+      preset: "custom",
+      imageDataUrl: optimized,
+      imageUrl: "",
+      imageOpacity: state.canvasBackground?.imageOpacity || 18
+    });
+    toast("画布底图已替换。");
+  } catch {
+    toast("底图读取失败，请换一张图片再试。");
+  }
+});
+[
+  [els.canvasBackgroundColorInput, "backgroundColor"],
+  [els.canvasGridColorInput, "gridColor"],
+  [els.canvasGridOpacityInput, "gridOpacity"],
+  [els.canvasGridSizeInput, "gridSize"],
+  [els.canvasBackgroundImageOpacityInput, "imageOpacity"]
+].forEach(([input, key]) => {
+  input?.addEventListener("input", () => {
+    const current = state.canvasBackground || defaultCanvasBackgroundSettings();
+    const presetImageUrl = canvasBackgroundPresets[current.preset]?.imageUrl || "";
+    updateCanvasBackgroundSettings({
+      preset: "custom",
+      imageUrl: current.imageDataUrl ? "" : current.imageUrl || presetImageUrl,
+      [key]: input.value
+    });
+  });
+});
 els.settingsCloseButton?.addEventListener("click", () => closeSettings());
 els.appSettingsOverlay?.addEventListener("click", (event) => {
   if (event.target.closest("[data-settings-close]")) closeSettings();
@@ -19790,10 +20601,7 @@ els.canvasList?.addEventListener("keydown", handleCanvasListKeydown);
 els.newCanvasButton?.addEventListener("click", () => {
   createNewCanvas().catch((error) => toast(error.message));
 });
-els.agentNewCanvasButton?.addEventListener("click", () => {
-  createNewCanvas().catch((error) => toast(error.message));
-});
-els.floatingNewCanvasButton?.addEventListener("click", () => {
+els.topNewCanvasButton?.addEventListener("click", () => {
   createNewCanvas().catch((error) => toast(error.message));
 });
 els.renameCanvasButton?.addEventListener("click", () => promptRenameCanvas());
@@ -19813,10 +20621,15 @@ els.canvasListPanel?.addEventListener("click", (event) => {
 });
 els.toggleAgentPanelButton?.addEventListener("click", () => toggleAgentPanel());
 els.agentPanelRailButton?.addEventListener("click", () => toggleAgentPanel(false));
+els.agentPanel?.addEventListener("click", (event) => {
+  if (event.target?.closest?.("#toggleAgentPanelButton, #agentPanelRailButton")) return;
+  if (state.agentPanelCollapsed) toggleAgentPanel(false);
+});
 els.canvasFloatingExpandButton?.addEventListener("click", () => toggleAgentPanel(false));
 els.canvasFloatingCollapseButton?.addEventListener("click", () => applyCanvasFloatingCollapsed(true));
 els.canvasFloatingRestoreButton?.addEventListener("click", () => applyCanvasFloatingCollapsed(false));
 els.startButtons.forEach((button) => button.addEventListener("click", () => {
+  window.__LAOGUI_PENDING_START_MODE__ = "";
   showWorkspace(button.dataset.startMode).catch((error) => toast(error.message));
 }));
 els.homeToolSearch?.addEventListener("input", renderHomeToolCenter);
@@ -19845,28 +20658,35 @@ els.modeTabs.forEach((button) => {
   button.addEventListener("click", () => setMode(button.dataset.mode));
   button.addEventListener("keydown", handleModeTabKeydown);
 });
+document.querySelectorAll(".mode-switcher").forEach((switcher) => {
+  switcher.addEventListener("pointerleave", () => {
+    switcher.open = false;
+  });
+  switcher.addEventListener("focusout", () => {
+    requestAnimationFrame(() => {
+      if (!switcher.contains(document.activeElement)) switcher.open = false;
+    });
+  });
+});
 els.floatingModeSelect?.addEventListener("change", () => setMode(els.floatingModeSelect.value));
 els.presetButtons.forEach((button) => button.addEventListener("click", () => applyPreset(button.dataset.preset)));
 els.projectTemplateButtons.forEach((button) => button.addEventListener("click", () => applyProjectTemplate(button.dataset.projectTemplate)));
 els.stylePresetButtons.forEach((button) => button.addEventListener("click", () => applyStylePreset(button.dataset.stylePreset)));
 els.refreshApiSettingsButton?.addEventListener("click", () => refreshApiSettings());
 els.refreshStorageButton?.addEventListener("click", () => refreshStorageSummary());
+els.chooseStorageDirButton?.addEventListener("click", chooseStorageDirectory);
+els.saveStorageSettingsButton?.addEventListener("click", () => saveStorageSettings({ markPrompted: true }));
+els.resetStorageDirButton?.addEventListener("click", resetStorageDirectory);
+els.storagePromptButtons.forEach((button) => {
+  button.addEventListener("click", () => setStoragePromptMode(button.dataset.storagePromptMode || "ask"));
+});
 els.cleanupTestGeneratedButton?.addEventListener("click", () => runStorageMaintenance("cleanup-test-generated", {}, els.cleanupTestGeneratedButton));
 els.archiveGeneratedButton?.addEventListener("click", () => runStorageMaintenance("archive-generated", { olderThanDays: 30 }, els.archiveGeneratedButton));
 els.pruneLogsButton?.addEventListener("click", () => runStorageMaintenance("prune-task-logs", { keepDays: 30 }, els.pruneLogsButton));
-els.saveLocalApiSettingsButton?.addEventListener("click", saveLocalApiSettings);
+els.saveReasoningApiSettingsButton?.addEventListener("click", saveReasoningApiSettings);
+els.saveImageApiSettingsButton?.addEventListener("click", saveImageApiSettings);
 els.probeReasoningApiButton?.addEventListener("click", () => probeRuntimeProvider("reasoning"));
 els.probePrimaryImageApiButton?.addEventListener("click", () => probeRuntimeProvider("image"));
-els.saveImageApiEndpointButton?.addEventListener("click", saveImageApiEndpoint);
-els.probeImageApiEndpointButton?.addEventListener("click", () => probeImageApiEndpoints());
-els.imageApiEndpointList?.addEventListener("click", (event) => {
-  const probeButton = event.target.closest("[data-api-endpoint-probe]");
-  const activateButton = event.target.closest("[data-api-endpoint-activate]");
-  const deleteButton = event.target.closest("[data-api-endpoint-delete]");
-  if (probeButton) probeImageApiEndpoint(probeButton.dataset.apiEndpointProbe);
-  if (activateButton) activateImageApiEndpoint(activateButton.dataset.apiEndpointActivate);
-  if (deleteButton) deleteImageApiEndpoint(deleteButton.dataset.apiEndpointDelete);
-});
 els.aspectRatioButtons.forEach((button) => button.addEventListener("click", () => {
   setGenerationAspect(button.dataset.aspectRatio || "source");
 }));
@@ -20142,6 +20962,12 @@ document.querySelectorAll("input, textarea, select").forEach((field) => {
       state.canvasCommandUserEdited = Boolean(field.value.trim());
       syncFloatingComposer();
     }
+    if (field === els.primaryImageApiBaseUrl && els.primaryImageApiResponsesPath) {
+      const currentPath = els.primaryImageApiResponsesPath.value.trim();
+      if (!currentPath || currentPath === "/responses" || currentPath === "/v1/responses") {
+        els.primaryImageApiResponsesPath.value = defaultImageResponsesPathForBaseUrl(field.value.trim());
+      }
+    }
     if (!state.plan) {
       els.projectTitle.textContent = activeCanvasDisplayTitle();
     }
@@ -20158,8 +20984,104 @@ els.sampleButton?.addEventListener("click", () => {
   writeBrief(current === sampleBrief.projectName ? sampleAlt : sampleBrief);
 });
 
-state.clientId = getOrCreateClientId();
+function initializeHomeVideoSequence() {
+  const video = document.querySelector(".home-hero-video");
+  if (!video) return;
+
+  const sequence = (video.dataset.homeVideoSequence || "")
+    .split("|")
+    .map((src) => src.trim())
+    .filter(Boolean);
+  if (sequence.length < 2) return;
+
+  const posters = (video.dataset.homePosterSequence || "")
+    .split("|")
+    .map((src) => src.trim());
+  let activeIndex = Math.max(0, sequence.findIndex((src) => {
+    const sourceSrc = video.querySelector("source")?.getAttribute("src") || "";
+    return sourceSrc === src || video.getAttribute("src") === src || video.currentSrc.endsWith(src);
+  }));
+  let failedAdvanceCount = 0;
+  let previousTime = 0;
+  let switchingVideo = false;
+  let switchingFallbackTimer = 0;
+  const videoBackdrop = video.closest(".home-video-backdrop");
+
+  const syncActiveVideoTone = () => {
+    const index = String(activeIndex);
+    video.dataset.activeSequenceIndex = index;
+    if (videoBackdrop) videoBackdrop.dataset.activeSequenceIndex = index;
+  };
+
+  const playCurrentVideo = () => {
+    const playPromise = video.play();
+    if (playPromise?.catch) playPromise.catch(() => {});
+  };
+
+  const activateVideo = (nextIndex) => {
+    switchingVideo = true;
+    window.clearTimeout(switchingFallbackTimer);
+    activeIndex = ((nextIndex % sequence.length) + sequence.length) % sequence.length;
+    syncActiveVideoTone();
+    video.loop = false;
+    video.removeAttribute("loop");
+    if (posters[activeIndex]) video.poster = posters[activeIndex];
+
+    const nextSrc = sequence[activeIndex];
+    const source = video.querySelector("source");
+    if (source) source.setAttribute("src", nextSrc);
+    video.pause();
+    video.src = nextSrc;
+    previousTime = 0;
+
+    const resumeAfterMetadataLoad = () => {
+      if (!switchingVideo) return;
+      switchingVideo = false;
+      previousTime = 0;
+      window.clearTimeout(switchingFallbackTimer);
+      playCurrentVideo();
+    };
+
+    video.addEventListener("loadedmetadata", resumeAfterMetadataLoad, { once: true });
+    video.load();
+    switchingFallbackTimer = window.setTimeout(resumeAfterMetadataLoad, 800);
+  };
+
+  const advanceWhenSequenceBoundaryIsReached = () => {
+    if (switchingVideo) return;
+    if (!Number.isFinite(video.duration) || video.duration <= 0) return;
+    const nearEnd = video.currentTime >= video.duration - 0.08;
+    const wrappedToStart = video.currentTime < 0.35 && previousTime > video.duration - 0.5;
+    previousTime = video.currentTime;
+    if (!nearEnd && !wrappedToStart) return;
+    failedAdvanceCount = 0;
+    activateVideo(activeIndex + 1);
+  };
+
+  video.loop = false;
+  video.removeAttribute("loop");
+  syncActiveVideoTone();
+  video.addEventListener("ended", () => {
+    failedAdvanceCount = 0;
+    activateVideo(activeIndex + 1);
+  });
+  video.addEventListener("timeupdate", () => {
+    advanceWhenSequenceBoundaryIsReached();
+  });
+  video.addEventListener("error", () => {
+    failedAdvanceCount += 1;
+    if (failedAdvanceCount < sequence.length) activateVideo(activeIndex + 1);
+  });
+  window.setInterval(advanceWhenSequenceBoundaryIsReached, 160);
+  playCurrentVideo();
+}
+
+initializeHomeVideoSequence();
+state.anonymousClientId = getOrCreateClientId();
+state.clientId = state.anonymousClientId;
 loadThemePreference();
+loadWorkspaceGlassSettings();
+loadCanvasBackgroundSettings();
 loadCanvasListCollapsedPreference();
 const restoredPersistedCanvasState = await loadPersistedCanvasState();
 state.mode = publicModeOrFallback(state.mode);
@@ -20177,6 +21099,11 @@ if (!restoredPersistedCanvasState) {
   ensureCanvasCollection(state.mode);
   drawSelectionCanvas();
   renderWorkflowCanvas();
+}
+if (window.__LAOGUI_PENDING_START_MODE__) {
+  const pendingStartMode = window.__LAOGUI_PENDING_START_MODE__;
+  window.__LAOGUI_PENDING_START_MODE__ = "";
+  showWorkspace(pendingStartMode).catch((error) => toast(error.message));
 }
 window.addEventListener("resize", () => {
   scheduleSelectionCanvasDraw();

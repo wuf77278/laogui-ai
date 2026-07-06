@@ -6,7 +6,7 @@
 
 请到 [GitHub Releases](https://github.com/wuf77278/laogui-ai/releases/latest) 下载最新版安装包：
 
-- Windows 10 / 11：下载 `LaoguiAI-v0.1.2-windows-x64-setup.exe`
+- Windows 10 / 11：下载 `LaoguiAI-v2.0.0-windows-x64-setup.exe`
 - macOS：当前可先按下面的“网页使用”或 “Desktop App” 开发方式运行，安装包会在后续 release 补齐。
 
 首次打开后，在右上角“设置”里填入你自己的文本/思考 API 和生图 API。软件会把 API Key 保存在本机运行环境里，不会暴露给浏览器页面。
@@ -77,6 +77,21 @@ Remote-device stability notes:
   `LAOGUI_API_TOKEN` and `API_CORS_ORIGIN` in `.env` before exposing the
   service. Remote API calls without a token are rejected by default.
 
+## 微信扫码登录
+
+老鬼AI 支持通过微信开放平台“网站应用”做扫码登录。登录后，服务端会把该微信用户映射成独立的 `wx-...` clientId，后续生图任务、任务日志和方案资产库会按用户分开保存。管理员可以在“设置 / 微信登录”里切换查看不同用户的生图记录。
+
+配置项：
+
+```bash
+WECHAT_LOGIN_APP_ID=你的微信开放平台网站应用 AppID
+WECHAT_LOGIN_APP_SECRET=你的微信开放平台网站应用 AppSecret
+WECHAT_LOGIN_REDIRECT_URI=https://你的域名/api/auth/wechat/callback
+WECHAT_ADMIN_OPENIDS=可选的管理员 openid，多个用逗号分隔
+```
+
+微信开放平台必须配置公网 HTTPS 回调域名；没有服务器时，可以先用 Cloudflare Tunnel 或 ngrok 把本机 `http://127.0.0.1:4177` 映射成 HTTPS 域名测试。微信用户资料和登录会话会保存到本机数据目录的 `logs/auth-users.json` 与 `logs/auth-sessions.json`。
+
 ## Daily Safety
 
 Initialize version control before making frequent changes:
@@ -105,16 +120,18 @@ npm run check
 ## API Roles
 
 - `gpt-5.5`: creates spatial design directions, material logic, client proposal structure, and image prompts.
-- `Images API`: generates final visuals through the OpenAI-compatible `/images/generations` endpoint, or `/images/edits` when a primary/reference image is present. The Responses `image_generation` tool remains as fallback.
+- `Image Studio engine`: generates final visuals through the bundled `gptcodex-image` core. The default contract matches Image Studio: Responses API + HTTP SSE + OpenAI-standard fields.
 
 The app uses separate providers:
 
 - `REASONING_BASE_URL` / `REASONING_API_KEY`: text and vision reasoning.
-- `YYBB_BASE_URL` / `YYBB_API_KEY`: image-generation compatible calls for final visuals.
-- `IMAGE_API_MODE=images`: 默认优先使用 playground 风格的 OpenAI-compatible Images API；可设为 `responses` 只走 Responses `image_generation`，或 `auto` 保持 Images API 优先并保留回退。
-- `IMAGE_GENERATIONS_PATH=/v1/images/generations` / `IMAGE_EDITS_PATH=/v1/images/edits`: Images API 的文本生图与图像编辑路径。
+- `IMAGE_BASE_URL` / `IMAGE_API_KEY`: image-generation compatible calls for final visuals.
+- There is no bundled default API endpoint. Leave these env vars empty and configure both providers from Settings, or fill them explicitly for local development.
+- `IMAGE_API_MODE=responses`: 默认完全按 Image-Studio 的 Responses API 路由请求；如确实要走标准 Images API，才改成 `images`。
+- `IMAGE_STUDIO_RESPONSES_TRANSPORT=sse` / `IMAGE_STUDIO_REQUEST_POLICY=openai`: 对齐 Image-Studio 的 “HTTP SSE + OpenAI 标准” 配置。
+- `IMAGE_GENERATIONS_PATH=/v1/images/generations` / `IMAGE_EDITS_PATH=/v1/images/edits`: 仅在切换到 Images API 时使用。
 - `IMAGE_PROVIDER_MANIFEST='{"submit":{"path":"/v1/images/generations","result":{"b64JsonPaths":["data.*.b64_json"],"imageUrlPaths":["data.*.url"]}}}'`: 可选，自定义 OpenAI-compatible 或异步 HTTP 生图服务的提交、轮询和结果字段映射。
-- `IMAGE_RESPONSES_PATH=/responses`: yybb 的 Responses 路径；其他 OpenAI-compatible 服务通常是 `/v1/responses`，用于回退通道和探测。
+- `IMAGE_RESPONSES_PATH=/v1/responses`: FHL/OpenAI-compatible 服务的 Responses 路径；yybb 才使用 `/responses`。
 - `IMAGE_GEN_SKILL_MAX_ATTEMPTS=2`: Responses `image_generation` 回退通道的重试次数。
 - `IMAGE_COST_FIRST_MAX_ATTEMPTS=2`: 成本优先端点失败时连续尝试次数，降低异常端点拖慢整批任务的风险。
 - `IMAGE_ENDPOINT_PRECHECK_TTL_SECONDS=300`: 生图前端点测速缓存时间，避免每张图都重复检测所有端点。
@@ -144,9 +161,9 @@ The app exposes stable external endpoints under `/api/v1`. The older `/api/*` ro
 - Task logs: `GET http://localhost:4177/api/v1/task-logs?limit=20`
 - Canvas state: `GET/POST http://localhost:4177/api/v1/canvas-state`
 - Runtime settings: `GET http://localhost:4177/api/v1/settings`
-- Add Image Gen endpoint: `POST http://localhost:4177/api/v1/settings/image-endpoints`
+- Save API provider: `POST http://localhost:4177/api/v1/settings/providers`
 
-Custom Image Gen endpoints added from the web settings panel are saved locally in `logs/runtime-settings.json`. They can define direct `/images/generations` and `/images/edits` paths plus an optional Provider Manifest; you can also paste a `gpt_image_playground` `customProviders` export and let the server extract the manifest automatically. Responses `image_generation` remains available as fallback.
+API provider settings added from the web settings panel are saved locally in `logs/runtime-settings.json`. Reasoning and image providers are stored separately. Image providers can define Responses / Images API paths plus an optional Provider Manifest; you can also paste a `gpt_image_playground` `customProviders` export and let the server extract the manifest automatically.
 
 ### Optional 3D/CAD Engines
 
@@ -216,10 +233,37 @@ curl http://localhost:4177/api/v1/plan \
 
 ## Image Generation
 
-The workspace does not expose a separate imagegen skill panel. The normal `生成图片` workflow is the integration point: the server builds the spatial-design prompt, optionally lets `gpt-5.5` refine it, then calls Image Gen first and only falls back to the older app image path after the configured retry limit.
+The normal `生成图片` workflow is the integration point: the server builds the spatial-design prompt, optionally lets `gpt-5.5` refine it, then sends the final text-to-image or image-to-image task into the Image Studio engine and saves the result through the same local `public/generated` pipeline.
 
-The Responses Image Gen request intentionally uses the minimal compatible tool payload (`type`, `size`, `quality`, `output_format`) because some OpenAI-compatible image proxies return 502 when `model`, `background`, `moderation`, `n`, or `output_compression` are included inside the tool object.
+For the software build, Image Studio's `go-cli` is the image-generation core. Laogui AI keeps the design workflow, canvas, task queue, prompt assembly and local history, while `gptcodex-image` handles the upstream image protocol, raw response capture, retry behavior and Responses/Images compatibility.
 
-For `生成设计系列`, the reference-analysis step also has a production fallback: if the FHL reasoning endpoint times out or returns a gateway error, the server returns a local preset series analysis and continues generation instead of failing the whole workflow. The UI marks this as an analysis fallback, while final image generation still prioritizes the active Image Gen endpoint.
+```bash
+IMAGE_STUDIO_ENGINE=required
+IMAGE_STUDIO_CLI_PATH=
+IMAGE_STUDIO_RESPONSES_TRANSPORT=sse
+IMAGE_STUDIO_ALLOW_NATIVE_FALLBACK=0
+```
+
+The Image Studio `go-cli` source is vendored under `engines/image-studio/source/go-cli`. Before packaging for friends, build the bundled engine:
+
+```bash
+npm run engine:image-studio
+```
+
+This writes `engines/image-studio/gptcodex-image` on macOS/Linux or `engines/image-studio/gptcodex-image.exe` on Windows. You can still set `IMAGE_STUDIO_CLI_PATH` for local development. In `required` mode, image generation does not fall back to the old native `/images/generations` or Responses tool path unless `IMAGE_STUDIO_ALLOW_NATIVE_FALLBACK=1` is explicitly set.
+
+The preferred distribution layout is platform-aware:
+
+- macOS Apple Silicon: `engines/image-studio/darwin-arm64/gptcodex-image`
+- macOS Intel: `engines/image-studio/darwin-x64/gptcodex-image`
+- Windows x64: `engines/image-studio/win32-x64/gptcodex-image.exe`
+
+`npm run engine:image-studio` builds the current machine's platform folder and updates the legacy flat binary path for backward compatibility. Run `npm run doctor` before sharing a build; the `已打包内核平台` line tells you which friend machines are covered.
+
+The upstream image API settings use Image Studio-compatible fields: `apiMode` (`responses` or `images`), `responsesTransport` (`sse` or `websocket`), `requestPolicy` (`openai` or `compat`), `baseURL`, `imageModelID`, and `reasoningEffort`. Reasoning API settings are saved separately with their own Base URL, Key, and model. The bundled `gptcodex-image` engine receives the saved image settings as CLI flags.
+
+The local Codex skill `image-studio-fhl` remains as a development fallback on this machine, but the distributed software does not depend on Codex skills or the user's Codex directory.
+
+For `生成设计系列`, the reference-analysis step also has a production fallback: if the configured reasoning endpoint times out or returns a gateway error, the server returns a local preset series analysis and continues generation instead of failing the whole workflow. The UI marks this as an analysis fallback, while final image generation still prioritizes the active Image Gen endpoint.
 
 Quality tiers are `1K / 2K / 4K`, and the server normalizes sizes to 16px steps within the model limits.

@@ -1,0 +1,654 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>老鬼AI 首页方案预览</title>
+    <link rel="icon" href="assets/laogui-ai-favicon.svg" type="image/svg+xml" />
+    <style>
+      :root {
+        color-scheme: dark;
+        --ink: #f7f8fb;
+        --muted: rgba(224, 234, 247, 0.72);
+        --line: rgba(226, 236, 248, 0.18);
+        --blue: #8bd8ff;
+        --gold: #e7c37c;
+        --violet: #9f8cff;
+        --shadow: 0 28px 90px rgba(0, 0, 0, 0.42);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        color: var(--ink);
+        background: #05070c;
+      }
+
+      a,
+      button {
+        font: inherit;
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      .concept-nav {
+        position: fixed;
+        top: 18px;
+        left: 50%;
+        z-index: 20;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 999px;
+        background: rgba(6, 10, 18, 0.58);
+        box-shadow: 0 16px 54px rgba(0, 0, 0, 0.24);
+        backdrop-filter: blur(22px) saturate(1.18);
+        transform: translateX(-50%);
+      }
+
+      .concept-nav a {
+        min-width: 74px;
+        padding: 8px 13px;
+        border-radius: 999px;
+        color: rgba(239, 247, 255, 0.8);
+        font-size: 12px;
+        font-weight: 760;
+        text-align: center;
+        white-space: nowrap;
+      }
+
+      .concept-nav a:hover {
+        color: #fff;
+        background: rgba(139, 216, 255, 0.14);
+      }
+
+      .concept {
+        position: relative;
+        min-height: 100vh;
+        overflow: hidden;
+        isolation: isolate;
+      }
+
+      .concept::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        z-index: -3;
+        background: #060914;
+      }
+
+      .concept::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        z-index: -1;
+        pointer-events: none;
+      }
+
+      .brand {
+        position: absolute;
+        top: 30px;
+        left: clamp(22px, 4vw, 58px);
+        z-index: 3;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .brand img {
+        width: 76px;
+        height: auto;
+        display: block;
+      }
+
+      .brand span {
+        display: block;
+        color: rgba(240, 247, 255, 0.62);
+        font-size: 11px;
+        font-weight: 820;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .hero-copy {
+        position: relative;
+        z-index: 2;
+        display: grid;
+        align-content: center;
+        min-height: 100vh;
+        width: min(760px, calc(100vw - 40px));
+        padding: 112px 0 92px;
+        margin-left: clamp(22px, 6vw, 92px);
+      }
+
+      .eyebrow {
+        margin: 0 0 18px;
+        color: var(--blue);
+        font-size: 12px;
+        font-weight: 840;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin: 0;
+        max-width: 720px;
+        font-size: clamp(48px, 7vw, 112px);
+        line-height: 0.94;
+        font-weight: 820;
+        letter-spacing: 0;
+        text-wrap: balance;
+      }
+
+      .lead {
+        max-width: 600px;
+        margin: 24px 0 0;
+        color: var(--muted);
+        font-size: clamp(15px, 1.4vw, 19px);
+        line-height: 1.78;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 12px;
+        margin-top: 36px;
+      }
+
+      .primary-link,
+      .ghost-link {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 52px;
+        padding: 0 22px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 999px;
+        font-size: 14px;
+        font-weight: 820;
+        white-space: nowrap;
+        transition: transform 180ms ease, border-color 180ms ease, background 180ms ease;
+      }
+
+      .primary-link {
+        border-color: rgba(169, 226, 255, 0.46);
+        background:
+          radial-gradient(circle at 20% 0%, rgba(255, 255, 255, 0.62), transparent 36%),
+          linear-gradient(135deg, #248fff, #8f74f7 52%, #e5bd78);
+        color: #fff;
+        box-shadow: 0 18px 58px rgba(40, 138, 255, 0.28);
+      }
+
+      .ghost-link {
+        background: rgba(7, 12, 22, 0.44);
+        color: rgba(241, 247, 255, 0.86);
+        backdrop-filter: blur(18px) saturate(1.1);
+      }
+
+      .primary-link:hover,
+      .ghost-link:hover {
+        transform: translateY(-2px);
+        border-color: rgba(255, 255, 255, 0.42);
+      }
+
+      .metrics {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        max-width: 560px;
+        margin-top: 38px;
+      }
+
+      .metric {
+        min-width: 0;
+        padding: 14px 15px;
+        border: 1px solid rgba(255, 255, 255, 0.13);
+        border-radius: 8px;
+        background: rgba(9, 14, 24, 0.52);
+        backdrop-filter: blur(20px) saturate(1.12);
+      }
+
+      .metric strong,
+      .metric span {
+        display: block;
+      }
+
+      .metric strong {
+        font-size: 18px;
+      }
+
+      .metric span {
+        margin-top: 4px;
+        color: rgba(226, 236, 248, 0.6);
+        font-size: 11px;
+        line-height: 1.35;
+      }
+
+      .visual-stack,
+      .gallery-strip,
+      .glass-console {
+        position: absolute;
+        z-index: 1;
+      }
+
+      .concept-a::before {
+        background:
+          linear-gradient(90deg, rgba(3, 5, 10, 0.88), rgba(3, 5, 10, 0.48) 52%, rgba(3, 5, 10, 0.18)),
+          url("assets/home/ai-space-canvas-hero.png") center / cover no-repeat;
+      }
+
+      .concept-a::after {
+        background:
+          radial-gradient(circle at 72% 44%, rgba(139, 216, 255, 0.22), transparent 26%),
+          radial-gradient(circle at 84% 18%, rgba(231, 195, 124, 0.13), transparent 30%),
+          linear-gradient(90deg, transparent, rgba(5, 7, 12, 0.28));
+      }
+
+      .visual-stack {
+        right: clamp(20px, 5vw, 78px);
+        top: 17vh;
+        width: min(520px, 38vw);
+        display: grid;
+        gap: 14px;
+      }
+
+      .command-card {
+        padding: 16px;
+        border: 1px solid rgba(188, 226, 255, 0.18);
+        border-radius: 8px;
+        background: rgba(8, 13, 22, 0.66);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(24px) saturate(1.14);
+      }
+
+      .command-card header {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 14px;
+        color: rgba(235, 245, 255, 0.72);
+        font-size: 11px;
+        font-weight: 820;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .prompt-line {
+        min-height: 92px;
+        padding: 16px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 8px;
+        color: rgba(244, 249, 255, 0.82);
+        background: rgba(255, 255, 255, 0.08);
+        font-size: 14px;
+        line-height: 1.65;
+      }
+
+      .chip-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 12px;
+      }
+
+      .chip-row span {
+        padding: 7px 10px;
+        border: 1px solid rgba(255, 255, 255, 0.13);
+        border-radius: 999px;
+        color: rgba(234, 243, 255, 0.74);
+        font-size: 12px;
+        background: rgba(255, 255, 255, 0.07);
+      }
+
+      .mini-output {
+        display: grid;
+        grid-template-columns: 1.1fr 0.9fr;
+        gap: 14px;
+      }
+
+      .mini-output img {
+        width: 100%;
+        aspect-ratio: 4 / 3;
+        object-fit: cover;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+      }
+
+      .concept-b {
+        color-scheme: light;
+        --ink: #12110f;
+        --muted: rgba(58, 54, 48, 0.72);
+        --blue: #315fae;
+        --gold: #a97824;
+        color: var(--ink);
+        background: #f5f2ea;
+      }
+
+      .concept-b::before {
+        background:
+          linear-gradient(180deg, rgba(246, 242, 232, 0.94), rgba(246, 242, 232, 0.74) 36%, rgba(246, 242, 232, 0.92)),
+          url("assets/library/library-contact-sheet.png") center / cover no-repeat;
+        filter: saturate(0.94) contrast(1.02);
+      }
+
+      .concept-b::after {
+        background:
+          linear-gradient(90deg, rgba(246, 242, 232, 0.98), rgba(246, 242, 232, 0.58) 58%, rgba(246, 242, 232, 0.36)),
+          linear-gradient(180deg, transparent 76%, rgba(246, 242, 232, 0.92));
+      }
+
+      .concept-b .brand span,
+      .concept-b .lead,
+      .concept-b .ghost-link {
+        color: var(--muted);
+      }
+
+      .concept-b h1 {
+        color: #15130f;
+        text-shadow: 0 18px 54px rgba(255, 255, 255, 0.72);
+      }
+
+      .concept-b .metric strong {
+        color: #171410;
+      }
+
+      .concept-b .hero-copy {
+        width: min(820px, calc(100vw - 40px));
+      }
+
+      .concept-b .eyebrow {
+        color: #8b6424;
+      }
+
+      .concept-b .ghost-link,
+      .concept-b .metric {
+        border-color: rgba(18, 17, 15, 0.12);
+        background: rgba(255, 255, 255, 0.72);
+        box-shadow: 0 16px 42px rgba(36, 28, 18, 0.08);
+      }
+
+      .concept-b .metric span {
+        color: rgba(58, 54, 48, 0.6);
+      }
+
+      .gallery-strip {
+        right: clamp(22px, 5vw, 72px);
+        bottom: 42px;
+        left: clamp(22px, 43vw, 620px);
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .gallery-strip figure {
+        min-width: 0;
+        margin: 0;
+        overflow: hidden;
+        border: 1px solid rgba(18, 17, 15, 0.1);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.68);
+        box-shadow: 0 18px 52px rgba(36, 28, 18, 0.12);
+      }
+
+      .gallery-strip img {
+        width: 100%;
+        height: 176px;
+        display: block;
+        object-fit: cover;
+      }
+
+      .gallery-strip figcaption {
+        padding: 10px;
+        color: rgba(18, 17, 15, 0.72);
+        font-size: 12px;
+        font-weight: 760;
+      }
+
+      .concept-c {
+        color-scheme: dark;
+      }
+
+      .concept-c::before {
+        background:
+          linear-gradient(90deg, rgba(4, 6, 10, 0.74), rgba(4, 6, 10, 0.32) 54%, rgba(4, 6, 10, 0.82)),
+          url("assets/library/scene-hospitality-lounge.png") center / cover no-repeat;
+      }
+
+      .concept-c::after {
+        background:
+          linear-gradient(180deg, rgba(4, 6, 10, 0.24), rgba(4, 6, 10, 0.72)),
+          radial-gradient(circle at 74% 36%, rgba(231, 195, 124, 0.18), transparent 28%),
+          radial-gradient(circle at 24% 62%, rgba(139, 216, 255, 0.16), transparent 32%);
+      }
+
+      .glass-console {
+        right: clamp(22px, 5vw, 72px);
+        top: 17vh;
+        width: min(500px, 38vw);
+        padding: 16px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.1);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(28px) saturate(1.2);
+      }
+
+      .glass-console h2 {
+        margin: 0 0 12px;
+        font-size: 16px;
+      }
+
+      .console-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .console-tile {
+        min-height: 104px;
+        padding: 13px;
+        border: 1px solid rgba(255, 255, 255, 0.13);
+        border-radius: 8px;
+        background: rgba(8, 13, 22, 0.42);
+      }
+
+      .console-tile strong {
+        display: block;
+        font-size: 14px;
+      }
+
+      .console-tile span {
+        display: block;
+        margin-top: 8px;
+        color: rgba(226, 236, 248, 0.62);
+        font-size: 12px;
+        line-height: 1.48;
+      }
+
+      @media (max-width: 980px) {
+        .concept-nav {
+          left: 14px;
+          right: 14px;
+          transform: none;
+          justify-content: center;
+          overflow-x: auto;
+        }
+
+        .hero-copy {
+          width: auto;
+          margin: 0;
+          padding: 120px 22px 72px;
+        }
+
+        .visual-stack,
+        .glass-console,
+        .gallery-strip {
+          position: relative;
+          inset: auto;
+          width: auto;
+          margin: -36px 22px 48px;
+        }
+
+        .gallery-strip {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .metrics {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 620px) {
+        .brand {
+          top: 76px;
+        }
+
+        .brand img {
+          width: 64px;
+        }
+
+        h1 {
+          font-size: clamp(42px, 15vw, 64px);
+        }
+
+        .actions,
+        .mini-output,
+        .console-grid,
+        .gallery-strip {
+          grid-template-columns: 1fr;
+        }
+
+        .actions {
+          display: grid;
+        }
+
+        .primary-link,
+        .ghost-link {
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="concept-nav" aria-label="首页方案">
+      <a href="#concept-a">方案 A</a>
+      <a href="#concept-b">方案 B</a>
+      <a href="#concept-c">方案 C</a>
+      <a href="/">回到项目</a>
+    </nav>
+
+    <section id="concept-a" class="concept concept-a" aria-labelledby="conceptATitle">
+      <div class="brand">
+        <img src="assets/laogui-ai-logo.svg" alt="老鬼AI" />
+        <span>AI Space Command</span>
+      </div>
+      <div class="hero-copy">
+        <p class="eyebrow">Concept A / 暗场工作台</p>
+        <h1 id="conceptATitle">让空间图像进入可控生成流</h1>
+        <p class="lead">面向空间设计师的 AI 创作台：先理解参考图、平面图和现场图，再把材料、灯光、视角和提案目标变成可连续迭代的画布。</p>
+        <div class="actions">
+          <a class="primary-link" href="/">进入创造画布</a>
+          <a class="ghost-link" href="#concept-b">查看下一个方案</a>
+        </div>
+        <div class="metrics" aria-label="核心能力">
+          <div class="metric"><strong>Reference</strong><span>参考图与现场图理解</span></div>
+          <div class="metric"><strong>Canvas</strong><span>多画布连续生成</span></div>
+          <div class="metric"><strong>Proposal</strong><span>面向提案的输出管理</span></div>
+        </div>
+      </div>
+      <aside class="visual-stack" aria-label="工作台预览">
+        <div class="command-card">
+          <header><span>Prompt Composer</span><span>Ready</span></header>
+          <div class="prompt-line">保留原始布局，提升为高端酒店大堂；使用石材、金属和暖色洗墙灯，适合客户提案。</div>
+          <div class="chip-row">
+            <span>结构保留</span>
+            <span>高端材质</span>
+            <span>2:1 全景</span>
+          </div>
+        </div>
+        <div class="mini-output">
+          <img src="assets/library/scene-hospitality-lounge.png" alt="酒店空间参考图" />
+          <img src="assets/library/output-client-board.png" alt="提案输出预览" />
+        </div>
+      </aside>
+    </section>
+
+    <section id="concept-b" class="concept concept-b" aria-labelledby="conceptBTitle">
+      <div class="brand">
+        <img src="assets/laogui-ai-logo.svg" alt="老鬼AI" />
+        <span>Design Vault</span>
+      </div>
+      <div class="hero-copy">
+        <p class="eyebrow">Concept B / 作品墙首页</p>
+        <h1 id="conceptBTitle">把每次生成都沉淀成项目资产</h1>
+        <p class="lead">首页直接传达“这是设计师的图像资产库和生成工作台”：空间案例、材料板、彩平图和提案图在同一套视觉系统里被组织、筛选和复用。</p>
+        <div class="actions">
+          <a class="primary-link" href="/">打开方案资产库</a>
+          <a class="ghost-link" href="#concept-c">查看下一个方案</a>
+        </div>
+        <div class="metrics" aria-label="资产能力">
+          <div class="metric"><strong>Gallery</strong><span>生成图自动归档</span></div>
+          <div class="metric"><strong>Material</strong><span>材料与灯光语言沉淀</span></div>
+          <div class="metric"><strong>Export</strong><span>提案图快速下载</span></div>
+        </div>
+      </div>
+      <div class="gallery-strip" aria-label="资产预览">
+        <figure>
+          <img src="assets/library/material-stone-metal.png" alt="石材金属材料板" />
+          <figcaption>材料语言</figcaption>
+        </figure>
+        <figure>
+          <img src="assets/library/lighting-evening-hospitality.png" alt="酒店灯光氛围" />
+          <figcaption>灯光氛围</figcaption>
+        </figure>
+        <figure>
+          <img src="assets/laogui-architecture-ui/02-interior-spatial-planning.png" alt="室内空间规划" />
+          <figcaption>空间规划</figcaption>
+        </figure>
+        <figure>
+          <img src="assets/library/output-detail-closeup.png" alt="设计局部输出" />
+          <figcaption>提案细节</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section id="concept-c" class="concept concept-c" aria-labelledby="conceptCTitle">
+      <div class="brand">
+        <img src="assets/laogui-ai-logo.svg" alt="老鬼AI" />
+        <span>Spatial Intelligence</span>
+      </div>
+      <div class="hero-copy">
+        <p class="eyebrow">Concept C / 空间智能中控</p>
+        <h1 id="conceptCTitle">先读懂空间，再生成设计</h1>
+        <p class="lead">用真实空间图作为第一视觉，把产品定位讲清楚：这不是普通生图工具，而是为室内、建筑、民宿和商业空间设计师准备的 AI 中控台。</p>
+        <div class="actions">
+          <a class="primary-link" href="/">开始设计任务</a>
+          <a class="ghost-link" href="#concept-a">回到方案 A</a>
+        </div>
+      </div>
+      <aside class="glass-console" aria-label="能力中控">
+        <h2>空间生成链路</h2>
+        <div class="console-grid">
+          <div class="console-tile"><strong>读图判断</strong><span>识别现场图、平面图、材料图和参考风格。</span></div>
+          <div class="console-tile"><strong>结构约束</strong><span>保留墙体、动线、开口、主体关系。</span></div>
+          <div class="console-tile"><strong>风格推导</strong><span>把参考图转为材料、灯光和镜头语言。</span></div>
+          <div class="console-tile"><strong>批量输出</strong><span>生成系列图、局部图、全景图和提案图。</span></div>
+        </div>
+      </aside>
+    </section>
+  </body>
+</html>

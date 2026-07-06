@@ -1,9 +1,11 @@
 import { createServer } from "node:http";
+import { lookup } from "node:dns/promises";
 import { promises as fs } from "node:fs";
 import { createReadStream, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
+import { isIP } from "node:net";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { gzipSync } from "node:zlib";
 import {
@@ -22,14 +24,88 @@ loadDotEnv(path.join(__dirname, ".env"));
 
 const appDataDir = resolveAppDataDir();
 const externalDataDirEnabled = Boolean(process.env.LAOGUI_DATA_DIR);
-const generatedDir = externalDataDirEnabled ? path.join(appDataDir, "generated") : path.join(publicDir, "generated");
-const generatedArchiveDir = path.join(appDataDir, "archive", "generated");
+const defaultGeneratedDir = externalDataDirEnabled ? path.join(appDataDir, "generated") : path.join(publicDir, "generated");
 const logsDir = path.join(appDataDir, "logs");
 const taskLogPath = path.join(logsDir, "task-runs.jsonl");
 const taskLogDir = path.join(logsDir, "task-runs");
+const authUsersPath = path.join(logsDir, "auth-users.json");
+const authSessionsPath = path.join(logsDir, "auth-sessions.json");
 const canvasStatePath = path.join(logsDir, "canvas-state.json");
 const canvasStateDir = path.join(logsDir, "canvas-states");
 const runtimeSettingsPath = path.join(logsDir, "runtime-settings.json");
+const PUBLIC_GENERATED_EXTENSIONS = new Set([
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".webp",
+  ".gif",
+  ".avif",
+  ".svg",
+  ".glb",
+  ".gltf",
+  ".dxf",
+  ".scad",
+  ".step",
+  ".stl",
+  ".3mf",
+  ".mp4",
+  ".mov"
+]);
+const activeChildProcesses = new Set();
+
+function trackChildProcess(child) {
+  if (!child) return child;
+  activeChildProcesses.add(child);
+  const cleanup = () => activeChildProcesses.delete(child);
+  child.once("exit", cleanup);
+  child.once("close", cleanup);
+  child.once("error", cleanup);
+  return child;
+}
+
+function isChildProcessRunning(child) {
+  return child && child.exitCode === null && child.signalCode === null && !child.killed;
+}
+
+function terminateActiveChildProcesses({ forceAfterMs = 900 } = {}) {
+  const children = [...activeChildProcesses].filter(isChildProcessRunning);
+  if (!children.length) return Promise.resolve();
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const pending = new Set(children);
+    const finishOne = (child) => {
+      pending.delete(child);
+      if (!pending.size) finish();
+    };
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      children.filter(isChildProcessRunning).forEach((child) => {
+        try {
+          child.kill("SIGKILL");
+        } catch {}
+      });
+      finish();
+    }, Math.max(200, Number(forceAfterMs || 900)));
+    timer.unref?.();
+
+    children.forEach((child) => {
+      const done = () => finishOne(child);
+      child.once("exit", done);
+      child.once("close", done);
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        finishOne(child);
+      }
+    });
+  });
+}
 
 function resolveAppDataDir() {
   if (process.env.LAOGUI_DATA_DIR) return path.resolve(process.env.LAOGUI_DATA_DIR);
@@ -38,6 +114,54 @@ function resolveAppDataDir() {
 
 function normalizeBaseUrl(value, fallback) {
   return String(value || fallback || "").replace(/\/+$/, "");
+}
+
+function normalizeLocalDirectoryPath(value = "") {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (raw.includes("\0")) {
+    const error = new Error("目录路径无效。");
+    error.status = 400;
+    throw error;
+  }
+  const expanded = raw.replace(/^~(?=$|[/\\])/, process.env.HOME || "~");
+  return path.resolve(expanded);
+}
+
+function defaultStorageSettings() {
+  return {
+    outputDir: defaultGeneratedDir,
+    promptOnFirstRun: true,
+    firstRunStoragePrompted: false,
+    savePromptMode: "ask",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function normalizeStorageSettings(input = {}, existing = null) {
+  const source = { ...(existing || defaultStorageSettings()), ...(input || {}) };
+  return {
+    outputDir: normalizeLocalDirectoryPath(source.outputDir || defaultGeneratedDir),
+    promptOnFirstRun: parseBooleanEnv(source.promptOnFirstRun, true),
+    firstRunStoragePrompted: parseBooleanEnv(source.firstRunStoragePrompted, false),
+    savePromptMode: ["ask", "never"].includes(String(source.savePromptMode || "ask")) ? String(source.savePromptMode || "ask") : "ask",
+    createdAt: existing?.createdAt || source.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function ensureRuntimeStorage() {
+  runtimeSettings.storage = normalizeStorageSettings(runtimeSettings.storage || {}, runtimeSettings.storage || null);
+  return runtimeSettings.storage;
+}
+
+function generatedDirectory() {
+  return ensureRuntimeStorage().outputDir || defaultGeneratedDir;
+}
+
+function generatedArchiveDirectory() {
+  return path.join(appDataDir, "archive", "generated");
 }
 
 function splitBaseUrlList(value) {
@@ -76,7 +200,7 @@ function readJsonEnv(names) {
 
 function normalizeImageApiMode(value) {
   const mode = String(value || "").trim().toLowerCase();
-  return ["images", "responses", "auto"].includes(mode) ? mode : "images";
+  return ["images", "responses", "auto"].includes(mode) ? mode : "responses";
 }
 
 function boundedIntegerEnv(names, fallback, min = 1, max = 20) {
@@ -89,10 +213,7 @@ function boundedIntegerEnv(names, fallback, min = 1, max = 20) {
 }
 
 function defaultImageBaseUrls() {
-  return [
-    "https://ai.mxou.cn",
-    "https://yybb.codes"
-  ];
+  return [];
 }
 
 function imageBaseUrlConfiguredByEnv() {
@@ -101,11 +222,7 @@ function imageBaseUrlConfiguredByEnv() {
     "IMAGE_BASE_URLS",
     "IMAGE_COST_FIRST_BASE_URLS",
     "IMAGE_PRIORITY_BASE_URLS",
-    "IMAGE_ENDPOINT_PRIORITY_BASE_URLS",
-    "YYBB_BASE_URL",
-    "YYBB_BASE_URLS",
-    "FHL_IMAGE_BASE_URL",
-    "OPENAI_BASE_URL"
+    "IMAGE_ENDPOINT_PRIORITY_BASE_URLS"
   ].some(envHasValue);
 }
 
@@ -113,11 +230,11 @@ function includeDefaultImageBaseUrls() {
   if (envHasValue("IMAGE_INCLUDE_DEFAULT_BASE_URLS")) {
     return parseBooleanEnv(process.env.IMAGE_INCLUDE_DEFAULT_BASE_URLS, false);
   }
-  return !imageBaseUrlConfiguredByEnv();
+  return false;
 }
 
 function costFirstImageBaseUrls() {
-  const configured = splitBaseUrlList(process.env.IMAGE_COST_FIRST_BASE_URLS || process.env.FHL_IMAGE_BASE_URL);
+  const configured = splitBaseUrlList(process.env.IMAGE_COST_FIRST_BASE_URLS);
   if (configured.length) return uniqueBaseUrls(configured);
   return [];
 }
@@ -132,11 +249,11 @@ function priorityImageBaseUrls() {
 function configuredImageBaseUrls() {
   const priorityBaseUrls = priorityImageBaseUrls();
   const includeDefaults = includeDefaultImageBaseUrls();
-  const primaryFallback = includeDefaults ? "https://yybb.codes" : "";
-  const primary = process.env.IMAGE_BASE_URL || process.env.YYBB_BASE_URL || process.env.OPENAI_BASE_URL || primaryFallback;
+  const primaryFallback = "";
+  const primary = process.env.IMAGE_BASE_URL || primaryFallback;
   return uniqueBaseUrls([
     ...priorityBaseUrls,
-    ...splitBaseUrlList(process.env.IMAGE_BASE_URLS || process.env.YYBB_BASE_URLS),
+    ...splitBaseUrlList(process.env.IMAGE_BASE_URLS),
     primary,
     ...(includeDefaults ? defaultImageBaseUrls() : [])
   ]);
@@ -147,21 +264,42 @@ const config = {
   reasoningModel: process.env.REASONING_MODEL || "gpt-5.5",
   imageModel: process.env.IMAGE_MODEL || "gpt-image-2",
   reasoningProvider: {
-    baseUrl: normalizeBaseUrl(process.env.REASONING_BASE_URL || process.env.OPENAI_BASE_URL || process.env.YYBB_BASE_URL, "https://yybb.codes"),
-    apiKey: process.env.REASONING_API_KEY || process.env.OPENAI_API_KEY || process.env.YYBB_API_KEY || "",
+    baseUrl: normalizeBaseUrl(process.env.REASONING_BASE_URL || ""),
+    apiKey: process.env.REASONING_API_KEY || "",
     responsesPath: process.env.REASONING_RESPONSES_PATH || ""
   },
   imageProvider: {
-    baseUrl: normalizeBaseUrl(process.env.IMAGE_BASE_URL || process.env.YYBB_BASE_URL || process.env.OPENAI_BASE_URL, "https://yybb.codes"),
+    baseUrl: normalizeBaseUrl(process.env.IMAGE_BASE_URL || ""),
     baseUrls: configuredImageBaseUrls(),
-    apiKey: process.env.IMAGE_API_KEY || process.env.YYBB_API_KEY || process.env.OPENAI_API_KEY || "",
+    apiKey: process.env.IMAGE_API_KEY || "",
     responsesPath: process.env.IMAGE_RESPONSES_PATH || "",
     imageGenerationPath: process.env.IMAGE_GENERATIONS_PATH || process.env.IMAGE_GENERATION_PATH || "",
     imageEditPath: process.env.IMAGE_EDITS_PATH || process.env.IMAGE_EDIT_PATH || "",
     providerManifest: null
   },
+  imageStudioFhlSkill: {
+    enabled: process.env.IMAGE_STUDIO_FHL_ENABLED || process.env.FHL_IMAGE_STUDIO_ENABLED || "disabled",
+    script: process.env.IMAGE_STUDIO_FHL_SCRIPT || "/Users/Apple_501/.codex/skills/image-studio-fhl/scripts/yingfang_image.py",
+    provider: process.env.IMAGE_STUDIO_FHL_PROVIDER || "auto",
+    outputDir: process.env.IMAGE_STUDIO_FHL_OUTPUT_DIR || path.join(logsDir, "image-studio-fhl"),
+    timeoutSeconds: boundedIntegerEnv("IMAGE_STUDIO_FHL_TIMEOUT_SECONDS", 300, 30, 900)
+  },
+  imageStudioEngine: {
+    mode: process.env.IMAGE_STUDIO_ENGINE || process.env.IMAGE_ENGINE || "required",
+    cliPath: process.env.IMAGE_STUDIO_CLI_PATH || process.env.GPTCODEX_IMAGE_CLI || "",
+    outputDir: process.env.IMAGE_STUDIO_OUTPUT_DIR || path.join(logsDir, "image-studio-engine"),
+    timeoutSeconds: boundedIntegerEnv(["IMAGE_STUDIO_TIMEOUT_SECONDS", "IMAGE_STUDIO_ENGINE_TIMEOUT_SECONDS"], 360, 30, 1200),
+    responsesTransport: process.env.IMAGE_STUDIO_RESPONSES_TRANSPORT || "sse",
+    requestPolicy: process.env.IMAGE_STUDIO_REQUEST_POLICY || "openai",
+    reasoningEffort: process.env.IMAGE_STUDIO_REASONING_EFFORT || "xhigh",
+    partialImages: boundedIntegerEnv("IMAGE_STUDIO_PARTIAL_IMAGES", 0, 0, 3),
+    autoRetryCount: boundedIntegerEnv("IMAGE_STUDIO_AUTO_RETRY_COUNT", 1, 0, 8),
+    allowNativeFallback: parseBooleanEnv(process.env.IMAGE_STUDIO_ALLOW_NATIVE_FALLBACK, false)
+  },
   maxJsonBodyBytes: boundedIntegerEnv("MAX_JSON_BODY_MB", 80, 1, 200) * 1024 * 1024,
-  imageApiMode: normalizeImageApiMode(process.env.IMAGE_API_MODE || process.env.IMAGE_GENERATION_API_MODE),
+  downloadImageMaxBytes: boundedIntegerEnv("DOWNLOAD_IMAGE_MAX_MB", 25, 1, 100) * 1024 * 1024,
+  downloadImageTimeoutMs: boundedIntegerEnv("DOWNLOAD_IMAGE_TIMEOUT_SECONDS", 15, 2, 120) * 1000,
+  imageApiMode: normalizeImageApiMode(process.env.IMAGE_API_MODE || process.env.IMAGE_GENERATION_API_MODE || "responses"),
   imageGenerationConcurrency: boundedIntegerEnv(["IMAGE_GENERATION_CONCURRENCY", "LAOGUI_IMAGE_CONCURRENCY"], 2, 1, 8),
   imageGenerationQueueMaxPending: boundedIntegerEnv(["IMAGE_GENERATION_QUEUE_MAX_PENDING", "LAOGUI_IMAGE_QUEUE_MAX_PENDING"], 12, 0, 200),
   imageGenerationQueueTimeoutMs: boundedIntegerEnv(["IMAGE_GENERATION_QUEUE_TIMEOUT_SECONDS", "LAOGUI_IMAGE_QUEUE_TIMEOUT_SECONDS"], 600, 10, 3600) * 1000,
@@ -169,6 +307,15 @@ const config = {
     token: process.env.LAOGUI_API_TOKEN || process.env.API_ACCESS_TOKEN || "",
     corsOrigin: process.env.API_CORS_ORIGIN || "",
     allowUnauthenticatedRemote: parseBooleanEnv(process.env.LAOGUI_ALLOW_UNAUTHENTICATED_REMOTE || process.env.API_ALLOW_UNAUTHENTICATED_REMOTE, false)
+  },
+  wechatLogin: {
+    appId: process.env.WECHAT_LOGIN_APP_ID || process.env.WECHAT_APP_ID || "",
+    appSecret: process.env.WECHAT_LOGIN_APP_SECRET || process.env.WECHAT_APP_SECRET || "",
+    redirectUri: process.env.WECHAT_LOGIN_REDIRECT_URI || "",
+    admins: String(process.env.WECHAT_ADMIN_OPENIDS || process.env.WECHAT_LOGIN_ADMIN_OPENIDS || "")
+      .split(/[\s,]+/)
+      .map((item) => item.trim())
+      .filter(Boolean)
   },
   host: normalizeBaseUrl(process.env.HOST || process.env.LAOGUI_HOST || "127.0.0.1")
 };
@@ -183,12 +330,25 @@ const runtimeSettings = {
     reasoning: null,
     image: null
   },
-  providerProfiles: [],
-  imageEndpoints: []
+  imageEndpoints: [],
+  storage: null
 };
 const taskResults = new Map();
+const authSessions = new Map();
+let authUsers = [];
+let authStorageLoaded = false;
 const TASK_RESULT_TTL_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const AUTH_SESSION_TTL_MS = 30 * DAY_MS;
+const AUTH_OAUTH_STATE_TTL_SECONDS = 10 * 60;
+const imageStudioCompatStatePath = path.join(
+  process.env.HOME || "",
+  "Library",
+  "Application Support",
+  "image-studio",
+  "compat",
+  "state.json"
+);
 
 const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
@@ -308,14 +468,15 @@ function staticCacheControl(ext) {
     : "public, max-age=31536000, immutable";
 }
 
-async function writeStaticResponse(req, res, filePath, stat, contentType, { compressible = false } = {}) {
+async function writeStaticResponse(req, res, filePath, stat, contentType, { compressible = false, extraHeaders = {} } = {}) {
   const ext = path.extname(filePath).toLowerCase();
   const etag = staticEtag(stat);
   const headers = {
     "content-type": contentType,
     "cache-control": staticCacheControl(ext),
     "last-modified": stat.mtime.toUTCString(),
-    etag
+    etag,
+    ...extraHeaders
   };
 
   if (staticNotModified(req, stat, etag)) {
@@ -443,9 +604,56 @@ function hasForwardedClientHeaders(req) {
   );
 }
 
+function hostHeaderParts(req) {
+  const raw = String(readHeader(req, "host") || "");
+  const bracketed = raw.match(/^\[([^\]]+)\](?::(\d+))?$/);
+  if (bracketed) return { hostname: bracketed[1].toLowerCase(), port: bracketed[2] || String(config.port) };
+  const colonCount = (raw.match(/:/g) || []).length;
+  if (colonCount === 1) {
+    const [hostname, port] = raw.split(":");
+    return { hostname: hostname.toLowerCase(), port: port || String(config.port) };
+  }
+  return { hostname: raw.toLowerCase(), port: String(config.port) };
+}
+
 function isLocalHostHeader(req) {
-  const host = String(readHeader(req, "host") || "").split(":")[0].toLowerCase();
-  return host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1";
+  const { hostname } = hostHeaderParts(req);
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+}
+
+function isLoopbackHostname(hostname = "") {
+  const normalized = String(hostname || "").replace(/^\[|\]$/g, "").toLowerCase();
+  return normalized === "localhost"
+    || normalized.endsWith(".localhost")
+    || normalized === "127.0.0.1"
+    || normalized === "::1";
+}
+
+function isOwnerOriginAllowed(req) {
+  const origin = readHeader(req, "origin");
+  if (!origin) return true;
+  try {
+    const parsed = new URL(origin);
+    if (!["http:", "https:"].includes(parsed.protocol)) return false;
+    const requestHost = hostHeaderParts(req);
+    const originHost = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    const originPort = parsed.port || (parsed.protocol === "https:" ? "443" : "80");
+    if (originHost === requestHost.hostname && originPort === requestHost.port) return true;
+    return isLoopbackHostname(originHost) && originPort === requestHost.port;
+  } catch {
+    return false;
+  }
+}
+
+function isOwnerFetchSiteAllowed(req) {
+  const site = String(readHeader(req, "sec-fetch-site") || "").toLowerCase();
+  return !site || site === "same-origin" || site === "same-site" || site === "none";
+}
+
+function requestHasJsonBody(req) {
+  if (!requestByteLength(req) && !readHeader(req, "transfer-encoding")) return true;
+  const contentType = String(readHeader(req, "content-type") || "").toLowerCase();
+  return contentType.split(";")[0].trim() === "application/json";
 }
 
 function requestByteLength(req) {
@@ -487,18 +695,237 @@ function sendOwnerOnly(res) {
   });
 }
 
+function sendOwnerWriteRejected(res, message, status = 403) {
+  sendJson(res, status, {
+    ok: false,
+    error: message
+  });
+}
+
+function requireOwnerWriteRequest(req, res) {
+  if (!isOwnerRequest(req)) {
+    sendOwnerOnly(res);
+    return false;
+  }
+  if (!isOwnerOriginAllowed(req) || !isOwnerFetchSiteAllowed(req)) {
+    sendOwnerWriteRejected(res, "本机写入接口拒绝跨站请求。请从当前 localhost 页面发起操作。");
+    return false;
+  }
+  if (!requestHasJsonBody(req)) {
+    sendOwnerWriteRejected(res, "写入接口只接受 application/json 请求体。", 415);
+    return false;
+  }
+  return true;
+}
+
 function isRemoteRequest(req) {
   return !isOwnerRequest(req);
 }
 
-function requireRemoteApiAuthorization(req, res) {
+async function requireRemoteApiAuthorization(req, res) {
   if (!isRemoteRequest(req)) return true;
   if (externalApiAuthorized(req)) return true;
+  if (await authSessionFromRequest(req)) return true;
   sendUnauthorizedApi(res);
   return false;
 }
 
-function clientIdFromRequest(req, url, { requiredForRemote = true } = {}) {
+function wechatLoginConfigured() {
+  return Boolean(config.wechatLogin.appId && config.wechatLogin.appSecret);
+}
+
+function publicOrigin(req) {
+  const proto = readHeader(req, "x-forwarded-proto") || (req.socket?.encrypted ? "https" : "http");
+  const host = readHeader(req, "x-forwarded-host") || readHeader(req, "host") || `localhost:${config.port}`;
+  return `${String(proto).split(",")[0]}://${String(host).split(",")[0]}`;
+}
+
+function wechatRedirectUri(req) {
+  return config.wechatLogin.redirectUri || `${publicOrigin(req)}/api/auth/wechat/callback`;
+}
+
+function parseCookies(req) {
+  const header = readHeader(req, "cookie");
+  const cookies = {};
+  String(header || "").split(";").forEach((part) => {
+    const index = part.indexOf("=");
+    if (index < 0) return;
+    const key = part.slice(0, index).trim();
+    const value = part.slice(index + 1).trim();
+    if (!key) return;
+    try {
+      cookies[key] = decodeURIComponent(value);
+    } catch {
+      cookies[key] = value;
+    }
+  });
+  return cookies;
+}
+
+function appendSetCookie(res, cookie) {
+  const existing = res.getHeader("set-cookie");
+  if (!existing) {
+    res.setHeader("set-cookie", cookie);
+  } else if (Array.isArray(existing)) {
+    res.setHeader("set-cookie", [...existing, cookie]);
+  } else {
+    res.setHeader("set-cookie", [existing, cookie]);
+  }
+}
+
+function cookieFlags(req, { maxAge = null } = {}) {
+  const secure = publicOrigin(req).startsWith("https://") ? "; Secure" : "";
+  const age = maxAge == null ? "" : `; Max-Age=${Math.max(0, Math.floor(maxAge))}`;
+  return `${age}; Path=/; HttpOnly; SameSite=Lax${secure}`;
+}
+
+function setAuthCookie(req, res, name, value, options = {}) {
+  appendSetCookie(res, `${name}=${encodeURIComponent(value)}${cookieFlags(req, options)}`);
+}
+
+function clearAuthCookie(req, res, name) {
+  setAuthCookie(req, res, name, "", { maxAge: 0 });
+}
+
+function authClientIdForOpenId(openid) {
+  const digest = createHash("sha256")
+    .update(`${config.wechatLogin.appId}:${openid}`)
+    .digest("hex")
+    .slice(0, 32);
+  return `wx-${digest}`;
+}
+
+function publicAuthUser(user = null) {
+  if (!user) return null;
+  return {
+    id: user.id,
+    clientId: user.clientId,
+    nickname: user.nickname || "微信用户",
+    headimgurl: user.headimgurl || "",
+    city: user.city || "",
+    province: user.province || "",
+    country: user.country || "",
+    lastLoginAt: user.lastLoginAt || "",
+    createdAt: user.createdAt || ""
+  };
+}
+
+async function loadAuthStorage() {
+  if (authStorageLoaded) return;
+  authStorageLoaded = true;
+  try {
+    const raw = await fs.readFile(authUsersPath, "utf8");
+    const parsed = JSON.parse(raw);
+    authUsers = Array.isArray(parsed.users) ? parsed.users : [];
+  } catch (error) {
+    if (error.code !== "ENOENT") console.warn(`[auth] users load failed: ${error.message || error}`);
+    authUsers = [];
+  }
+  try {
+    const raw = await fs.readFile(authSessionsPath, "utf8");
+    const parsed = JSON.parse(raw);
+    const sessions = Array.isArray(parsed.sessions) ? parsed.sessions : [];
+    const now = Date.now();
+    sessions.forEach((session) => {
+      const expiresAt = new Date(session.expiresAt || 0).getTime();
+      if (session.id && expiresAt > now) authSessions.set(session.id, session);
+    });
+  } catch (error) {
+    if (error.code !== "ENOENT") console.warn(`[auth] sessions load failed: ${error.message || error}`);
+  }
+}
+
+async function saveAuthUsers() {
+  await fs.mkdir(path.dirname(authUsersPath), { recursive: true });
+  await fs.writeFile(authUsersPath, `${JSON.stringify({ users: authUsers }, null, 2)}\n`);
+}
+
+async function saveAuthSessions() {
+  await fs.mkdir(path.dirname(authSessionsPath), { recursive: true });
+  const now = Date.now();
+  const sessions = [...authSessions.values()].filter((session) => new Date(session.expiresAt || 0).getTime() > now);
+  authSessions.clear();
+  sessions.forEach((session) => authSessions.set(session.id, session));
+  await fs.writeFile(authSessionsPath, `${JSON.stringify({ sessions }, null, 2)}\n`);
+}
+
+async function upsertWechatUser(profile = {}) {
+  await loadAuthStorage();
+  const openid = String(profile.openid || "").trim();
+  if (!openid) throw httpError(400, "微信登录缺少 openid");
+  const now = new Date().toISOString();
+  const clientId = authClientIdForOpenId(openid);
+  const existing = authUsers.find((user) => user.openid === openid) || null;
+  const user = {
+    ...(existing || {}),
+    id: existing?.id || randomUUID(),
+    provider: "wechat",
+    openid,
+    unionid: profile.unionid || existing?.unionid || "",
+    clientId,
+    nickname: profile.nickname || existing?.nickname || "微信用户",
+    headimgurl: profile.headimgurl || existing?.headimgurl || "",
+    city: profile.city || existing?.city || "",
+    province: profile.province || existing?.province || "",
+    country: profile.country || existing?.country || "",
+    createdAt: existing?.createdAt || now,
+    lastLoginAt: now
+  };
+  authUsers = [user, ...authUsers.filter((item) => item.openid !== openid)];
+  await saveAuthUsers();
+  return user;
+}
+
+async function createAuthSession(req, res, user) {
+  await loadAuthStorage();
+  const id = randomBytes(32).toString("base64url");
+  const now = Date.now();
+  const session = {
+    id,
+    userId: user.id,
+    clientId: user.clientId,
+    createdAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + AUTH_SESSION_TTL_MS).toISOString()
+  };
+  authSessions.set(id, session);
+  await saveAuthSessions();
+  setAuthCookie(req, res, "laogui_session", id, { maxAge: Math.floor(AUTH_SESSION_TTL_MS / 1000) });
+  return session;
+}
+
+async function authSessionFromRequest(req) {
+  await loadAuthStorage();
+  const sessionId = parseCookies(req).laogui_session || "";
+  if (!sessionId) return null;
+  const session = authSessions.get(sessionId);
+  if (!session) return null;
+  if (new Date(session.expiresAt || 0).getTime() <= Date.now()) {
+    authSessions.delete(sessionId);
+    saveAuthSessions().catch((error) => console.warn(`[auth] session prune failed: ${error.message || error}`));
+    return null;
+  }
+  const user = authUsers.find((item) => item.id === session.userId) || null;
+  if (!user) return null;
+  return { session, user };
+}
+
+async function isAdminRequest(req) {
+  if (isOwnerRequest(req)) return true;
+  const auth = await authSessionFromRequest(req);
+  if (!auth?.user?.openid) return false;
+  return config.wechatLogin.admins.includes(auth.user.openid);
+}
+
+async function authenticatedClientId(req, url = null) {
+  const adminTarget = url?.searchParams?.get("userClientId") || "";
+  if (adminTarget && await isAdminRequest(req)) return sanitizeClientId(adminTarget);
+  const auth = await authSessionFromRequest(req);
+  return auth?.session?.clientId ? sanitizeClientId(auth.session.clientId) : "";
+}
+
+async function clientIdFromRequest(req, url, { requiredForRemote = true } = {}) {
+  const authClientId = await authenticatedClientId(req, url);
+  if (authClientId) return authClientId;
   const raw = url.searchParams.get("clientId") || "";
   if (requiredForRemote && isRemoteRequest(req) && !raw.trim()) {
     const error = new Error("Missing clientId");
@@ -561,6 +988,16 @@ function providerUrl(source, pathname) {
 function providerResponsesPath(source) {
   if (source.responsesPath) return source.responsesPath.startsWith("/") ? source.responsesPath : `/${source.responsesPath}`;
   return isYybbBaseUrl(source.baseUrl) ? "/responses" : "/v1/responses";
+}
+
+function defaultResponsesPathForBaseUrl(baseUrl = "") {
+  return isYybbBaseUrl(baseUrl) ? "/responses" : "/v1/responses";
+}
+
+function normalizeResponsesPathForBaseUrl(baseUrl = "", value = "") {
+  const normalized = normalizeProviderApiPath(value || defaultResponsesPathForBaseUrl(baseUrl), defaultResponsesPathForBaseUrl(baseUrl));
+  if (isFhlBaseUrl(baseUrl) && normalized === "/responses") return "/v1/responses";
+  return normalized;
 }
 
 function normalizeProviderApiPath(value, fallback) {
@@ -784,32 +1221,15 @@ function imageProviderKind(baseUrl) {
 }
 
 function imageProviderApiKey(baseUrl) {
-  if (isFhlBaseUrl(baseUrl)) {
-    return process.env.FHL_API_KEY || config.reasoningProvider.apiKey || "";
-  }
   return config.imageProvider.apiKey;
 }
 
 function imageProviderKeySource(baseUrl) {
-  if (isFhlBaseUrl(baseUrl)) return process.env.FHL_API_KEY ? "FHL_API_KEY" : "reasoning";
   return "image";
 }
 
 function runtimeImageEndpointSources() {
-  return runtimeSettings.imageEndpoints
-    .filter((endpoint) => endpoint.enabled && endpoint.baseUrl && endpoint.apiKey)
-    .map((endpoint) => ({
-      baseUrl: endpoint.baseUrl,
-      apiKey: endpoint.apiKey,
-      responsesPath: endpoint.responsesPath || config.imageProvider.responsesPath,
-      imageGenerationPath: endpoint.imageGenerationPath || config.imageProvider.imageGenerationPath,
-      imageEditPath: endpoint.imageEditPath || config.imageProvider.imageEditPath,
-      providerManifest: endpoint.providerManifest || null,
-      kind: "custom",
-      keySource: "runtime",
-      runtimeId: endpoint.id,
-      label: endpoint.label || endpoint.baseUrl
-    }));
+  return [];
 }
 
 function imageProviderSources() {
@@ -826,9 +1246,13 @@ function imageProviderSources() {
     imageGenerationPath: config.imageProvider.imageGenerationPath,
     imageEditPath: config.imageProvider.imageEditPath,
     providerManifest: config.imageProvider.providerManifest || null,
-    responsesPath: isFhlBaseUrl(baseUrl)
-      ? (process.env.FHL_RESPONSES_PATH || config.reasoningProvider.responsesPath || config.imageProvider.responsesPath)
-      : config.imageProvider.responsesPath
+    apiMode: config.imageApiMode,
+    responsesTransport: config.imageStudioEngine.responsesTransport,
+    requestPolicy: config.imageStudioEngine.requestPolicy,
+    reasoningEffort: config.imageStudioEngine.reasoningEffort,
+    responsesPath: normalizeResponsesPathForBaseUrl(baseUrl, isFhlBaseUrl(baseUrl)
+      ? (process.env.FHL_RESPONSES_PATH || config.imageProvider.responsesPath)
+      : config.imageProvider.responsesPath)
   }));
   const seen = new Set();
   return [...runtimeSources, ...envSources].filter((source) => {
@@ -1265,7 +1689,7 @@ async function tryImageProviderPool(run) {
 async function runCurlModelsRequest(url, apiKey, timeoutMs) {
   const timeoutSeconds = String(Math.max(5, Math.ceil(timeoutMs / 1000)));
   const statusMarker = "\n__HTTP_STATUS__:";
-  const child = spawn("curl", [
+  const child = trackChildProcess(spawn("curl", [
     "--http1.1",
     "--silent",
     "--show-error",
@@ -1279,7 +1703,7 @@ async function runCurlModelsRequest(url, apiKey, timeoutMs) {
     `Authorization: Bearer ${apiKey}`,
     "--write-out",
     `${statusMarker}%{http_code}`
-  ]);
+  ]));
 
   const stdoutChunks = [];
   const stderrChunks = [];
@@ -1400,16 +1824,33 @@ async function probeProviderConnection(kind, provider, { timeoutMs = 12000 } = {
     let imageProbeSource = null;
 
     if (kind === "image") {
+      const providerApiMode = normalizeImageApiMode(provider.apiMode || config.imageApiMode);
       imageProbeSource = {
         ...source,
         responsesPath,
         imageGenerationPath: provider.imageGenerationPath || source.imageGenerationPath || config.imageProvider.imageGenerationPath,
         imageEditPath: provider.imageEditPath || source.imageEditPath || config.imageProvider.imageEditPath,
         providerManifest: provider.providerManifest || source.providerManifest || null,
+        model,
+        apiMode: providerApiMode,
+        responsesTransport: provider.responsesTransport || config.imageStudioEngine.responsesTransport,
+        requestPolicy: provider.requestPolicy || config.imageStudioEngine.requestPolicy,
+        reasoningEffort: provider.reasoningEffort || config.imageStudioEngine.reasoningEffort,
         keySource: "runtime",
         label: shortRuntimeEndpointLabel(source.baseUrl)
       };
-      const generated = config.imageApiMode === "responses"
+      const engineStatus = imageStudioEngineStatus();
+      const generated = engineStatus.enabled && engineStatus.available
+        ? await runImageStudioEngine({
+            prompt: "A tiny clean test image: a simple modern wooden chair on a white background. No text, no watermark.",
+            inputImages: [],
+            size: "1024x1024",
+            quality: "low",
+            sourceOverride: imageProbeSource,
+            imageModelOverride: model || config.imageModel,
+            textModelOverride: config.reasoningModel || "gpt-5.5"
+          })
+        : providerApiMode === "responses"
         ? await openaiResponsesImageStreamFromSource({
             model,
             input: [
@@ -1436,10 +1877,10 @@ async function probeProviderConnection(kind, provider, { timeoutMs = 12000 } = {
             prompt: "A tiny clean test image: a simple modern wooden chair on a white background. No text, no watermark.",
             inputImages: [],
             size: "1024x1024",
-            quality: "low"
-          }, { timeoutMs, source: imageProbeSource });
+              quality: "low"
+            }, { timeoutMs, source: imageProbeSource });
       imageBytes = generated.buffer?.length || 0;
-      message = `${generated.imageApi === "responses" ? "Responses Image Gen" : "Images API"} 检测成功，已返回图片数据 ${formatBytes(imageBytes)}。`;
+      message = `${generated.imageApi === "image-studio-cli" ? "Image Studio CLI" : generated.imageApi === "responses" ? "Responses Image Gen" : "Images API"} 检测成功，已返回图片数据 ${formatBytes(imageBytes)}。`;
     } else {
       const text = await probeResponsesTextProvider({ ...source, responsesPath }, model, timeoutMs);
       message = text ? `Responses 文本检测成功：${truncateLogText(text, 80)}` : "Responses 文本检测成功。";
@@ -2184,23 +2625,144 @@ function bufferFromImageValue(value, fallbackMime = "image/png") {
   return Buffer.from(decodeURIComponent(payload));
 }
 
+function ipv4Parts(address) {
+  const parts = String(address || "").split(".").map((part) => Number(part));
+  return parts.length === 4 && parts.every((part) => Number.isInteger(part) && part >= 0 && part <= 255) ? parts : null;
+}
+
+function isBlockedIpv4(address) {
+  const parts = ipv4Parts(address);
+  if (!parts) return true;
+  const [a, b] = parts;
+  return a === 0
+    || a === 10
+    || a === 127
+    || (a === 100 && b >= 64 && b <= 127)
+    || (a === 169 && b === 254)
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168)
+    || (a === 198 && (b === 18 || b === 19))
+    || a >= 224;
+}
+
+function isBlockedIpv6(address) {
+  const normalized = String(address || "").toLowerCase().replace(/^\[|\]$/g, "");
+  if (!normalized || normalized === "::" || normalized === "::1") return true;
+  const mappedIpv4 = normalized.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1];
+  if (mappedIpv4) return isBlockedIpv4(mappedIpv4);
+  return normalized.startsWith("fc")
+    || normalized.startsWith("fd")
+    || normalized.startsWith("fe80:")
+    || normalized.startsWith("ff")
+    || normalized.startsWith("2001:db8:");
+}
+
+function isBlockedNetworkAddress(address) {
+  const normalized = String(address || "").replace(/^\[|\]$/g, "");
+  const family = isIP(normalized);
+  if (family === 4) return isBlockedIpv4(normalized);
+  if (family === 6) return isBlockedIpv6(normalized);
+  return true;
+}
+
+function downloadContentTypeFromPath(urlPath = "") {
+  const ext = path.extname(urlPath).toLowerCase();
+  return {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".avif": "image/avif",
+    ".svg": "image/svg+xml"
+  }[ext] || "";
+}
+
+async function assertPublicDownloadUrl(parsed) {
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw httpError(400, "Only HTTP(S) image URLs can be downloaded");
+  }
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (isLoopbackHostname(hostname)) {
+    throw httpError(400, "Local image URLs are not allowed");
+  }
+  if (isIP(hostname)) {
+    if (isBlockedNetworkAddress(hostname)) throw httpError(400, "Private or reserved image URLs are not allowed");
+    return;
+  }
+  const addresses = await lookup(hostname, { all: true, verbatim: false });
+  if (!addresses.length || addresses.some((entry) => isBlockedNetworkAddress(entry.address))) {
+    throw httpError(400, "Private or reserved image URLs are not allowed");
+  }
+}
+
+async function fetchPublicImage(url) {
+  let current = new URL(url);
+  for (let redirectCount = 0; redirectCount <= 3; redirectCount += 1) {
+    await assertPublicDownloadUrl(current);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), config.downloadImageTimeoutMs);
+    let response;
+    try {
+      response = await fetch(current.href, {
+        cache: "no-store",
+        redirect: "manual",
+        signal: controller.signal
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
+      const location = response.headers.get("location");
+      if (!location) throw httpError(502, "Image URL redirect is missing a location");
+      current = new URL(location, current);
+      continue;
+    }
+    return { response, url: current };
+  }
+  throw httpError(508, "Image URL redirected too many times");
+}
+
+async function readLimitedResponseBuffer(response) {
+  const length = Number(response.headers.get("content-length") || 0);
+  if (Number.isFinite(length) && length > config.downloadImageMaxBytes) {
+    throw httpError(413, `Image is too large; limit is ${Math.round(config.downloadImageMaxBytes / 1024 / 1024)}MB`);
+  }
+  if (!response.body) return Buffer.alloc(0);
+  const chunks = [];
+  let total = 0;
+  const reader = response.body.getReader();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = Buffer.from(value);
+    total += chunk.length;
+    if (total > config.downloadImageMaxBytes) {
+      throw httpError(413, `Image is too large; limit is ${Math.round(config.downloadImageMaxBytes / 1024 / 1024)}MB`);
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks, total);
+}
+
 async function downloadImageUrlBuffer(url) {
-  const response = await fetch(url, { cache: "no-store" });
-  if (!response.ok) throw new Error(`Image URL download failed: ${response.status}`);
-  return Buffer.from(await response.arrayBuffer());
+  const result = await downloadImageUrlResult(url);
+  return result.buffer;
 }
 
 async function downloadImageUrlResult(url) {
   const parsed = new URL(url);
-  if (!["http:", "https:"].includes(parsed.protocol)) {
-    throw new Error("Only HTTP(S) image URLs can be downloaded");
+  const { response, url: finalUrl } = await fetchPublicImage(parsed.href);
+  if (!response.ok) throw httpError(502, `Image URL download failed: ${response.status}`);
+  const headerType = String(response.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+  const extensionType = downloadContentTypeFromPath(finalUrl.pathname);
+  const type = headerType.startsWith("image/") ? headerType : extensionType;
+  if (!type || !type.startsWith("image/")) {
+    throw httpError(415, "Downloaded URL did not return an image");
   }
-  const response = await fetch(parsed.href, { cache: "no-store" });
-  if (!response.ok) throw new Error(`Image URL download failed: ${response.status}`);
-  const type = String(response.headers.get("content-type") || "application/octet-stream").split(";")[0];
   return {
-    buffer: Buffer.from(await response.arrayBuffer()),
-    type: type || "application/octet-stream"
+    buffer: await readLimitedResponseBuffer(response),
+    type
   };
 }
 
@@ -4460,7 +5022,7 @@ function assertWhiteModelForCadIntegration(input) {
 }
 
 function generatedFileUrl(filePath) {
-  const relativePath = path.relative(generatedDir, filePath);
+  const relativePath = path.relative(generatedDirectory(), filePath);
   if (!relativePath || relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
     throw httpError(500, "Generated artifact path is outside generated directory");
   }
@@ -4470,7 +5032,7 @@ function generatedFileUrl(filePath) {
 async function createCadIntegrationWorkspace(model, engine) {
   const fileBase = slugify(model.fileBase || model.title || model.id || "ai-3d-model") || "ai-3d-model";
   const runId = `${Date.now()}-${randomUUID().slice(0, 8)}`;
-  const dir = path.join(generatedDir, "cad-integrations", `${fileBase}-${engine}-${runId}`);
+  const dir = path.join(generatedDirectory(), "cad-integrations", `${fileBase}-${engine}-${runId}`);
   await fs.mkdir(dir, { recursive: true });
   return { dir, fileBase };
 }
@@ -4624,11 +5186,11 @@ function commandPreview(command, args = []) {
 function runCommand(command, args = [], options = {}) {
   return new Promise((resolve) => {
     const timeoutMs = Math.max(1000, Number(options.timeoutMs || 60000));
-    const child = spawn(command, args, {
+    const child = trackChildProcess(spawn(command, args, {
       cwd: options.cwd || __dirname,
       env: { ...process.env, ...(options.env || {}) },
       shell: false
-    });
+    }));
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -4660,6 +5222,505 @@ function runCommand(command, args = [], options = {}) {
       finish({ ok: code === 0, code, error: code === 0 ? "" : `Command exited with code ${code}` });
     });
   });
+}
+
+function normalizeImageStudioFhlEnabled(value) {
+  const normalized = String(value || "auto").trim().toLowerCase();
+  if (["0", "false", "no", "off", "disabled", "disable"].includes(normalized)) return "disabled";
+  if (["1", "true", "yes", "on", "enabled", "enable"].includes(normalized)) return "enabled";
+  return "auto";
+}
+
+function normalizeImageStudioFhlProvider(value) {
+  const normalized = String(value || "auto").trim().toLowerCase();
+  return ["auto", "fhl", "yybb"].includes(normalized) ? normalized : "auto";
+}
+
+function normalizeImageStudioEngineMode(value) {
+  const normalized = String(value || "required").trim().toLowerCase();
+  if (["0", "false", "no", "off", "disabled", "disable"].includes(normalized)) return "disabled";
+  if (["optional", "auto", "fallback"].includes(normalized)) return "optional";
+  return "required";
+}
+
+function imageStudioRuntimePlatformId(platform = process.platform, arch = process.arch) {
+  return `${platform}-${arch}`;
+}
+
+function imageStudioCliExecutableName(platform = process.platform) {
+  return platform === "win32" ? "gptcodex-image.exe" : "gptcodex-image";
+}
+
+function bundledImageStudioCliCandidates() {
+  const executable = imageStudioCliExecutableName();
+  const platformId = imageStudioRuntimePlatformId();
+  const resourcesPath = process.resourcesPath || "";
+  return [
+    path.join(__dirname, "engines", "image-studio", platformId, executable),
+    path.join(__dirname, "engines", "image-studio", executable),
+    path.join(__dirname, "bin", executable),
+    resourcesPath ? path.join(resourcesPath, "engines", "image-studio", platformId, executable) : "",
+    resourcesPath ? path.join(resourcesPath, "engines", "image-studio", executable) : "",
+    resourcesPath ? path.join(resourcesPath, "bin", executable) : "",
+    config.imageStudioEngine.cliPath
+  ].filter(Boolean).map((candidate) => path.resolve(candidate));
+}
+
+function resolveImageStudioCliPath() {
+  return bundledImageStudioCliCandidates().find((candidate) => existsSync(candidate)) || path.resolve(bundledImageStudioCliCandidates()[0] || "");
+}
+
+function imageStudioEngineStatus() {
+  const mode = normalizeImageStudioEngineMode(config.imageStudioEngine.mode);
+  const cliPath = resolveImageStudioCliPath();
+  const available = Boolean(cliPath && existsSync(cliPath));
+  const desktop = imageStudioDesktopState();
+  return {
+    mode,
+    enabled: mode !== "disabled" && (mode === "required" || available),
+    required: mode === "required",
+    available,
+    cliPath,
+    platform: imageStudioRuntimePlatformId(),
+    outputDir: path.resolve(config.imageStudioEngine.outputDir),
+    timeoutSeconds: config.imageStudioEngine.timeoutSeconds,
+    responsesTransport: normalizeResponsesTransport(config.imageStudioEngine.responsesTransport || desktop.responsesTransport || "sse"),
+    requestPolicy: normalizeImageStudioRequestPolicy(config.imageStudioEngine.requestPolicy || desktop.requestPolicy || "openai"),
+    reasoningEffort: normalizeImageStudioReasoningEffort(config.imageStudioEngine.reasoningEffort || desktop.reasoningEffort || "xhigh"),
+    partialImages: clampNumber(Number(config.imageStudioEngine.partialImages ?? desktop.partialImages ?? 0), 0, 3),
+    autoRetryCount: clampNumber(Number(config.imageStudioEngine.autoRetryCount ?? desktop.autoRetryCount ?? 1), 0, 8),
+    allowNativeFallback: Boolean(config.imageStudioEngine.allowNativeFallback),
+    desktop: publicImageStudioDesktopState(desktop)
+  };
+}
+
+function normalizeResponsesTransport(value) {
+  return String(value || "").trim().toLowerCase() === "websocket" ? "websocket" : "sse";
+}
+
+function normalizeImageStudioRequestPolicy(value) {
+  return String(value || "").trim().toLowerCase() === "compat" ? "compat" : "openai";
+}
+
+function normalizeImageStudioReasoningEffort(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return ["low", "medium", "high", "xhigh"].includes(normalized) ? normalized : "xhigh";
+}
+
+function imageStudioFhlSkillStatus() {
+  const mode = normalizeImageStudioFhlEnabled(config.imageStudioFhlSkill.enabled);
+  const script = path.resolve(config.imageStudioFhlSkill.script);
+  const available = existsSync(script);
+  const cliPath = resolveImageStudioCliPath();
+  const desktop = imageStudioDesktopState();
+  return {
+    mode,
+    enabled: mode === "enabled" || (mode === "auto" && available),
+    available,
+    script,
+    cliPath,
+    cliAvailable: existsSync(cliPath),
+    provider: normalizeImageStudioFhlProvider(config.imageStudioFhlSkill.provider),
+    outputDir: path.resolve(config.imageStudioFhlSkill.outputDir),
+    timeoutSeconds: config.imageStudioFhlSkill.timeoutSeconds,
+    desktop: publicImageStudioDesktopState(desktop)
+  };
+}
+
+function publicImageStudioDesktopState(desktop = {}) {
+  return {
+    installed: Boolean(desktop.installed),
+    statePath: desktop.statePath || "",
+    profileCount: Number(desktop.profileCount || 0),
+    lastReadAt: desktop.lastReadAt || ""
+  };
+}
+
+function imageStudioDesktopState() {
+  const statePath = imageStudioCompatStatePath;
+  const base = {
+    installed: existsSync(statePath),
+    statePath,
+    activeProfileId: "",
+    activeProfileLabel: "",
+    baseUrl: "",
+    apiMode: "",
+    responsesTransport: "",
+    imageModel: "",
+    textModel: "",
+    requestPolicy: "",
+    reasoningEffort: "",
+    partialImages: null,
+    autoRetryCount: null,
+    profileCount: 0,
+    lastReadAt: new Date().toISOString()
+  };
+  if (!base.installed) return base;
+  try {
+    const parsed = JSON.parse(readFileSync(statePath, "utf8"));
+    const settings = parsed.settings && typeof parsed.settings === "object" ? parsed.settings : {};
+    const profiles = Array.isArray(parsed.profiles) ? parsed.profiles : [];
+    const activeProfileId = String(parsed.activeProfileId || "");
+    const activeProfile = profiles.find((profile) => profile?.id === activeProfileId)
+      || profiles.find((profile) => profile?.baseURL === config.imageProvider.baseUrl)
+      || profiles[0]
+      || {};
+    return {
+      ...base,
+      activeProfileId,
+      activeProfileLabel: String(activeProfile.label || activeProfile.name || activeProfileId || ""),
+      baseUrl: normalizeBaseUrl(activeProfile.baseURL || activeProfile.baseUrl || ""),
+      apiMode: String(activeProfile.apiMode || ""),
+      responsesTransport: String(activeProfile.responsesTransport || ""),
+      imageModel: String(activeProfile.imageModelID || activeProfile.imageModel || ""),
+      textModel: String(activeProfile.textModelID || activeProfile.textModel || ""),
+      requestPolicy: String(activeProfile.requestPolicy || ""),
+      reasoningEffort: String(activeProfile.reasoningEffort || ""),
+      partialImages: settings.partialImages ?? null,
+      autoRetryCount: settings.autoRetryCount ?? null,
+      profileCount: profiles.length
+    };
+  } catch (error) {
+    return {
+      ...base,
+      error: String(error.message || error)
+    };
+  }
+}
+
+function imageStudioFhlEndpointLabel(status = imageStudioFhlSkillStatus()) {
+  return `image-studio-fhl:${status.provider}`;
+}
+
+function imageStudioEngineEndpointLabel(source) {
+  return `image-studio-cli:${shortRuntimeEndpointLabel(source?.baseUrl || "")}`;
+}
+
+function imageStudioFhlResultLine(output, key) {
+  const prefix = `${key}=`;
+  return String(output || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.startsWith(prefix))
+    ?.slice(prefix.length)
+    .trim() || "";
+}
+
+function imageStudioFhlResultLines(output, key) {
+  const prefix = `${key}=`;
+  return String(output || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith(prefix))
+    .map((line) => line.slice(prefix.length).trim())
+    .filter(Boolean);
+}
+
+function imageStudioFhlTaggedLines(output, tag) {
+  const pattern = new RegExp(`^${tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\[[^\\]]+\\]=(.*)$`);
+  return String(output || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .map((line) => line.match(pattern)?.[1]?.trim() || "")
+    .filter(Boolean);
+}
+
+function imageStudioCliOutputLine(output, label) {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`${escaped}\\s*[:：]\\s*(.+)$`);
+  return String(output || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .map((line) => line.match(pattern)?.[1]?.trim() || "")
+    .filter(Boolean)
+    .at(-1) || "";
+}
+
+async function newestImageFile(outputDir) {
+  try {
+    const entries = await fs.readdir(outputDir, { withFileTypes: true });
+    const files = await Promise.all(entries
+      .filter((entry) => entry.isFile() && /\.(png|jpe?g|webp)$/i.test(entry.name))
+      .map(async (entry) => {
+        const filePath = path.join(outputDir, entry.name);
+        return { filePath, stat: await fs.stat(filePath) };
+      }));
+    return files.sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs)[0]?.filePath || "";
+  } catch {
+    return "";
+  }
+}
+
+async function newestRawResponseFile(outputDir) {
+  try {
+    const entries = await fs.readdir(outputDir, { withFileTypes: true });
+    const files = await Promise.all(entries
+      .filter((entry) => entry.isFile() && /(response|raw).*\.(json|txt)$/i.test(entry.name))
+      .map(async (entry) => {
+        const filePath = path.join(outputDir, entry.name);
+        return { filePath, stat: await fs.stat(filePath) };
+      }));
+    return files.sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs)[0]?.filePath || "";
+  } catch {
+    return "";
+  }
+}
+
+function imageStudioEffectiveModel(source = {}, requestedModel = "") {
+  const model = String(requestedModel || source.model || config.imageModel || "gpt-image-2");
+  if (isFhlBaseUrl(source.baseUrl) && normalizeImageApiMode(source.apiMode || config.imageApiMode) === "responses" && model === "gpt-image-2") {
+    return "gpt-image-2-codex";
+  }
+  return model;
+}
+
+function imageStudioCliSize(size) {
+  const text = String(size || "").trim();
+  if (!text || text === "auto") return closestStandardImageSize(text);
+  return closestStandardImageSize(text);
+}
+
+function imageStudioCliDiagnostics(output, rawPath = "") {
+  const text = String(output || "");
+  const lower = text.toLowerCase();
+  const diagnoses = imageStudioFhlTaggedLines(text, "DIAGNOSIS");
+  if (/invalid_api_key|401/.test(lower)) diagnoses.push("Provider rejected the API key; update the saved Image Studio engine key.");
+  if (/524/.test(lower)) diagnoses.push("Cloudflare 524 timeout; retry or reduce reference image size.");
+  if (/sync_wait_expired|running|queued/.test(lower)) diagnoses.push("Image task was still running or queued when the sync wait expired; retry is usually safe.");
+  return {
+    rawResponses: [...new Set([rawPath, ...imageStudioFhlTaggedLines(text, "RAW_RESPONSE")].filter(Boolean))],
+    diagnoses: [...new Set(diagnoses)]
+  };
+}
+
+async function writeImageStudioFhlReferences(inputImages = [], outputDir) {
+  const files = [];
+  const validImages = inputImages.filter((image) => image?.dataUrl);
+  for (let index = 0; index < validImages.length; index += 1) {
+    const image = validImages[index];
+    const blob = imageDataUrlToBlob(image.dataUrl);
+    const ext = imageExtensionFromMime(blob.type || image.type || "image/png");
+    const filePath = path.join(outputDir, `reference-${index + 1}.${ext}`);
+    await fs.writeFile(filePath, Buffer.from(await blob.arrayBuffer()));
+    files.push(filePath);
+  }
+  return files;
+}
+
+async function runImageStudioEngine({ prompt, inputImages = [], size = "auto", quality = "medium", sourceOverride = null, imageModelOverride = "", textModelOverride = "" } = {}) {
+  const status = imageStudioEngineStatus();
+  if (!status.enabled || !status.available) {
+    const error = new Error(status.available
+      ? "Image Studio engine is disabled"
+      : `Image Studio CLI not found: ${status.cliPath}`);
+    error.status = 503;
+    error.details = { status };
+    throw error;
+  }
+
+  const source = sourceOverride || activeImageProviderSource();
+  if (!source?.apiKey || !source?.baseUrl) {
+    const error = new Error("Image Studio engine requires a configured image Base URL and API Key.");
+    error.status = 503;
+    error.details = { source: source?.baseUrl || "" };
+    throw error;
+  }
+
+  const outputDir = path.join(status.outputDir, `${Date.now()}-${randomUUID().slice(0, 8)}`);
+  await fs.mkdir(outputDir, { recursive: true });
+  const references = await writeImageStudioFhlReferences(inputImages, outputDir);
+  const apiMode = normalizeImageApiMode(source.apiMode || config.imageApiMode);
+  const responsesTransport = normalizeResponsesTransport(source.responsesTransport || status.responsesTransport);
+  const requestPolicy = normalizeImageStudioRequestPolicy(source.requestPolicy || status.requestPolicy);
+  const reasoningEffort = normalizeImageStudioReasoningEffort(source.reasoningEffort || status.reasoningEffort);
+  const args = [
+    "--base-url", source.baseUrl,
+    "--api-key", source.apiKey,
+    "--api-mode", apiMode === "images" ? "images" : "responses",
+    "--responses-transport", responsesTransport,
+    "--mode", references.length ? "edit" : "generate",
+    "--size", imageStudioCliSize(size),
+    "--quality", normalizeImageToolQuality(quality),
+    "--output-format", "png",
+    "--image-model", imageStudioEffectiveModel(source, imageModelOverride),
+    "--text-model", textModelOverride || config.reasoningModel || "gpt-5.5",
+    "--request-policy", requestPolicy,
+    "--reasoning-effort", reasoningEffort,
+    "--partial-images", String(status.partialImages),
+    "--auto-retry-count", String(status.autoRetryCount),
+    "--prompt", String(prompt || ""),
+    "--out-dir", outputDir,
+    "--disable-preview"
+  ];
+  for (const filePath of references) args.push("--reference-image", filePath);
+
+  const result = await runCommand(status.cliPath, args, {
+    cwd: outputDir,
+    timeoutMs: (status.timeoutSeconds + 30) * 1000
+  });
+  const combinedOutput = [result.stdout, result.stderr].filter(Boolean).join("\n");
+  const parsedImagePath = imageStudioCliOutputLine(combinedOutput, "图片已保存")
+    || imageStudioFhlResultLine(combinedOutput, "RESULT_IMAGE");
+  const rawPath = imageStudioCliOutputLine(combinedOutput, "原始返回已保存")
+    || imageStudioFhlTaggedLines(combinedOutput, "RAW_RESPONSE").at(-1)
+    || await newestRawResponseFile(outputDir);
+  const resultImage = parsedImagePath || await newestImageFile(outputDir);
+  const diagnostics = imageStudioCliDiagnostics(combinedOutput, rawPath);
+
+  if (!result.ok || !resultImage) {
+    const error = new Error([
+      "Image Studio engine failed",
+      result.error || "",
+      combinedOutput.slice(-2000)
+    ].filter(Boolean).join(": "));
+    error.status = result.timedOut ? 504 : 502;
+    error.details = {
+      command: redactImageStudioCommand(result.command),
+      outputDir,
+      endpoint: source.baseUrl,
+      diagnostics,
+      stdout: result.stdout,
+      stderr: result.stderr
+    };
+    throw error;
+  }
+
+  const imagePath = path.resolve(resultImage);
+  if (!existsSync(imagePath)) {
+    const error = new Error(`Image Studio engine reported a missing image: ${imagePath}`);
+    error.status = 502;
+    error.details = { outputDir, endpoint: source.baseUrl, diagnostics };
+    throw error;
+  }
+
+  return {
+    buffer: await fs.readFile(imagePath),
+    thinking: `Image Studio CLI engine completed through ${shortRuntimeEndpointLabel(source.baseUrl)}.`,
+    imageApi: "image-studio-cli",
+    endpoint: imageStudioEngineEndpointLabel(source),
+    actualParams: {
+      size: imageStudioCliSize(size),
+      quality: normalizeImageToolQuality(quality),
+      output_format: "png",
+      api_mode: apiMode === "images" ? "images" : "responses",
+      responses_transport: responsesTransport,
+      request_policy: requestPolicy,
+      reasoning_effort: reasoningEffort
+    },
+    diagnostics: {
+      ...diagnostics,
+      desktopProfile: status.desktop,
+      cliPath: status.cliPath
+    },
+    skill: {
+      name: "image-studio-cli",
+      provider: imageProviderKind(source.baseUrl),
+      cliPath: status.cliPath,
+      outputDir,
+      resultImage: imagePath,
+      rawResponse: rawPath || ""
+    }
+  };
+}
+
+function redactImageStudioCommand(command = "") {
+  return String(command || "").replace(/(--api-key\s+)(?:"[^"]+"|\S+)/g, "$1<redacted>");
+}
+
+async function runImageStudioFhlSkill({ prompt, inputImages = [], size = "auto", quality = "medium" } = {}) {
+  const status = imageStudioFhlSkillStatus();
+  if (!status.enabled) {
+    const error = new Error(status.available
+      ? "Image Studio FHL skill is disabled"
+      : `Image Studio FHL skill script not found: ${status.script}`);
+    error.status = 503;
+    throw error;
+  }
+
+  const outputDir = path.join(status.outputDir, `${Date.now()}-${randomUUID().slice(0, 8)}`);
+  await fs.mkdir(outputDir, { recursive: true });
+  const references = await writeImageStudioFhlReferences(inputImages, outputDir);
+  const args = [
+    status.script,
+    "--provider",
+    status.provider,
+    "--prompt",
+    String(prompt || ""),
+    "--output-dir",
+    outputDir,
+    "--size",
+    String(size || "auto"),
+    "--quality",
+    normalizeImageToolQuality(quality),
+    "--output-format",
+    "png",
+    "--provider-timeout-seconds",
+    String(status.timeoutSeconds)
+  ];
+  for (const filePath of references) args.push("--reference-image", filePath);
+
+  const result = await runCommand("python3", args, {
+    cwd: outputDir,
+    timeoutMs: (status.timeoutSeconds + 30) * 1000
+  });
+  const combinedOutput = [result.stdout, result.stderr].filter(Boolean).join("\n");
+  const resultImage = imageStudioFhlResultLine(combinedOutput, "RESULT_IMAGE");
+  const resultProvider = imageStudioFhlResultLine(combinedOutput, "RESULT_PROVIDER") || status.provider;
+  const rawResponses = imageStudioFhlTaggedLines(combinedOutput, "RAW_RESPONSE");
+  const diagnoses = imageStudioFhlTaggedLines(combinedOutput, "DIAGNOSIS");
+
+  if (!result.ok || !resultImage) {
+    const error = new Error([
+      "Image Studio FHL skill failed",
+      result.error || "",
+      combinedOutput.slice(-2000)
+    ].filter(Boolean).join(": "));
+    error.status = result.timedOut ? 504 : 502;
+    error.details = {
+      command: result.command,
+      outputDir,
+      provider: status.provider,
+      rawResponses,
+      diagnoses: [...new Set(diagnoses)],
+      desktopProfile: status.desktop,
+      stdout: result.stdout,
+      stderr: result.stderr
+    };
+    throw error;
+  }
+
+  const imagePath = path.resolve(resultImage);
+  if (!existsSync(imagePath)) {
+    const error = new Error(`Image Studio FHL skill reported a missing image: ${imagePath}`);
+    error.status = 502;
+    error.details = { outputDir, provider: resultProvider };
+    throw error;
+  }
+
+  return {
+    buffer: await fs.readFile(imagePath),
+    thinking: `Image Studio FHL skill completed through provider ${resultProvider}.`,
+    imageApi: "image-studio-fhl",
+    endpoint: imageStudioFhlEndpointLabel({ provider: resultProvider }),
+    actualParams: {
+      size: String(size || "auto"),
+      quality: normalizeImageToolQuality(quality),
+      output_format: "png"
+    },
+    diagnostics: {
+      rawResponses,
+      diagnoses: [...new Set(diagnoses)],
+      desktopProfile: status.desktop,
+      cliPath: status.cliPath
+    },
+    skill: {
+      name: "image-studio-fhl",
+      provider: resultProvider,
+      script: status.script,
+      outputDir,
+      resultImage: imagePath
+    }
+  };
 }
 
 function launchDetachedCommand(command, args = [], options = {}) {
@@ -6458,20 +7519,29 @@ async function generateImage(body) {
     throw error;
   }
 
-  const prompt = [
-    gptImage2PromptFusionGuide({ mode: "plan-render", referenceCount: 0, references: [] }),
-    "",
-    architectureInteriorPromptSchema({ mode: "plan-render", brief, intent: imagePrompt, referenceCount: 0, references: [], selection: null }),
-    "",
-    designerAgentThinkingModel({ mode: "plan-render", brief, intent: imagePrompt, referenceCount: 0, references: [], selection: null }),
-    "",
-    imagePrompt,
-    "",
-    "Use case: architecture and spatial design concept visual.",
-    `Project context: ${brief.spaceType || "spatial project"}, ${brief.area || ""}, ${brief.location || ""}.`,
-    "Output: high-quality editorial architecture/interior concept render, designer presentation quality.",
-    "Constraints: no watermarks, no brand logos, no UI overlays, no readable text, no people as the main subject unless needed for scale."
-  ].join("\n");
+  const useReasoning = body.thinkingEnabled === true;
+  const prompt = useReasoning
+    ? [
+        gptImage2PromptFusionGuide({ mode: "plan-render", referenceCount: 0, references: [] }),
+        "",
+        architectureInteriorPromptSchema({ mode: "plan-render", brief, intent: imagePrompt, referenceCount: 0, references: [], selection: null }),
+        "",
+        designerAgentThinkingModel({ mode: "plan-render", brief, intent: imagePrompt, referenceCount: 0, references: [], selection: null }),
+        "",
+        imagePrompt,
+        "",
+        "Use case: architecture and spatial design concept visual.",
+        `Project context: ${brief.spaceType || "spatial project"}, ${brief.area || ""}, ${brief.location || ""}.`,
+        "Output: high-quality editorial architecture/interior concept render, designer presentation quality.",
+        "Constraints: no watermarks, no brand logos, no UI overlays, no readable text, no people as the main subject unless needed for scale."
+      ].join("\n")
+    : buildFastRenderPrompt({
+        mode: "plan-render",
+        brief,
+        intent: imagePrompt,
+        referenceCount: 0,
+        references: []
+      });
 
   const generated = await thinkThenGenerateImage({
     prompt,
@@ -6480,7 +7550,7 @@ async function generateImage(body) {
     quality: body.quality || "low",
     title: direction.name || brief.projectName || "space concept",
     mode: "plan-render",
-    useReasoning: body.thinkingEnabled === true
+    useReasoning
   });
 
   return saveGeneratedImage({
@@ -6716,20 +7786,35 @@ async function renderFromUploadedImages(body) {
       ];
   const inputCount = renderInputImages.filter((image) => image?.dataUrl).length + references.filter((reference) => reference?.dataUrl).length;
 
-  const prompt = buildRenderPrompt({
-    mode,
-    brief,
-    intent,
-    selection: body.selection,
-    planPaperView: body.planPaperView,
-    multiAngleView: body.multiAngleView,
-    viewAngleReference,
-    referenceCount: references.length,
-    references,
-    coloredPlanPipeline: Boolean(coloredPlanRecord),
-    coloredPlanRecord,
-    coloredPlanDirect
-  });
+  const prompt = useReasoning
+    ? buildRenderPrompt({
+        mode,
+        brief,
+        intent,
+        selection: body.selection,
+        planPaperView: body.planPaperView,
+        multiAngleView: body.multiAngleView,
+        viewAngleReference,
+        referenceCount: references.length,
+        references,
+        coloredPlanPipeline: Boolean(coloredPlanRecord),
+        coloredPlanRecord,
+        coloredPlanDirect
+      })
+    : buildFastRenderPrompt({
+        mode,
+        brief,
+        intent,
+        selection: body.selection,
+        planPaperView: body.planPaperView,
+        multiAngleView: body.multiAngleView,
+        viewAngleReference,
+        referenceCount: references.length,
+        references,
+        coloredPlanPipeline: Boolean(coloredPlanRecord),
+        coloredPlanRecord,
+        coloredPlanDirect
+      });
 
   const generated = await thinkThenGenerateImage({
     prompt,
@@ -7905,7 +8990,7 @@ async function thinkThenGenerateImage({ prompt, inputImages, size, quality, titl
     prompt
   });
 
-  if (!useReasoning) {
+  const generateWithPresetPrompt = async ({ fallbackReason = "" } = {}) => {
     const imagePrompt = [
       hardenFinalPromptForMode({
         mode: normalizedMode,
@@ -7929,12 +9014,18 @@ async function thinkThenGenerateImage({ prompt, inputImages, size, quality, titl
       prompt: imagePrompt,
       reasoningModel: "preset-only",
       thinking: [
-        "已关闭思考模式：本次未做单独的 gpt-5.5 提示词融合，直接使用网页内置预设提示词和用户描述交给 Image Gen。",
+        fallbackReason
+          ? `思考融合暂时不可用，已自动使用快速预设提示词继续生图。原因：${fallbackReason}`
+          : "已关闭思考模式：本次未做单独的 gpt-5.5 提示词融合，使用快速预设提示词和用户描述直接交给 Image Gen。",
         directPromptAudit.length
           ? `预设提示词加固：已补回 ${directPromptAudit.length} 项关键约束：${directPromptAudit.join("；")}`
           : "预设提示词加固：最终提示词已覆盖当前功能的关键输出边界。"
       ].join("\n")
     };
+  };
+
+  if (!useReasoning) {
+    return generateWithPresetPrompt();
   }
 
   const content = [
@@ -7973,11 +9064,19 @@ async function thinkThenGenerateImage({ prompt, inputImages, size, quality, titl
     max_output_tokens: 2600
   };
 
-  const reasoningText = await openaiResponsesTextStream(reasoningPayload, {
-    timeoutMs: 240000,
-    provider: "reasoning"
-  });
-  const reasoning = parsePromptFusion(reasoningText);
+  let reasoning;
+  try {
+    const reasoningText = await openaiResponsesTextStream(reasoningPayload, {
+      timeoutMs: 240000,
+      provider: "reasoning"
+    });
+    reasoning = parsePromptFusion(reasoningText);
+  } catch (error) {
+    if (!isReasoningFallbackError(error)) throw error;
+    const reason = reasoningFallbackReason(error);
+    console.warn(`[image] prompt fusion fallback: ${reason}`);
+    return generateWithPresetPrompt({ fallbackReason: reason });
+  }
   const promptAudit = auditFinalPromptForMode({
     mode: normalizedMode,
     prompt: reasoning.final_prompt || prompt
@@ -8306,54 +9405,96 @@ function hardenFinalPromptForMode({ mode, finalPrompt, promptGuard, audit }) {
 }
 
 async function generateImageWithImageProvider({ prompt, inputImages, size, quality, preferReferenceEdit = true, mode = "" }) {
-  await refreshImageEndpointSpeeds();
-
   const attempts = [];
   const attemptEvents = [];
   const standardSize = closestStandardImageSize(size);
   const skillAttempts = imageGenSkillMaxAttempts();
   const apiMode = normalizeImageApiMode(config.imageApiMode);
+  let nativeEndpointRefreshPromise = null;
+  const refreshNativeImageEndpoints = async () => {
+    nativeEndpointRefreshPromise ||= refreshImageEndpointSpeeds();
+    return nativeEndpointRefreshPromise;
+  };
+  const engineStatus = imageStudioEngineStatus();
+  if (engineStatus.enabled) {
+    attempts.push({
+      name: `Image Studio CLI engine ${size}`,
+      endpoint: engineStatus.available ? `image-studio-cli:${path.basename(engineStatus.cliPath)}` : "image-studio-cli:missing",
+      run: () => runImageStudioEngine({
+        prompt,
+        inputImages,
+        size,
+        quality
+      })
+    });
+  }
+  const fhlSkillStatus = imageStudioFhlSkillStatus();
+  if (fhlSkillStatus.enabled && (!engineStatus.required || !engineStatus.available)) {
+    attempts.push({
+      name: `Image Studio FHL skill ${size}`,
+      endpoint: imageStudioFhlEndpointLabel(fhlSkillStatus),
+      run: () => runImageStudioFhlSkill({
+        prompt,
+        inputImages,
+        size,
+        quality
+      })
+    });
+  }
   const addImageGenerationAttempts = (candidateSize) => {
+    if (engineStatus.required && !engineStatus.allowNativeFallback) return;
     if (apiMode !== "responses") {
       attempts.push({
         name: `OpenAI-compatible Images API ${candidateSize}`,
-        run: () => openaiCompatibleImagesDirect({
-          prompt,
-          inputImages: preferReferenceEdit ? inputImages : [],
-          size: candidateSize,
-          quality
-        })
+        run: async () => {
+          await refreshNativeImageEndpoints();
+          return openaiCompatibleImagesDirect({
+            prompt,
+            inputImages: preferReferenceEdit ? inputImages : [],
+            size: candidateSize,
+            quality
+          });
+        }
       });
     }
     if (apiMode !== "images") {
       for (let attempt = 1; attempt <= skillAttempts; attempt += 1) {
         attempts.push({
           name: `Responses image_generation tool ${candidateSize} (${attempt}/${skillAttempts})`,
-          run: () => openaiResponsesImageDirect({
-            prompt,
-            inputImages,
-            size: candidateSize,
-            quality,
-            useProviderPool: false
-          })
+          run: async () => {
+            await refreshNativeImageEndpoints();
+            return openaiResponsesImageDirect({
+              prompt,
+              inputImages,
+              size: candidateSize,
+              quality,
+              useProviderPool: false
+            });
+          }
         });
       }
     } else {
       attempts.push({
         name: `Responses image_generation fallback ${candidateSize}`,
-        run: () => openaiResponsesImageDirect({
-          prompt,
-          inputImages,
-          size: candidateSize,
-          quality,
-          useProviderPool: false
-        })
+        run: async () => {
+          await refreshNativeImageEndpoints();
+          return openaiResponsesImageDirect({
+            prompt,
+            inputImages,
+            size: candidateSize,
+            quality,
+            useProviderPool: false
+          });
+        }
       });
     }
     if (parseBooleanEnv(process.env.IMAGE_ALLOW_LEGACY_FALLBACK, false)) {
       attempts.push({
         name: `Legacy app image generation ${candidateSize}`,
-        run: () => openaiImagesGenerationDirect({ prompt, size: candidateSize, quality })
+        run: async () => {
+          await refreshNativeImageEndpoints();
+          return openaiImagesGenerationDirect({ prompt, size: candidateSize, quality });
+        }
       });
     }
   };
@@ -8378,7 +9519,7 @@ async function generateImageWithImageProvider({ prompt, inputImages, size, quali
     const event = {
       name: attempt.name,
       status: "running",
-      endpoint: config.imageProvider.baseUrl,
+      endpoint: attempt.endpoint || config.imageProvider.baseUrl,
       durationMs: 0,
       error: ""
     };
@@ -8406,11 +9547,11 @@ async function generateImageWithImageProvider({ prompt, inputImages, size, quali
         if (successProvider?.endpoint) config.imageProvider.baseUrl = successProvider.endpoint;
       }
       event.status = "success";
-      event.endpoint = config.imageProvider.baseUrl;
+      event.endpoint = result.endpoint || attempt.endpoint || config.imageProvider.baseUrl;
       event.durationMs = Date.now() - started;
       return {
         ...result,
-        endpoint: config.imageProvider.baseUrl,
+        endpoint: result.endpoint || attempt.endpoint || config.imageProvider.baseUrl,
         attempt: attempt.name,
         attempts: attemptEvents
       };
@@ -8434,7 +9575,7 @@ async function generateImageWithImageProvider({ prompt, inputImages, size, quali
         }
       }
       event.status = "failed";
-      event.endpoint = config.imageProvider.baseUrl;
+      event.endpoint = attempt.endpoint || config.imageProvider.baseUrl;
       event.durationMs = Date.now() - started;
       event.error = `${error.status || "ERR"} ${error.message || "unknown error"}`;
       console.warn(`[image] failed ${attempt.name}: ${error.status || "ERR"} ${error.message || "unknown error"}`);
@@ -9595,9 +10736,10 @@ function architectureInteriorPromptSchema({ mode, brief, intent, referenceCount 
 }
 
 async function saveGeneratedImage({ buffer, slug, meta, extra = {} }) {
-  await fs.mkdir(generatedDir, { recursive: true });
+  const outputDir = generatedDirectory();
+  await fs.mkdir(outputDir, { recursive: true });
   const fileName = `${Date.now()}-${slug}-${randomUUID().slice(0, 8)}.png`;
-  const filePath = path.join(generatedDir, fileName);
+  const filePath = path.join(outputDir, fileName);
   const sidecarMeta = {
     ...meta,
     ...(extra.imageApi ? { image_api: extra.imageApi } : {}),
@@ -10065,6 +11207,141 @@ function multiAnglePromptLine(multiAngleView = null) {
     `Camera orbit: orbitX=${view.cameraX}deg, orbitY=${view.cameraY}deg, distance=${view.cameraDistance} (${cameraDistanceLabel(view.cameraDistance)}). orbitX means the camera moves left/right around the subject; orbitY means the camera moves above/below around the subject; distance controls near/mid/far lens placement.`,
     "Never render the UI panel, sliders, axes, camera icon, cube, orbit guide, labels or overlay. Preserve the selected mode's structural and visual constraints."
   ].join(" ");
+}
+
+function compactPromptField(value, max = 360) {
+  return truncateLogText(String(value || "").replace(/\s+/g, " ").trim(), max);
+}
+
+function fastPresetLinesForMode(mode) {
+  mode = normalizeRenderMode(mode);
+  const map = {
+    custom: [
+      "Output: create the visual image requested by the latest user instruction; classify the artifact from the user text instead of forcing a floor-plan or interior-render workflow.",
+      "Preserve/transform boundary: preserve only what the user or uploaded image requires; transform the rest toward the requested visual result."
+    ],
+    "plan-axonometric": [
+      "Output: clean colored floor plan, top-down orthographic 2D view.",
+      "Preserve locked original linework, layout, walls, rooms, openings and furniture footprints.",
+      "Add restrained material/function color zones only; avoid 3D, tilt, perspective, extrusion, eye-level view and layout drift."
+    ],
+    "plan-axonometric-view": [
+      "Output: high-precision axonometric 3D floor plan from the colored floor plan.",
+      "Preserve locked colored floor plan layout, rooms, walls, openings, furniture footprints and visible crop.",
+      "Use orthographic or weak-perspective axonometric camera; avoid eye-level view, flat 2D plan and layout drift."
+    ],
+    "plan-render": [
+      "Output: final eye-level human-eye architecture/interior effect render.",
+      "Preserve spatial relationships, circulation, selected or inferred functional zone and scale cues from the input guide.",
+      "Describe foreground, midground, background, materials and lighting clearly; avoid floor-plan symbols, collage and unclear source zone."
+    ],
+    panorama: [
+      "Output: 2:1 equirectangular 360-degree panorama visual image with stable horizon and seamless horizontal wrap.",
+      "Preserve continuous spatial logic, material scale and lighting around the full surround.",
+      "Avoid normal wide-angle render, fisheye single frame, visible seam and black borders."
+    ],
+    photo: [
+      "Output: renovated site-photo-based effect render.",
+      "Preserve site photo perspective, envelope, openings, columns, ceiling height and major structure.",
+      "Change finishes, furniture, lighting and atmosphere only; avoid shifted vanishing points or impossible structure."
+    ],
+    whitemodel: [
+      "Output: polished realistic visualization from the white model.",
+      "Preserve white model massing, camera, openings, levels, proportions and spatial hierarchy.",
+      "Add realistic materials, lighting, context and scale cues; avoid raw viewport or gray clay look."
+    ],
+    sketch: [
+      "Output: realistic buildable architecture/interior render translated from the sketch.",
+      "Preserve sketch composition, perspective, main volumes, intended openings, gesture and design intent.",
+      "Resolve ambiguous lines into plausible surfaces, materials, lighting and scale; avoid generic room substitution, impossible construction and leftover sketch strokes unless requested."
+    ],
+    cadrender: [
+      "Output: realistic architecture/interior render derived from CAD linework.",
+      "Preserve CAD axes, linework, walls, openings, room adjacency and scale logic as hard constraints.",
+      "Add height, materials, furniture and lighting; avoid visible CAD strokes, technical lines and layout drift."
+    ],
+    upscale: [
+      "Output: enhanced same image.",
+      "Preserve composition, geometry, content, materials, objects and camera.",
+      "Improve clarity, denoise, local contrast, resolution feel and material readability only; avoid redesign or new objects."
+    ],
+    sharpen: [
+      "Output: controlled sharpened same image.",
+      "Preserve composition, geometry, content and color relationships exactly.",
+      "Improve edge clarity, crispness and local contrast only; avoid halos, fake detail and color shift."
+    ],
+    detail: [
+      "Output: detail-enhanced same scene.",
+      "Preserve layout, camera, walls, openings, main objects and non-target areas.",
+      "Enhance texture, joints, fixtures, lighting layers and styling scale cues; avoid clutter or structural changes."
+    ],
+    materialreplace: [
+      "Output: targeted material replacement edit.",
+      "Preserve geometry, perspective, lighting direction, object placement and non-target areas.",
+      "Replace material texture, color, reflectivity, pattern scale and junction details only; avoid full redesign."
+    ],
+    lightingadjust: [
+      "Output: lighting adjustment edit.",
+      "Preserve space, materials, camera, furniture and object placement.",
+      "Adjust exposure, shadow softness, color temperature, indirect light and fixture glow; avoid blown highlights and conflicting light directions."
+    ],
+    styletransfer: [
+      "Output: coherent style transfer edit.",
+      "Preserve architecture, camera, scale, circulation, openings and main object positions.",
+      "Transform material system, furniture language, fixtures, palette and styling; avoid filter-only recolor or unrecognizable structure."
+    ],
+    materialboard: [
+      "Output: professional visual material board with swatches, samples, textures, lighting mood and FF&E references.",
+      "Preserve design direction, palette and material logic from references.",
+      "Avoid text labels, logos, watermark and random collage clutter."
+    ],
+    outpaint: [
+      "Output: natural outpaint expansion.",
+      "Preserve original subject, vanishing points, perspective, lighting, material scale and camera height.",
+      "Extend surrounding architecture/interior context outside the frame; avoid seams, repeated objects and distorted geometry."
+    ]
+  };
+  return map[mode] || map.custom;
+}
+
+function buildFastRenderPrompt({ mode, brief = {}, intent = "", selection = null, planPaperView = null, multiAngleView = null, viewAngleReference = null, referenceCount = 0, references = [], coloredPlanPipeline = false, coloredPlanRecord = null, coloredPlanDirect = false }) {
+  mode = normalizeRenderMode(mode);
+  const modeInfo = renderModeKnowledge(mode);
+  const projectBits = [
+    compactPromptField(brief.projectName, 120),
+    compactPromptField(brief.spaceType, 120),
+    compactPromptField(brief.area, 80),
+    compactPromptField(brief.location, 120),
+    compactPromptField(brief.audience, 160),
+    compactPromptField(brief.style, 180)
+  ].filter(Boolean);
+  const userIntent = compactPromptField(intent || brief.constraints || brief.functions || "", 720);
+  const controlLines = [
+    selection ? `Selected area: focus on normalized region x=${selection.x}, y=${selection.y}, width=${selection.width}, height=${selection.height}; preserve whole-space logic.` : "",
+    viewAngleReference?.dataUrl ? "View-angle reference attached: keep its visible camera/crop/projection when it conflicts with generic defaults." : "",
+    planPaperView ? `Plan paper view control: ${compactPromptField(JSON.stringify(planPaperView), 220)}` : "",
+    multiAngleView ? `Multi-angle view control: ${compactPromptField(JSON.stringify(multiAngleView), 220)}` : "",
+    coloredPlanPipeline ? "Two-stage input: use the colored floor-plan intermediate as semantic/material source while preserving original plan constraints." : "",
+    coloredPlanDirect ? "Direct colored-plan input: preserve the uploaded colored plan as the locked layout/material source." : "",
+    coloredPlanRecord ? "Colored plan intermediate is already generated; use it as a guide, not as permission to redesign." : ""
+  ].filter(Boolean);
+
+  return [
+    "MANDATORY_GPT_IMAGE_2_MODE_GUARD:",
+    "FAST_DIRECT_PRESET_PROMPT:",
+    `Selected workflow: ${modeInfo.label}.`,
+    `Task: ${modeInfo.purpose}`,
+    `Primary image role: ${firstInputLabel(mode)}.`,
+    projectBits.length ? `Project: ${projectBits.join(" / ")}.` : "",
+    userIntent ? `User intent: ${userIntent}` : "",
+    referenceCount
+      ? `Use ${referenceCount} extra reference image(s) as open visual references: ${referenceIntentSummary(references)}.`
+      : "No extra reference images; infer a coherent material, lighting and composition direction.",
+    ...controlLines,
+    ...fastPresetLinesForMode(mode),
+    "Quality: clean professional designer presentation, believable geometry, coherent materials, controlled scene density.",
+    "Avoid: no watermark, no logo, no UI overlay, no random readable text, no distorted geometry, no unrelated collage."
+  ].filter(Boolean).join("\n");
 }
 
 function buildRenderPrompt({ mode, brief, intent, selection, planPaperView = null, multiAngleView = null, viewAngleReference = null, referenceCount, references = [], coloredPlanPipeline = false, coloredPlanRecord = null, coloredPlanDirect = false }) {
@@ -10679,17 +11956,21 @@ function normalizeRuntimeProvider(provider = {}, existing = null, { kind = "reas
   }
 
   const fallbackModel = kind === "image" ? config.imageModel : config.reasoningModel;
-  const fallbackResponsesPath = kind === "image" ? providerResponsesPath({ baseUrl, responsesPath: config.imageProvider.responsesPath }) : "/v1/responses";
+  const fallbackResponsesPath = kind === "image" ? defaultResponsesPathForBaseUrl(baseUrl) : "/v1/responses";
   const responsesPath = String(provider.responsesPath || provider.path || existing?.responsesPath || fallbackResponsesPath).trim();
   const normalized = {
     baseUrl,
     apiKey,
     model: String(provider.model || existing?.model || fallbackModel).trim() || fallbackModel,
-    responsesPath: normalizeProviderApiPath(responsesPath, fallbackResponsesPath),
+    responsesPath: normalizeResponsesPathForBaseUrl(baseUrl, responsesPath),
     updatedAt: new Date().toISOString()
   };
   if (kind === "image") {
     const providerManifest = providerManifestFromInput(provider, existing);
+    normalized.apiMode = normalizeImageApiMode(provider.apiMode || provider.imageApiMode || existing?.apiMode || config.imageApiMode || "responses");
+    normalized.responsesTransport = normalizeResponsesTransport(provider.responsesTransport || existing?.responsesTransport || config.imageStudioEngine.responsesTransport || "sse");
+    normalized.requestPolicy = normalizeImageStudioRequestPolicy(provider.requestPolicy || existing?.requestPolicy || config.imageStudioEngine.requestPolicy || "openai");
+    normalized.reasoningEffort = normalizeImageStudioReasoningEffort(provider.reasoningEffort || existing?.reasoningEffort || config.imageStudioEngine.reasoningEffort || "xhigh");
     normalized.imageGenerationPath = normalizeProviderApiPath(
       providerManifest?.submit?.path || provider.imageGenerationPath || provider.generationPath || existing?.imageGenerationPath,
       "/v1/images/generations"
@@ -10708,42 +11989,16 @@ function publicRuntimeProvider(provider) {
     configured: Boolean(provider?.apiKey),
     baseUrl: provider?.baseUrl || "",
     model: provider?.model || "",
+    apiMode: provider?.apiMode || "",
+    responsesTransport: provider?.responsesTransport || "",
+    requestPolicy: provider?.requestPolicy || "",
+    reasoningEffort: provider?.reasoningEffort || "",
     responsesPath: provider?.responsesPath || "",
     imageGenerationPath: provider?.imageGenerationPath || "",
     imageEditPath: provider?.imageEditPath || "",
     providerManifest: provider?.providerManifest || null,
     providerManifestName: provider?.providerManifest?.name || "",
-    keyPreview: provider?.apiKey ? `${provider.apiKey.slice(0, 5)}...${provider.apiKey.slice(-4)}` : "",
     updatedAt: provider?.updatedAt || ""
-  };
-}
-
-function normalizeRuntimeProviderProfile(profile = {}, existing = null) {
-  const source = { ...(existing || {}), ...(profile || {}) };
-  const id = String(source.id || source.slug || source.name || randomUUID()).trim();
-  const label = String(source.label || source.name || id || "API").trim();
-  const reasoning = normalizeRuntimeProvider(source.reasoning || {}, existing?.reasoning || null, { kind: "reasoning" });
-  const image = normalizeRuntimeProvider(source.image || {}, existing?.image || null, { kind: "image" });
-  return {
-    id,
-    label,
-    active: Boolean(source.active),
-    reasoning,
-    image,
-    createdAt: existing?.createdAt || source.createdAt || new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  };
-}
-
-function publicRuntimeProviderProfile(profile) {
-  return {
-    id: profile.id,
-    label: profile.label,
-    active: Boolean(profile.active),
-    reasoning: publicRuntimeProvider(profile.reasoning),
-    image: publicRuntimeProvider(profile.image),
-    createdAt: profile.createdAt || "",
-    updatedAt: profile.updatedAt || ""
   };
 }
 
@@ -10765,26 +12020,61 @@ function applyRuntimeProviders() {
     config.imageProvider.imageEditPath = image.imageEditPath || config.imageProvider.imageEditPath;
     config.imageProvider.providerManifest = image.providerManifest || config.imageProvider.providerManifest;
     config.imageModel = image.model || config.imageModel;
+    config.imageApiMode = normalizeImageApiMode(image.apiMode || config.imageApiMode);
+    config.imageStudioEngine.responsesTransport = normalizeResponsesTransport(image.responsesTransport || config.imageStudioEngine.responsesTransport);
+    config.imageStudioEngine.requestPolicy = normalizeImageStudioRequestPolicy(image.requestPolicy || config.imageStudioEngine.requestPolicy);
+    config.imageStudioEngine.reasoningEffort = normalizeImageStudioReasoningEffort(image.reasoningEffort || config.imageStudioEngine.reasoningEffort);
     config.imageProvider.baseUrls = uniqueBaseUrls([image.baseUrl, ...config.imageProvider.baseUrls]);
   }
 }
 
-function publicRuntimeImageEndpoint(endpoint, { includeKeyPreview = false } = {}) {
+function publicRuntimeImageEndpoint(endpoint) {
   return {
     id: endpoint.id,
     label: endpoint.label,
     baseUrl: endpoint.baseUrl,
     responsesPath: endpoint.responsesPath,
+    apiMode: endpoint.apiMode || "",
+    responsesTransport: endpoint.responsesTransport || "",
+    requestPolicy: endpoint.requestPolicy || "",
+    reasoningEffort: endpoint.reasoningEffort || "",
     imageGenerationPath: endpoint.imageGenerationPath,
     imageEditPath: endpoint.imageEditPath,
     providerManifest: endpoint.providerManifest || null,
     providerManifestName: endpoint.providerManifest?.name || "",
     enabled: endpoint.enabled,
     keyConfigured: Boolean(endpoint.apiKey),
-    keyPreview: includeKeyPreview && endpoint.apiKey ? `${endpoint.apiKey.slice(0, 5)}...${endpoint.apiKey.slice(-4)}` : "",
     createdAt: endpoint.createdAt,
     updatedAt: endpoint.updatedAt
   };
+}
+
+function publicStorageSettings() {
+  const storage = ensureRuntimeStorage();
+  return {
+    outputDir: storage.outputDir,
+    defaultOutputDir: defaultGeneratedDir,
+    promptOnFirstRun: Boolean(storage.promptOnFirstRun),
+    firstRunStoragePrompted: Boolean(storage.firstRunStoragePrompted),
+    needsFirstRunPrompt: Boolean(storage.promptOnFirstRun && !storage.firstRunStoragePrompted),
+    savePromptMode: storage.savePromptMode || "ask",
+    externalDataDir: externalDataDirEnabled,
+    updatedAt: storage.updatedAt || ""
+  };
+}
+
+async function updateStorageSettings(body = {}) {
+  const existing = ensureRuntimeStorage();
+  const next = normalizeStorageSettings({
+    outputDir: body.outputDir ?? existing.outputDir,
+    promptOnFirstRun: body.promptOnFirstRun ?? existing.promptOnFirstRun,
+    firstRunStoragePrompted: body.firstRunStoragePrompted ?? existing.firstRunStoragePrompted,
+    savePromptMode: body.savePromptMode ?? existing.savePromptMode
+  }, existing);
+  await fs.mkdir(next.outputDir, { recursive: true });
+  runtimeSettings.storage = next;
+  await saveRuntimeSettings();
+  return next;
 }
 
 async function loadRuntimeSettings() {
@@ -10801,36 +12091,22 @@ async function loadRuntimeSettings() {
         runtimeSettings.providers[kind] = null;
       }
     }
-    const profiles = Array.isArray(parsed.providerProfiles) ? parsed.providerProfiles : [];
-    runtimeSettings.providerProfiles = profiles
-      .map((profile) => {
-        try {
-          return normalizeRuntimeProviderProfile(profile, profile);
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean);
-    const endpoints = Array.isArray(parsed.imageEndpoints) ? parsed.imageEndpoints : [];
-    runtimeSettings.imageEndpoints = endpoints
-      .map((endpoint) => {
-        try {
-          return normalizeRuntimeImageEndpoint(endpoint, endpoint);
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean);
+    const hadLegacyProviderProfiles = Array.isArray(parsed.providerProfiles) && parsed.providerProfiles.length > 0;
+    const hadLegacyImageEndpoints = Array.isArray(parsed.imageEndpoints) && parsed.imageEndpoints.length > 0;
+    runtimeSettings.imageEndpoints = [];
+    runtimeSettings.storage = normalizeStorageSettings(parsed.storage || {}, parsed.storage || null);
     applyRuntimeProviders();
+    if (hadLegacyImageEndpoints || hadLegacyProviderProfiles) await saveRuntimeSettings();
   } catch (error) {
     if (error.code !== "ENOENT") console.warn(`[settings] load failed: ${error.message || error}`);
     runtimeSettings.providers = { reasoning: null, image: null };
-    runtimeSettings.providerProfiles = [];
     runtimeSettings.imageEndpoints = [];
+    runtimeSettings.storage = normalizeStorageSettings();
   }
 }
 
 async function saveRuntimeSettings() {
+  runtimeSettings.imageEndpoints = [];
   await fs.mkdir(logsDir, { recursive: true });
   const tmpPath = `${runtimeSettingsPath}.${process.pid}.tmp`;
   await fs.writeFile(tmpPath, `${JSON.stringify(runtimeSettings, null, 2)}\n`);
@@ -10838,30 +12114,26 @@ async function saveRuntimeSettings() {
 }
 
 function runtimeSettingsBody(req = null) {
-  const imageEndpointHealthValue = imageEndpointHealth();
   const owner = req ? isOwnerRequest(req) : true;
   return {
     ok: true,
     settings: {
       dataDir: appDataDir,
       externalDataDir: externalDataDirEnabled,
+      storage: publicStorageSettings(),
       providers: {
         reasoning: publicRuntimeProvider(runtimeSettings.providers.reasoning),
         image: publicRuntimeProvider(runtimeSettings.providers.image)
       },
-      providerProfiles: runtimeSettings.providerProfiles.map(publicRuntimeProviderProfile),
       providerProbes: {
         reasoning: publicProviderProbe("reasoning"),
         image: publicProviderProbe("image")
       },
-      imageEndpoints: runtimeSettings.imageEndpoints.map((endpoint) => publicRuntimeImageEndpoint(endpoint, { includeKeyPreview: owner })),
       activeImageBaseUrl: config.imageProvider.baseUrl,
-      imageEndpointHealth: imageEndpointHealthValue,
-      recommendedImageEndpoint: imageEndpointRecommendation(imageEndpointHealthValue),
-      imageBackend: config.imageApiMode === "responses" ? "responses-image-generation-tool" : "openai-compatible-images-api",
-      imageGenContract: config.imageApiMode === "responses"
-        ? "Images are generated through the Responses image_generation tool."
-        : "Images are generated through OpenAI-compatible /images/generations or /images/edits first, with Responses image_generation as fallback.",
+      imageStudioEngine: imageStudioEngineStatus(),
+      imageStudioFhlSkill: imageStudioFhlSkillStatus(),
+      imageBackend: "image-studio-cli-engine",
+      imageGenContract: "Images are generated through the bundled/configured Image Studio go-cli engine. Native OpenAI-compatible fallback is disabled unless IMAGE_STUDIO_ALLOW_NATIVE_FALLBACK=1.",
       canManageSettings: owner,
       publicApiTokenConfigured: Boolean(config.publicApi.token),
       publicApiCorsOrigin: config.publicApi.corsOrigin || ""
@@ -10963,12 +12235,19 @@ function generatedFileBase(fileName = "") {
 }
 
 async function generatedStorageSummary() {
+  const outputDir = generatedDirectory();
+  const archiveDir = generatedArchiveDirectory();
   const [generated, archive, logs] = await Promise.all([
-    directoryStats(generatedDir),
-    directoryStats(generatedArchiveDir),
+    directoryStats(outputDir),
+    directoryStats(archiveDir),
     directoryStats(logsDir)
   ]);
   return {
+    outputDir,
+    defaultOutputDir: defaultGeneratedDir,
+    externalDataDir: externalDataDirEnabled,
+    firstRunStoragePrompted: Boolean(ensureRuntimeStorage().firstRunStoragePrompted),
+    savePromptMode: ensureRuntimeStorage().savePromptMode,
     generated,
     archive,
     logs,
@@ -10992,8 +12271,10 @@ async function moveFileSafe(sourcePath, targetPath) {
 }
 
 async function archiveGeneratedFiles({ olderThanDays = 30, dryRun = false } = {}) {
+  const outputDir = generatedDirectory();
+  const archiveDir = generatedArchiveDirectory();
   const cutoff = Date.now() - Math.max(0, Number(olderThanDays) || 0) * DAY_MS;
-  const entries = await listFilesRecursive(generatedDir);
+  const entries = await listFilesRecursive(outputDir);
   const selected = entries.filter((file) => generatedFileTimestamp(file.name, file.stat) < cutoff);
   let moved = 0;
   let bytes = 0;
@@ -11002,7 +12283,7 @@ async function archiveGeneratedFiles({ olderThanDays = 30, dryRun = false } = {}
     if (dryRun) continue;
     const timestamp = new Date(generatedFileTimestamp(file.name, file.stat));
     const folder = timestamp.toISOString().slice(0, 7);
-    await moveFileSafe(file.path, path.join(generatedArchiveDir, folder, file.name));
+    await moveFileSafe(file.path, path.join(archiveDir, folder, file.name));
     moved += 1;
   }
   return {
@@ -11018,7 +12299,7 @@ async function archiveGeneratedFiles({ olderThanDays = 30, dryRun = false } = {}
 }
 
 async function deleteGeneratedPairsByPredicate(predicate, { dryRun = false } = {}) {
-  const entries = await listFilesRecursive(generatedDir);
+  const entries = await listFilesRecursive(generatedDirectory());
   const byBase = new Map();
   for (const file of entries) {
     const base = generatedFileBase(file.name);
@@ -11243,9 +12524,11 @@ async function activateRuntimeImageEndpoint(id) {
 }
 
 function healthBody() {
-  const reasoningConfigured = Boolean(config.reasoningProvider.apiKey);
-  const imageConfigured = imageProviderSources().some((source) => source.apiKey);
-  const imageEndpointHealthValue = imageEndpointHealth();
+  const reasoningConfigured = Boolean(config.reasoningProvider.baseUrl && config.reasoningProvider.apiKey);
+  const fhlSkillStatus = imageStudioFhlSkillStatus();
+  const engineStatus = imageStudioEngineStatus();
+  const imageConfigured = imageProviderSources().some((source) => source.baseUrl && source.apiKey)
+    && (engineStatus.available || !engineStatus.required);
   return {
     ok: true,
     keyConfigured: reasoningConfigured && imageConfigured,
@@ -11254,20 +12537,19 @@ function healthBody() {
     reasoningBaseUrl: config.reasoningProvider.baseUrl,
     imageBaseUrl: config.imageProvider.baseUrl,
     imageBaseUrls: config.imageProvider.baseUrls,
-    runtimeImageEndpoints: runtimeSettings.imageEndpoints.map((endpoint) => publicRuntimeImageEndpoint(endpoint, { includeKeyPreview: false })),
-    imageEndpointHealth: imageEndpointHealthValue,
-    recommendedImageEndpoint: imageEndpointRecommendation(imageEndpointHealthValue),
+    imageStudioEngine: engineStatus,
+    imageStudioFhlSkill: fhlSkillStatus,
     imageQueue: imageGenerationQueueState(),
     reasoningModel: config.reasoningModel,
     imageModel: config.imageModel,
-    imageBackend: config.imageApiMode === "responses" ? "responses-image-generation-tool" : "openai-compatible-images-api",
+    imageBackend: "image-studio-cli-engine",
     dataDir: appDataDir,
     externalDataDir: externalDataDirEnabled,
+    storage: publicStorageSettings(),
     runtimeProviders: {
       reasoning: publicRuntimeProvider(runtimeSettings.providers.reasoning),
       image: publicRuntimeProvider(runtimeSettings.providers.image)
     },
-    providerProfiles: runtimeSettings.providerProfiles.map(publicRuntimeProviderProfile),
     publicApi: {
       version: "v1",
       authenticationRequired: Boolean(config.publicApi.token) || !config.publicApi.allowUnauthenticatedRemote,
@@ -11572,7 +12854,17 @@ function publicApiRoutes() {
     {
       method: "GET",
       path: "/api/v1/settings",
-      description: "读取运行时设置和自定义生图 API。"
+      description: "读取运行时 API 和存储设置。"
+    },
+    {
+      method: "POST",
+      path: "/api/v1/settings/providers",
+      description: "保存当前思考或生图 API 配置。"
+    },
+    {
+      method: "POST",
+      path: "/api/v1/settings/providers/probe",
+      description: "检测当前思考或生图 API 连接。"
     },
     {
       method: "GET",
@@ -11583,26 +12875,6 @@ function publicApiRoutes() {
       method: "POST",
       path: "/api/v1/storage/maintenance",
       description: "本机 owner 执行生成图归档、测试图清理和任务日志裁剪。"
-    },
-    {
-      method: "POST",
-      path: "/api/v1/settings/image-endpoints",
-      description: "新增或更新自定义 Image Gen API 端点。"
-    },
-    {
-      method: "PATCH",
-      path: "/api/v1/settings/image-endpoints/:id",
-      description: "更新自定义 Image Gen API 端点。"
-    },
-    {
-      method: "DELETE",
-      path: "/api/v1/settings/image-endpoints/:id",
-      description: "删除自定义 Image Gen API 端点。"
-    },
-    {
-      method: "POST",
-      path: "/api/v1/settings/image-endpoints/:id/activate",
-      description: "启用并设为优先自定义 Image Gen API 端点。"
     }
   ];
 }
@@ -11773,37 +13045,22 @@ function createOpenApiDocument(req) {
           responses: { 200: okJson(jsonSchemaRef("RuntimeSettingsResponse")), 401: errorResponse }
         }
       },
-      "/settings/image-endpoints": {
+      "/settings/providers": {
         post: {
-          summary: "新增或更新自定义 Image Gen API 端点",
+          summary: "保存模型 API 配置",
           security: auth,
-          requestBody: { required: true, content: jsonContent(jsonSchemaRef("ImageEndpointRequest")) },
-          responses: { 200: okJson(jsonSchemaRef("RuntimeImageEndpointResponse")), 400: errorResponse, 401: errorResponse }
+          requestBody: { required: true, content: jsonContent(jsonSchemaRef("RuntimeProviderRequest")) },
+          responses: { 200: okJson(jsonSchemaRef("RuntimeSettingsResponse")), 400: errorResponse, 401: errorResponse }
         }
       },
-      "/settings/image-endpoints/{id}": {
-        patch: {
-          summary: "更新自定义 Image Gen API 端点",
+      "/settings/providers/probe": {
+        post: {
+          summary: "检测模型 API 配置",
           security: auth,
-          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
-          requestBody: { required: true, content: jsonContent(jsonSchemaRef("ImageEndpointRequest")) },
-          responses: { 200: okJson(jsonSchemaRef("RuntimeImageEndpointResponse")), 400: errorResponse, 401: errorResponse, 404: errorResponse }
-        },
-        delete: {
-          summary: "删除自定义 Image Gen API 端点",
-          security: auth,
-          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
-          responses: { 200: okJson(jsonSchemaRef("RuntimeSettingsResponse")), 401: errorResponse, 404: errorResponse }
+          requestBody: { required: true, content: jsonContent(jsonSchemaRef("RuntimeProviderRequest")) },
+          responses: { 200: okJson({ type: "object", additionalProperties: true }), 400: errorResponse, 401: errorResponse }
         }
       },
-      "/settings/image-endpoints/{id}/activate": {
-        post: {
-          summary: "启用自定义 Image Gen API 端点",
-          security: auth,
-          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
-          responses: { 200: okJson(jsonSchemaRef("RuntimeImageEndpointResponse")), 401: errorResponse, 404: errorResponse }
-        }
-      }
     },
     components: {
       securitySchemes: {
@@ -12030,8 +13287,24 @@ function createOpenApiDocument(req) {
             imageEditPath: { type: "string" },
             providerManifestName: { type: "string" },
             enabled: { type: "boolean" },
-            keyConfigured: { type: "boolean" },
-            keyPreview: { type: "string" }
+            keyConfigured: { type: "boolean" }
+          }
+        },
+        RuntimeProviderRequest: {
+          type: "object",
+          properties: {
+            kind: { type: "string", enum: ["reasoning", "image"] },
+            baseUrl: { type: "string" },
+            model: { type: "string" },
+            apiKey: { type: "string" },
+            apiMode: { type: "string", enum: ["responses", "images", "auto"] },
+            responsesTransport: { type: "string" },
+            requestPolicy: { type: "string" },
+            reasoningEffort: { type: "string" },
+            responsesPath: { type: "string" },
+            imageGenerationPath: { type: "string" },
+            imageEditPath: { type: "string" },
+            providerManifest: { type: "object", additionalProperties: true }
           }
         },
         RuntimeSettingsResponse: {
@@ -12099,8 +13372,8 @@ async function serveStatic(req, res) {
 
   const url = new URL(req.url, `http://${req.headers.host}`);
   const requested = url.pathname === "/" ? "/index.html" : url.pathname;
-  if (externalDataDirEnabled && requested.startsWith("/generated/")) {
-    await serveStaticFromDir(req, res, generatedDir, requested.replace(/^\/generated\/?/, ""));
+  if (requested.startsWith("/generated/")) {
+    await serveGeneratedStatic(req, res, requested.replace(/^\/generated\/?/, ""));
     return;
   }
 
@@ -12132,6 +13405,57 @@ async function serveStatic(req, res) {
     }[ext] || "application/octet-stream";
     await writeStaticResponse(req, res, filePath, stat, contentType, {
       compressible: COMPRESSIBLE_STATIC_EXTENSIONS.has(ext)
+    });
+  } catch {
+    sendText(res, 404, "Not found");
+  }
+}
+
+function generatedStaticContentType(ext) {
+  return {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".avif": "image/avif",
+    ".svg": "image/svg+xml; charset=utf-8",
+    ".glb": "model/gltf-binary",
+    ".gltf": "model/gltf+json; charset=utf-8",
+    ".dxf": "application/dxf",
+    ".scad": "text/plain; charset=utf-8",
+    ".step": "model/step",
+    ".stl": "model/stl",
+    ".3mf": "model/3mf",
+    ".mp4": "video/mp4",
+    ".mov": "video/quicktime"
+  }[ext] || "application/octet-stream";
+}
+
+function generatedStaticExtraHeaders(ext) {
+  if (ext !== ".svg") return {};
+  return {
+    "content-security-policy": "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox"
+  };
+}
+
+async function serveGeneratedStatic(req, res, requestedPath) {
+  const filePath = staticFilePath(generatedDirectory(), requestedPath || "");
+
+  try {
+    const stat = await fs.stat(filePath);
+    if (!stat.isFile()) {
+      sendText(res, 404, "Not found");
+      return;
+    }
+    const ext = path.extname(filePath).toLowerCase();
+    if (!PUBLIC_GENERATED_EXTENSIONS.has(ext)) {
+      sendText(res, 404, "Not found");
+      return;
+    }
+    await writeStaticResponse(req, res, filePath, stat, generatedStaticContentType(ext), {
+      compressible: COMPRESSIBLE_STATIC_EXTENSIONS.has(ext),
+      extraHeaders: generatedStaticExtraHeaders(ext)
     });
   } catch {
     sendText(res, 404, "Not found");
@@ -12172,8 +13496,140 @@ async function serveStaticFromDir(req, res, baseDir, requestedPath) {
   }
 }
 
+function sendRedirect(res, location) {
+  res.writeHead(302, { location });
+  res.end();
+}
+
+async function fetchWechatJson(url) {
+  const response = await fetch(url, { headers: { accept: "application/json" } });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.errcode) {
+    const message = data.errmsg || `WeChat request failed: ${response.status}`;
+    throw httpError(502, message);
+  }
+  return data;
+}
+
+async function wechatTokenFromCode(code) {
+  const url = new URL("https://api.weixin.qq.com/sns/oauth2/access_token");
+  url.searchParams.set("appid", config.wechatLogin.appId);
+  url.searchParams.set("secret", config.wechatLogin.appSecret);
+  url.searchParams.set("code", code);
+  url.searchParams.set("grant_type", "authorization_code");
+  return fetchWechatJson(url);
+}
+
+async function wechatUserInfo(accessToken, openid) {
+  const url = new URL("https://api.weixin.qq.com/sns/userinfo");
+  url.searchParams.set("access_token", accessToken);
+  url.searchParams.set("openid", openid);
+  url.searchParams.set("lang", "zh_CN");
+  return fetchWechatJson(url);
+}
+
+async function authStatusBody(req) {
+  const auth = await authSessionFromRequest(req);
+  const isAdmin = await isAdminRequest(req);
+  return {
+    ok: true,
+    configured: wechatLoginConfigured(),
+    redirectUri: wechatRedirectUri(req),
+    authenticated: Boolean(auth?.user),
+    clientId: auth?.session?.clientId || "",
+    user: publicAuthUser(auth?.user || null),
+    isAdmin
+  };
+}
+
+async function handleAuthApi(req, res, url) {
+  if (req.method === "GET" && url.pathname === "/api/auth/me") {
+    sendJson(res, 200, await authStatusBody(req));
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/auth/users") {
+    if (!await isAdminRequest(req)) {
+      sendJson(res, 403, { ok: false, error: "只有本机或管理员可以查看用户生成记录。" });
+      return;
+    }
+    await loadAuthStorage();
+    const users = await Promise.all(authUsers.map(async (user) => {
+      const logs = await readTaskLogs(200, user.clientId);
+      const successful = logs.filter((log) => log.status === "success").length;
+      const failed = logs.filter((log) => log.status === "failed").length;
+      const latest = logs[0] || null;
+      return {
+        ...publicAuthUser(user),
+        stats: {
+          total: logs.length,
+          successful,
+          failed,
+          latestAt: latest?.completedAt || latest?.startedAt || ""
+        }
+      };
+    }));
+    sendJson(res, 200, { ok: true, users });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/auth/logout") {
+    await loadAuthStorage();
+    const sessionId = parseCookies(req).laogui_session || "";
+    if (sessionId) authSessions.delete(sessionId);
+    await saveAuthSessions();
+    clearAuthCookie(req, res, "laogui_session");
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/auth/wechat/login") {
+    if (!wechatLoginConfigured()) {
+      sendJson(res, 400, {
+        ok: false,
+        error: "微信扫码登录还未配置。请设置 WECHAT_LOGIN_APP_ID 和 WECHAT_LOGIN_APP_SECRET。"
+      });
+      return;
+    }
+    const state = randomBytes(18).toString("base64url");
+    const returnTo = url.searchParams.get("returnTo") || "/";
+    setAuthCookie(req, res, "laogui_oauth_state", state, { maxAge: AUTH_OAUTH_STATE_TTL_SECONDS });
+    setAuthCookie(req, res, "laogui_oauth_return", returnTo.startsWith("/") ? returnTo : "/", { maxAge: AUTH_OAUTH_STATE_TTL_SECONDS });
+    const loginUrl = new URL("https://open.weixin.qq.com/connect/qrconnect");
+    loginUrl.searchParams.set("appid", config.wechatLogin.appId);
+    loginUrl.searchParams.set("redirect_uri", wechatRedirectUri(req));
+    loginUrl.searchParams.set("response_type", "code");
+    loginUrl.searchParams.set("scope", "snsapi_login");
+    loginUrl.searchParams.set("state", state);
+    sendRedirect(res, `${loginUrl.toString()}#wechat_redirect`);
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/auth/wechat/callback") {
+    const code = String(url.searchParams.get("code") || "").trim();
+    const state = String(url.searchParams.get("state") || "").trim();
+    const cookies = parseCookies(req);
+    const expectedState = cookies.laogui_oauth_state || "";
+    const returnTo = cookies.laogui_oauth_return || "/";
+    clearAuthCookie(req, res, "laogui_oauth_state");
+    clearAuthCookie(req, res, "laogui_oauth_return");
+    if (!code || !state || !expectedState || state !== expectedState) {
+      sendText(res, 400, "微信登录状态校验失败，请返回老鬼AI重新扫码。");
+      return;
+    }
+    const token = await wechatTokenFromCode(code);
+    const profile = await wechatUserInfo(token.access_token, token.openid);
+    const user = await upsertWechatUser(profile);
+    await createAuthSession(req, res, user);
+    sendRedirect(res, returnTo.startsWith("/") ? returnTo : "/");
+    return;
+  }
+
+  sendJson(res, 404, { ok: false, error: "Unknown auth route" });
+}
+
 async function handleExternalApi(req, res, routePath) {
-  if (!externalApiAuthorized(req)) {
+  if (!externalApiAuthorized(req) && !await authSessionFromRequest(req)) {
     sendUnauthorizedApi(res);
     return;
   }
@@ -12186,7 +13642,7 @@ async function handleExternalApi(req, res, routePath) {
   if (req.method === "GET" && routePath === "/task-logs") {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const limit = clampNumber(Number(url.searchParams.get("limit") || 80), 1, 200);
-    const clientId = clientIdFromRequest(req, url);
+    const clientId = await clientIdFromRequest(req, url);
     const logs = await readTaskLogs(limit, clientId);
     sendJson(res, 200, { ok: true, clientId, logs });
     return;
@@ -12195,7 +13651,7 @@ async function handleExternalApi(req, res, routePath) {
   const taskLogMatch = routePath.match(/^\/task-logs\/([^/]+)$/);
   if (taskLogMatch && req.method === "DELETE") {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const clientId = clientIdFromRequest(req, url);
+    const clientId = await clientIdFromRequest(req, url);
     const result = await deleteTaskLog(decodeURIComponent(taskLogMatch[1]), clientId);
     sendJson(res, 200, { ok: true, clientId, ...result });
     return;
@@ -12203,7 +13659,7 @@ async function handleExternalApi(req, res, routePath) {
 
   if (req.method === "GET" && routePath === "/task-result") {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const clientId = clientIdFromRequest(req, url);
+    const clientId = await clientIdFromRequest(req, url);
     const taskId = taskIdFromBodyOrUrl({}, url);
     if (!taskId) {
       sendJson(res, 400, { ok: false, error: "Missing taskId" });
@@ -12221,7 +13677,7 @@ async function handleExternalApi(req, res, routePath) {
 
   if (req.method === "GET" && routePath === "/canvas-state") {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const clientId = clientIdFromRequest(req, url);
+    const clientId = await clientIdFromRequest(req, url);
     const state = await readCanvasState(clientId);
     sendJson(res, 200, { ok: true, clientId, state });
     return;
@@ -12229,7 +13685,7 @@ async function handleExternalApi(req, res, routePath) {
 
   if (req.method === "POST" && routePath === "/canvas-state") {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const clientId = clientIdFromRequest(req, url);
+    const clientId = await clientIdFromRequest(req, url);
     const body = await readJson(req);
     const state = await writeCanvasState(body, clientId);
     sendJson(res, 200, { ok: true, clientId, savedAt: state.savedAt });
@@ -12237,10 +13693,7 @@ async function handleExternalApi(req, res, routePath) {
   }
 
   if (req.method === "POST" && routePath === "/image-endpoints/probe") {
-    if (!isOwnerRequest(req)) {
-      sendOwnerOnly(res);
-      return;
-    }
+    if (!requireOwnerWriteRequest(req, res)) return;
     const body = await readJson(req);
     sendJson(res, 200, await imageEndpointProbeBody(body));
     return;
@@ -12252,10 +13705,7 @@ async function handleExternalApi(req, res, routePath) {
   }
 
   if (req.method === "POST" && routePath === "/settings/providers") {
-    if (!isOwnerRequest(req)) {
-      sendOwnerOnly(res);
-      return;
-    }
+    if (!requireOwnerWriteRequest(req, res)) return;
     const body = await readJson(req);
     const provider = await updateRuntimeProvider(String(body.kind || ""), body);
     sendJson(res, 200, { ok: true, provider: publicRuntimeProvider(provider), settings: runtimeSettingsBody(req).settings });
@@ -12263,12 +13713,14 @@ async function handleExternalApi(req, res, routePath) {
   }
 
   if (req.method === "POST" && routePath === "/settings/providers/probe") {
-    if (!isOwnerRequest(req)) {
-      sendOwnerOnly(res);
-      return;
-    }
+    if (!requireOwnerWriteRequest(req, res)) return;
     const body = await readJson(req);
     sendJson(res, 200, await providerProbeBody(body));
+    return;
+  }
+
+  if (routePath.startsWith("/settings/provider-profiles")) {
+    sendJson(res, 410, { ok: false, error: "旧版 API 组合管理已移除，请分别保存思考模型 API 和生图模型 API。" });
     return;
   }
 
@@ -12278,63 +13730,28 @@ async function handleExternalApi(req, res, routePath) {
   }
 
   if (req.method === "POST" && routePath === "/storage/maintenance") {
-    if (!isOwnerRequest(req)) {
-      sendOwnerOnly(res);
-      return;
-    }
+    if (!requireOwnerWriteRequest(req, res)) return;
     const body = await readJson(req);
     sendJson(res, 200, await runStorageMaintenance(body));
     return;
   }
 
-  if (req.method === "POST" && routePath === "/settings/image-endpoints") {
-    if (!isOwnerRequest(req)) {
-      sendOwnerOnly(res);
-      return;
-    }
+  if (req.method === "POST" && routePath === "/settings/storage") {
+    if (!requireOwnerWriteRequest(req, res)) return;
     const body = await readJson(req);
-    const endpoint = await addRuntimeImageEndpoint(body);
-    sendJson(res, 200, { ok: true, endpoint: publicRuntimeImageEndpoint(endpoint), settings: runtimeSettingsBody(req).settings });
+    const storage = await updateStorageSettings(body);
+    sendJson(res, 200, { ok: true, storage: publicStorageSettings(storage), settings: runtimeSettingsBody(req).settings });
     return;
   }
 
-  const endpointMatch = routePath.match(/^\/settings\/image-endpoints\/([^/]+)(?:\/(activate))?$/);
-  if (endpointMatch) {
-    const id = decodeURIComponent(endpointMatch[1]);
-    const action = endpointMatch[2] || "";
-    if (req.method === "POST" && action === "activate") {
-      if (!isOwnerRequest(req)) {
-        sendOwnerOnly(res);
-        return;
-      }
-      const endpoint = await activateRuntimeImageEndpoint(id);
-      sendJson(res, 200, { ok: true, endpoint: publicRuntimeImageEndpoint(endpoint), settings: runtimeSettingsBody(req).settings });
-      return;
-    }
-    if (req.method === "PATCH" && !action) {
-      if (!isOwnerRequest(req)) {
-        sendOwnerOnly(res);
-        return;
-      }
-      const body = await readJson(req);
-      const endpoint = await updateRuntimeImageEndpoint(id, body);
-      sendJson(res, 200, { ok: true, endpoint: publicRuntimeImageEndpoint(endpoint), settings: runtimeSettingsBody(req).settings });
-      return;
-    }
-    if (req.method === "DELETE" && !action) {
-      if (!isOwnerRequest(req)) {
-        sendOwnerOnly(res);
-        return;
-      }
-      await deleteRuntimeImageEndpoint(id);
-      sendJson(res, 200, { ok: true, settings: runtimeSettingsBody(req).settings });
-      return;
-    }
+  if (routePath === "/image-endpoints/probe" || routePath.startsWith("/settings/image-endpoints")) {
+    sendJson(res, 410, { ok: false, error: "备用 Image Gen API 已移除，请在 API 设置中保存生图模型 API。" });
+    return;
   }
 
   if (req.method === "POST" && routePath === "/plan") {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const clientId = clientIdFromRequest(req, url);
+    const clientId = await clientIdFromRequest(req, url);
     const body = await readJson(req);
     const plan = await runLoggedTask({
       type: "api-v1-plan",
@@ -12348,7 +13765,7 @@ async function handleExternalApi(req, res, routePath) {
 
   if (req.method === "POST" && routePath === "/images/generate") {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const clientId = clientIdFromRequest(req, url);
+    const clientId = await clientIdFromRequest(req, url);
     const body = await readJson(req);
     const taskId = taskIdFromBodyOrUrl(body, url);
     const image = await runRecoverableTask({
@@ -12369,7 +13786,7 @@ async function handleExternalApi(req, res, routePath) {
 
   if (req.method === "POST" && routePath === "/images/render-from-images") {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const clientId = clientIdFromRequest(req, url);
+    const clientId = await clientIdFromRequest(req, url);
     const body = await readJson(req);
     const taskId = taskIdFromBodyOrUrl(body, url);
     const render = await runRecoverableTask({
@@ -12390,7 +13807,7 @@ async function handleExternalApi(req, res, routePath) {
 
   if (req.method === "POST" && routePath === "/design-series/analyze") {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const clientId = clientIdFromRequest(req, url);
+    const clientId = await clientIdFromRequest(req, url);
     const body = await readJson(req);
     const analysis = await runLoggedTask({
       type: "api-v1-analyze-design-series",
@@ -12404,7 +13821,7 @@ async function handleExternalApi(req, res, routePath) {
 
   if (req.method === "POST" && routePath === "/images/cutout-analysis") {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const clientId = clientIdFromRequest(req, url);
+    const clientId = await clientIdFromRequest(req, url);
     const body = await readJson(req);
     const analysis = await runLoggedTask({
       type: "api-v1-ai-cutout-analysis",
@@ -12418,7 +13835,7 @@ async function handleExternalApi(req, res, routePath) {
 
   if (req.method === "POST" && routePath === "/modeling/analyze-subject") {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const clientId = clientIdFromRequest(req, url);
+    const clientId = await clientIdFromRequest(req, url);
     const body = await readJson(req);
     const analysis = await runLoggedTask({
       type: "api-v1-image-modeling-analysis",
@@ -12432,7 +13849,7 @@ async function handleExternalApi(req, res, routePath) {
 
   if (req.method === "POST" && routePath === "/modeling/3d-model") {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const clientId = clientIdFromRequest(req, url);
+    const clientId = await clientIdFromRequest(req, url);
     const body = await readJson(req);
     const model = await runLoggedTask({
       type: "api-v1-image-modeling",
@@ -12446,7 +13863,7 @@ async function handleExternalApi(req, res, routePath) {
 
   if (req.method === "POST" && routePath === "/modeling/forgecad") {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const clientId = clientIdFromRequest(req, url);
+    const clientId = await clientIdFromRequest(req, url);
     const body = await readJson(req);
     const forgecad = await runLoggedTask({
       type: "api-v1-forgecad-integration",
@@ -12460,7 +13877,7 @@ async function handleExternalApi(req, res, routePath) {
 
   if (req.method === "POST" && routePath === "/modeling/cad-export") {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const clientId = clientIdFromRequest(req, url);
+    const clientId = await clientIdFromRequest(req, url);
     const body = await readJson(req);
     const cadExport = await runLoggedTask({
       type: "api-v1-text-to-cad-export",
@@ -12474,7 +13891,7 @@ async function handleExternalApi(req, res, routePath) {
 
   if (req.method === "POST" && routePath === "/design-series/generate") {
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const clientId = clientIdFromRequest(req, url);
+    const clientId = await clientIdFromRequest(req, url);
     const body = await readJson(req);
     const taskId = taskIdFromBodyOrUrl(body, url);
     const series = await runRecoverableTask({
@@ -12503,10 +13920,16 @@ async function handleApi(req, res) {
     res.end();
     return;
   }
-  if (!requireRemoteApiAuthorization(req, res)) return;
 
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
+    if (url.pathname === "/api/auth" || url.pathname.startsWith("/api/auth/")) {
+      await handleAuthApi(req, res, url);
+      return;
+    }
+
+    if (!await requireRemoteApiAuthorization(req, res)) return;
+
     if (req.method === "GET" && url.pathname === "/api") {
       sendJson(res, 200, apiIndexBody(req));
       return;
@@ -12528,14 +13951,14 @@ async function handleApi(req, res) {
     }
 
     if (req.method === "GET" && url.pathname === "/api/canvas-state") {
-      const clientId = clientIdFromRequest(req, url);
+      const clientId = await clientIdFromRequest(req, url);
       const state = await readCanvasState(clientId);
       sendJson(res, 200, { ok: true, clientId, state });
       return;
     }
 
     if (req.method === "POST" && url.pathname === "/api/canvas-state") {
-      const clientId = clientIdFromRequest(req, url);
+      const clientId = await clientIdFromRequest(req, url);
       const body = await readJson(req);
       const state = await writeCanvasState(body, clientId);
       sendJson(res, 200, { ok: true, clientId, savedAt: state.savedAt });
@@ -12545,7 +13968,7 @@ async function handleApi(req, res) {
     if (req.method === "GET" && req.url?.startsWith("/api/task-logs")) {
       const url = new URL(req.url, `http://${req.headers.host}`);
       const limit = clampNumber(Number(url.searchParams.get("limit") || 80), 1, 200);
-      const clientId = clientIdFromRequest(req, url);
+      const clientId = await clientIdFromRequest(req, url);
       const logs = await readTaskLogs(limit, clientId);
       sendJson(res, 200, { ok: true, clientId, logs });
       return;
@@ -12554,14 +13977,14 @@ async function handleApi(req, res) {
     const taskLogUrl = new URL(req.url, `http://${req.headers.host}`);
     const taskLogMatch = taskLogUrl.pathname.match(/^\/api\/task-logs\/([^/]+)$/);
     if (taskLogMatch && req.method === "DELETE") {
-      const clientId = clientIdFromRequest(req, taskLogUrl);
+      const clientId = await clientIdFromRequest(req, taskLogUrl);
       const result = await deleteTaskLog(decodeURIComponent(taskLogMatch[1]), clientId);
       sendJson(res, 200, { ok: true, clientId, ...result });
       return;
     }
 
     if (req.method === "GET" && url.pathname === "/api/task-result") {
-      const clientId = clientIdFromRequest(req, url);
+      const clientId = await clientIdFromRequest(req, url);
       const taskId = taskIdFromBodyOrUrl({}, url);
       if (!taskId) {
         sendJson(res, 400, { ok: false, error: "Missing taskId" });
@@ -12597,10 +14020,7 @@ async function handleApi(req, res) {
     }
 
     if (req.method === "POST" && url.pathname === "/api/image-endpoints/probe") {
-      if (!isOwnerRequest(req)) {
-        sendOwnerOnly(res);
-        return;
-      }
+      if (!requireOwnerWriteRequest(req, res)) return;
       const body = await readJson(req);
       sendJson(res, 200, await imageEndpointProbeBody(body));
       return;
@@ -12612,10 +14032,7 @@ async function handleApi(req, res) {
     }
 
     if (req.method === "POST" && url.pathname === "/api/settings/providers") {
-      if (!isOwnerRequest(req)) {
-        sendOwnerOnly(res);
-        return;
-      }
+      if (!requireOwnerWriteRequest(req, res)) return;
       const body = await readJson(req);
       const provider = await updateRuntimeProvider(String(body.kind || ""), body);
       sendJson(res, 200, { ok: true, provider: publicRuntimeProvider(provider), settings: runtimeSettingsBody(req).settings });
@@ -12623,12 +14040,14 @@ async function handleApi(req, res) {
     }
 
     if (req.method === "POST" && url.pathname === "/api/settings/providers/probe") {
-      if (!isOwnerRequest(req)) {
-        sendOwnerOnly(res);
-        return;
-      }
+      if (!requireOwnerWriteRequest(req, res)) return;
       const body = await readJson(req);
       sendJson(res, 200, await providerProbeBody(body));
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/settings/provider-profiles")) {
+      sendJson(res, 410, { ok: false, error: "旧版 API 组合管理已移除，请分别保存思考模型 API 和生图模型 API。" });
       return;
     }
 
@@ -12638,63 +14057,27 @@ async function handleApi(req, res) {
     }
 
     if (req.method === "POST" && url.pathname === "/api/storage/maintenance") {
-      if (!isOwnerRequest(req)) {
-        sendOwnerOnly(res);
-        return;
-      }
+      if (!requireOwnerWriteRequest(req, res)) return;
       const body = await readJson(req);
       sendJson(res, 200, await runStorageMaintenance(body));
       return;
     }
 
-    if (req.method === "POST" && url.pathname === "/api/settings/image-endpoints") {
-      if (!isOwnerRequest(req)) {
-        sendOwnerOnly(res);
-        return;
-      }
+    if (req.method === "POST" && url.pathname === "/api/settings/storage") {
+      if (!requireOwnerWriteRequest(req, res)) return;
       const body = await readJson(req);
-      const endpoint = await addRuntimeImageEndpoint(body);
-      sendJson(res, 200, { ok: true, endpoint: publicRuntimeImageEndpoint(endpoint), settings: runtimeSettingsBody(req).settings });
+      const storage = await updateStorageSettings(body);
+      sendJson(res, 200, { ok: true, storage: publicStorageSettings(storage), settings: runtimeSettingsBody(req).settings });
       return;
     }
 
-    const legacyEndpointUrl = new URL(req.url, `http://${req.headers.host}`);
-    const legacyEndpointMatch = legacyEndpointUrl.pathname.match(/^\/api\/settings\/image-endpoints\/([^/]+)(?:\/(activate))?$/);
-    if (legacyEndpointMatch) {
-      const id = decodeURIComponent(legacyEndpointMatch[1]);
-      const action = legacyEndpointMatch[2] || "";
-      if (req.method === "POST" && action === "activate") {
-        if (!isOwnerRequest(req)) {
-          sendOwnerOnly(res);
-          return;
-        }
-        const endpoint = await activateRuntimeImageEndpoint(id);
-        sendJson(res, 200, { ok: true, endpoint: publicRuntimeImageEndpoint(endpoint), settings: runtimeSettingsBody(req).settings });
-        return;
-      }
-      if (req.method === "PATCH" && !action) {
-        if (!isOwnerRequest(req)) {
-          sendOwnerOnly(res);
-          return;
-        }
-        const body = await readJson(req);
-        const endpoint = await updateRuntimeImageEndpoint(id, body);
-        sendJson(res, 200, { ok: true, endpoint: publicRuntimeImageEndpoint(endpoint), settings: runtimeSettingsBody(req).settings });
-        return;
-      }
-      if (req.method === "DELETE" && !action) {
-        if (!isOwnerRequest(req)) {
-          sendOwnerOnly(res);
-          return;
-        }
-        await deleteRuntimeImageEndpoint(id);
-        sendJson(res, 200, { ok: true, settings: runtimeSettingsBody(req).settings });
-        return;
-      }
+    if (url.pathname === "/api/image-endpoints/probe" || url.pathname.startsWith("/api/settings/image-endpoints")) {
+      sendJson(res, 410, { ok: false, error: "备用 Image Gen API 已移除，请在 API 设置中保存生图模型 API。" });
+      return;
     }
 
     if (req.method === "POST" && url.pathname === "/api/task-log-event") {
-      const clientId = clientIdFromRequest(req, url);
+      const clientId = await clientIdFromRequest(req, url);
       const body = await readJson(req);
       const entry = {
         id: randomUUID(),
@@ -12715,7 +14098,7 @@ async function handleApi(req, res) {
     }
 
     if (req.method === "POST" && url.pathname === "/api/plan") {
-      const clientId = clientIdFromRequest(req, url);
+      const clientId = await clientIdFromRequest(req, url);
       const body = await readJson(req);
       const plan = await runLoggedTask({
         type: "plan",
@@ -12728,7 +14111,7 @@ async function handleApi(req, res) {
     }
 
     if (req.method === "POST" && url.pathname === "/api/generate-image") {
-      const clientId = clientIdFromRequest(req, url);
+      const clientId = await clientIdFromRequest(req, url);
       const body = await readJson(req);
       const taskId = taskIdFromBodyOrUrl(body, url);
       const image = await runRecoverableTask({
@@ -12748,7 +14131,7 @@ async function handleApi(req, res) {
     }
 
     if (req.method === "POST" && url.pathname === "/api/render-from-images") {
-      const clientId = clientIdFromRequest(req, url);
+      const clientId = await clientIdFromRequest(req, url);
       const body = await readJson(req);
       const taskId = taskIdFromBodyOrUrl(body, url);
       const render = await runRecoverableTask({
@@ -12768,7 +14151,7 @@ async function handleApi(req, res) {
     }
 
     if (req.method === "POST" && url.pathname === "/api/analyze-design-series") {
-      const clientId = clientIdFromRequest(req, url);
+      const clientId = await clientIdFromRequest(req, url);
       const body = await readJson(req);
       const analysis = await runLoggedTask({
         type: "analyze-design-series",
@@ -12781,7 +14164,7 @@ async function handleApi(req, res) {
     }
 
     if (req.method === "POST" && url.pathname === "/api/ai-cutout-analysis") {
-      const clientId = clientIdFromRequest(req, url);
+      const clientId = await clientIdFromRequest(req, url);
       const body = await readJson(req);
       const analysis = await runLoggedTask({
         type: "ai-cutout-analysis",
@@ -12794,7 +14177,7 @@ async function handleApi(req, res) {
     }
 
     if (req.method === "POST" && (url.pathname === "/api/image-modeling/analyze" || url.pathname === "/api/modeling/analyze-subject")) {
-      const clientId = clientIdFromRequest(req, url);
+      const clientId = await clientIdFromRequest(req, url);
       const body = await readJson(req);
       const analysis = await runLoggedTask({
         type: "image-modeling-analysis",
@@ -12807,7 +14190,7 @@ async function handleApi(req, res) {
     }
 
     if (req.method === "POST" && (url.pathname === "/api/image-modeling" || url.pathname === "/api/modeling/3d-model")) {
-      const clientId = clientIdFromRequest(req, url);
+      const clientId = await clientIdFromRequest(req, url);
       const body = await readJson(req);
       const model = await runLoggedTask({
         type: "image-modeling",
@@ -12820,7 +14203,7 @@ async function handleApi(req, res) {
     }
 
     if (req.method === "POST" && url.pathname === "/api/modeling/forgecad") {
-      const clientId = clientIdFromRequest(req, url);
+      const clientId = await clientIdFromRequest(req, url);
       const body = await readJson(req);
       const forgecad = await runLoggedTask({
         type: "forgecad-integration",
@@ -12833,7 +14216,7 @@ async function handleApi(req, res) {
     }
 
     if (req.method === "POST" && url.pathname === "/api/modeling/cad-export") {
-      const clientId = clientIdFromRequest(req, url);
+      const clientId = await clientIdFromRequest(req, url);
       const body = await readJson(req);
       const cadExport = await runLoggedTask({
         type: "text-to-cad-export",
@@ -12846,7 +14229,7 @@ async function handleApi(req, res) {
     }
 
     if (req.method === "POST" && url.pathname === "/api/design-series") {
-      const clientId = clientIdFromRequest(req, url);
+      const clientId = await clientIdFromRequest(req, url);
       const body = await readJson(req);
       const taskId = taskIdFromBodyOrUrl(body, url);
       const series = await runRecoverableTask({
@@ -12899,16 +14282,38 @@ export const server = createServer(async (req, res) => {
 
 export function closeLaoguiServer({ timeoutMs = 3000 } = {}) {
   return new Promise((resolve) => {
+    let serverClosed = false;
+    let childrenClosed = false;
+    let resolved = false;
+    const finish = () => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    const finishIfReady = () => {
+      if (serverClosed && childrenClosed) finish();
+    };
     const timer = setTimeout(() => {
       server.closeAllConnections?.();
-      resolve();
+      terminateActiveChildProcesses({ forceAfterMs: 500 }).finally(finish);
     }, timeoutMs);
     timer.unref?.();
 
-    server.close(() => {
-      clearTimeout(timer);
-      resolve();
-    });
+    terminateActiveChildProcesses({ forceAfterMs: Math.min(1200, Math.max(300, timeoutMs - 500)) })
+      .finally(() => {
+        childrenClosed = true;
+        finishIfReady();
+      });
+    try {
+      server.close(() => {
+        serverClosed = true;
+        finishIfReady();
+      });
+    } catch {
+      serverClosed = true;
+      finishIfReady();
+    }
     server.closeIdleConnections?.();
   });
 }

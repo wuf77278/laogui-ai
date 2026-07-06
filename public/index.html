@@ -5,21 +5,29 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="老鬼AI 是面向空间设计师的本地 AI 工作台，用于分析参考图、平面图和现场图并生成效果图、系列图和提案素材。" />
     <title>老鬼AI</title>
-    <link rel="icon" href="/assets/laogui-ai-favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="assets/laogui-ai-favicon.svg" type="image/svg+xml" />
     <script>
       (() => {
-        const theme = "day";
+        const storedTheme = (() => {
+          try {
+            const value = localStorage.getItem("laogui-theme");
+            return value === "day" || value === "night" ? value : "";
+          } catch {
+            return "";
+          }
+        })();
+        const theme = storedTheme || "day";
         document.documentElement.dataset.theme = theme;
-        document.documentElement.style.colorScheme = "light";
+        document.documentElement.style.colorScheme = theme === "night" ? "dark" : "light";
         window.__LAOGUI_INITIAL_THEME__ = theme;
       })();
     </script>
-    <link rel="stylesheet" href="/vendor/pannellum.css" />
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="vendor/pannellum.css" />
+    <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <script>
-      document.body.dataset.theme = "day";
+      document.body.dataset.theme = window.__LAOGUI_INITIAL_THEME__ || "day";
     </script>
     <svg class="icon-sprite" aria-hidden="true">
       <symbol id="icon-spark" viewBox="0 0 24 24">
@@ -231,7 +239,7 @@
       <header class="topbar">
         <div class="brand">
           <span class="brand-mark logo-mark" aria-hidden="true">
-            <img src="/assets/laogui-ai-logo.svg" alt="" />
+            <img src="assets/laogui-design-logo-transparent.png" alt="" />
           </span>
           <div>
             <strong>老鬼AI</strong>
@@ -249,45 +257,44 @@
         </div>
       </header>
 
-      <main id="homeView" class="home-view">
-        <section class="home-hero">
-          <div class="home-hero-copy">
-            <p class="eyebrow">AI Space Design Studio</p>
-            <h1>让 AI 先读懂空间，再生成成套设计图</h1>
-            <p>面向室内、建筑与商业空间设计师：上传参考图、平面图或现场图后，Agent 会先判断空间类型、提取材料与灯光系统、锁定动线和结构边界，再生成可提案的效果图、系列图与客户沟通素材。</p>
+      <main id="homeView" class="home-view home-visual-only">
+        <section class="home-hero home-orb-hero home-video-hero">
+          <div class="home-concept-brand">
+            <img src="assets/laogui-design-logo-transparent.png" alt="老鬼设计" />
+          </div>
+          <div class="home-concept-copy">
             <div class="home-hero-actions" aria-label="开始创作">
               <button class="primary-button home-canvas-button" type="button" data-start-mode="custom">
                 <svg><use href="#icon-spark"></use></svg>
-                进入设计工作台
+                进入创造画布
               </button>
-              <button class="secondary-button home-secondary-button" type="button" data-start-mode="designseries">
-                生成设计系列
-              </button>
-            </div>
-            <div class="home-studio-pills" aria-label="核心能力">
-              <span>空间识别</span>
-              <span>系统提炼</span>
-              <span>局部可控</span>
-              <span>成套输出</span>
             </div>
           </div>
-          <div class="home-atelier-board" aria-hidden="true">
-            <figure class="atelier-card atelier-card-large">
-              <img src="/assets/library/scene-hospitality-lounge.png" width="768" height="768" decoding="async" fetchpriority="high" alt="" />
+          <div class="home-orb-stage" aria-hidden="true">
+            <div class="home-orb-aura"></div>
+            <figure class="home-orb-core home-video-backdrop">
+              <video
+                class="home-hero-video"
+                autoplay
+                muted
+                playsinline
+                preload="auto"
+                poster="assets/home/architectural-sketch-home-1-4k-poster.jpg"
+                data-home-video-sequence="assets/home/architectural-sketch-home-1-4k.mp4|assets/home/architectural-sketch-home-2-4k.mp4|assets/home/architectural-sketch-home-3-4k.mp4"
+                data-home-poster-sequence="assets/home/architectural-sketch-home-1-4k-poster.jpg|assets/home/architectural-sketch-home-2-4k-poster.jpg|assets/home/architectural-sketch-home-3-4k-poster.jpg"
+                aria-hidden="true"
+              >
+                <source src="assets/home/architectural-sketch-home-1-4k.mp4" type="video/mp4" />
+              </video>
             </figure>
-            <figure class="atelier-card atelier-card-plan">
-              <img src="/assets/library/output-client-board.png" width="768" height="768" decoding="async" alt="" />
-            </figure>
-            <figure class="atelier-card atelier-card-material">
-              <img src="/assets/library/material-stone-metal.png" width="768" height="768" decoding="async" alt="" />
-            </figure>
-            <div class="atelier-caption">
-              <span>Studio Workflow</span>
-              <strong>Reference / Layout / Material / Render</strong>
-            </div>
+            <div class="home-orb-ring ring-a"></div>
+            <div class="home-orb-ring ring-b"></div>
+            <div class="home-orb-particle particle-a"></div>
+            <div class="home-orb-particle particle-b"></div>
+            <div class="home-orb-particle particle-c"></div>
           </div>
         </section>
-        <section class="home-plan-flow" aria-labelledby="homePlanFlowTitle">
+        <section class="home-plan-flow" aria-labelledby="homePlanFlowTitle" hidden>
           <div class="home-section-copy">
             <p class="eyebrow">Floor Plan Workflow</p>
             <h2 id="homePlanFlowTitle">平面图优先走三段链路</h2>
@@ -311,7 +318,7 @@
             </button>
           </div>
         </section>
-        <section class="home-tool-center" aria-labelledby="homeToolCenterTitle">
+        <section class="home-tool-center" aria-labelledby="homeToolCenterTitle" hidden>
           <div class="home-tool-center-head">
             <div class="home-section-copy">
               <p class="eyebrow">Design Task Center</p>
@@ -432,7 +439,7 @@
           </div>
           <p id="homeToolEmpty" class="home-tool-empty" hidden>没有匹配的任务。可以换个关键词，比如“民宿”“平面图”“材质”或“系列”。</p>
         </section>
-        <section class="home-template-runway" aria-labelledby="homeTemplateTitle">
+        <section class="home-template-runway" aria-labelledby="homeTemplateTitle" hidden>
           <div class="home-section-copy">
             <p class="eyebrow">Project Starters</p>
             <h2 id="homeTemplateTitle">常用空间模板，直接带着项目逻辑进画布</h2>
@@ -446,7 +453,7 @@
             <button type="button" data-home-template="material-replace">材质替换</button>
           </div>
         </section>
-        <section class="home-system-section" aria-labelledby="homeSystemTitle">
+        <section class="home-system-section" aria-labelledby="homeSystemTitle" hidden>
           <div class="home-section-copy">
             <p class="eyebrow">Spatial System Thinking</p>
             <h2 id="homeSystemTitle">不是单张图灵感，而是一套可延展的空间系统</h2>
@@ -479,10 +486,10 @@
 
       <main id="workspaceView" class="workspace" hidden>
         <section class="canvas-panel" aria-live="polite">
+          <div class="workspace-banner-logo logo-mark" role="img" aria-label="老鬼设计">
+            <img src="assets/laogui-design-logo-transparent.png" alt="老鬼设计" />
+          </div>
           <aside id="canvasListPanel" class="canvas-list-panel" aria-label="画布列表">
-            <div class="canvas-list-brand logo-mark" aria-hidden="true">
-              <img src="/assets/laogui-ai-logo.svg" alt="" />
-            </div>
             <div id="canvasList" class="canvas-list" role="listbox" aria-label="所有画布"></div>
             <div class="canvas-list-footer">
               <button id="clearAllCanvasesButton" class="secondary-button canvas-list-clear-button" type="button" title="清空所有画布" aria-label="清空所有画布">
@@ -515,6 +522,9 @@
               <button id="workspaceHomeButton" class="icon-button icon-only canvas-home-button" type="button" title="首页" aria-label="首页">
                 <svg><use href="#icon-home"></use></svg>
               </button>
+              <button id="topNewCanvasButton" class="icon-button icon-only" type="button" title="新建画布" aria-label="新建画布">
+                <svg><use href="#icon-plus"></use></svg>
+              </button>
               <button id="canvasFitButton" class="icon-button icon-only" type="button" title="重置视图" aria-label="重置视图">
                 <svg><use href="#icon-focus"></use></svg>
               </button>
@@ -529,9 +539,6 @@
               </button>
               <button id="workspaceSettingsButton" class="icon-button icon-only" type="button" title="设置" aria-label="设置" aria-controls="appSettingsOverlay" aria-expanded="false">
                 <svg><use href="#icon-settings"></use></svg>
-              </button>
-              <button id="toggleAgentPanelButton" class="icon-button icon-only" type="button" title="隐藏创作面板" aria-label="隐藏创作面板" aria-controls="agentPanelContent" aria-expanded="true" aria-pressed="false">
-                <svg><use href="#icon-panel-hide"></use></svg>
               </button>
               <button id="zoomOutButton" class="icon-button icon-only" type="button" title="缩小" aria-label="缩小">
                 <svg><use href="#icon-zoom-out"></use></svg>
@@ -605,34 +612,16 @@
                 <pre id="taskProgressPrompt">任务完成后显示。</pre>
               </details>
             </section>
-            <details class="agent-drawer task-log-drawer">
-              <summary>任务日志</summary>
-              <div class="task-log-head">
-                <span>记录每次分析与生成，方便复盘优化。</span>
-                <div class="task-log-controls">
-                  <button class="text-button icon-only active" type="button" data-task-log-filter="all" title="全部" aria-label="全部" aria-pressed="true">
-                    <svg><use href="#icon-status"></use></svg>
-                  </button>
-                  <button class="text-button icon-only" type="button" data-task-log-filter="failed" title="失败" aria-label="失败" aria-pressed="false">
-                    <svg><use href="#icon-close"></use></svg>
-                  </button>
-                  <button id="refreshTaskLogsButton" class="text-button icon-only" type="button" title="刷新" aria-label="刷新">
-                    <svg><use href="#icon-refresh"></use></svg>
-                  </button>
-                </div>
-              </div>
-              <div id="taskLogList" class="task-log-list">
-                <p class="muted">暂无任务日志。</p>
-              </div>
-            </details>
           </section>
           <div id="summaryBlock" class="summary-block">
             <p>输入项目条件后生成设计方向。</p>
           </div>
           <div id="infiniteCanvas" class="infinite-canvas" aria-label="设计画布">
               <div id="canvasViewport" class="canvas-viewport">
-                <svg id="canvasLinks" class="canvas-links" viewBox="0 0 4200 3200" aria-hidden="true"></svg>
-                <div id="canvasNodes" class="canvas-nodes"></div>
+                <div id="canvasZoomLayer" class="canvas-zoom-layer">
+                  <svg id="canvasLinks" class="canvas-links" viewBox="0 0 4200 3200" aria-hidden="true"></svg>
+                  <div id="canvasNodes" class="canvas-nodes"></div>
+                </div>
               </div>
               <button id="canvasMinimap" class="canvas-minimap" type="button" title="点击聚焦全部内容" aria-label="画布小地图"></button>
             <section id="canvasFloatingComposer" class="canvas-floating-composer" aria-label="画布创作面板">
@@ -711,9 +700,6 @@
                 <button id="floatingThinkingModeButton" class="secondary-button icon-only thinking-mode-button" type="button" title="思考模式已关闭" aria-label="思考模式已关闭" aria-pressed="false">
                   <svg><use href="#icon-think"></use></svg>
                 </button>
-                <button id="floatingNewCanvasButton" class="secondary-button icon-only" type="button" title="新建画布" aria-label="新建画布">
-                  <svg><use href="#icon-plus"></use></svg>
-                </button>
                 <button id="floatingGenerateButton" class="primary-button icon-only" type="button" title="生成图片" aria-label="生成图片">
                   <svg><use href="#icon-spark"></use></svg>
                 </button>
@@ -776,27 +762,32 @@
                 <p class="eyebrow">AI Strategy</p>
                 <h1>设计策略</h1>
               </div>
-              <details class="mode-switcher">
-                <summary>
-                  <span>能力选择</span>
-                  <strong id="activeModeLabel">自定义</strong>
-                </summary>
-                <div class="mode-tabs" role="tablist" aria-label="工作流">
-                  <button class="mode-tab active" type="button" role="tab" data-mode="custom" aria-selected="true" aria-pressed="true">自定义</button>
-                  <button class="mode-tab" type="button" role="tab" data-mode="plan-axonometric" aria-selected="false" aria-pressed="false" tabindex="-1">平面图转彩平</button>
-                  <button class="mode-tab" type="button" role="tab" data-mode="plan-axonometric-view" aria-selected="false" aria-pressed="false" tabindex="-1">彩平转轴测图</button>
-                  <button class="mode-tab" type="button" role="tab" data-mode="plan-render" aria-selected="false" aria-pressed="false" tabindex="-1">轴测图转效果图</button>
-                  <button class="mode-tab" type="button" role="tab" data-mode="design-derivation" aria-selected="false" aria-pressed="false" tabindex="-1">设计推导</button>
-                  <button class="mode-tab" type="button" role="tab" data-mode="designseries" aria-selected="false" aria-pressed="false" tabindex="-1">生成设计系列</button>
-                  <button class="mode-tab" type="button" role="tab" data-mode="photo" aria-selected="false" aria-pressed="false" tabindex="-1">现场图转效果图</button>
-                  <button class="mode-tab" type="button" role="tab" data-mode="whitemodel" aria-selected="false" aria-pressed="false" tabindex="-1">白模润色</button>
-                  <button class="mode-tab" type="button" role="tab" data-mode="panorama" aria-selected="false" aria-pressed="false" tabindex="-1">全景图生成</button>
-                  <button class="mode-tab" type="button" role="tab" data-mode="sketch" aria-selected="false" aria-pressed="false" tabindex="-1">手稿生成实景</button>
-                  <button class="mode-tab" type="button" role="tab" data-mode="materialreplace" aria-selected="false" aria-pressed="false" tabindex="-1">材质替换</button>
-                  <button class="mode-tab" type="button" role="tab" data-mode="lightingadjust" aria-selected="false" aria-pressed="false" tabindex="-1">灯光调整</button>
-                  <button class="mode-tab" type="button" role="tab" data-mode="styletransfer" aria-selected="false" aria-pressed="false" tabindex="-1">风格迁移</button>
-                </div>
-              </details>
+              <div class="agent-head-actions">
+                <details class="mode-switcher">
+                  <summary>
+                    <span>能力选择</span>
+                    <strong id="activeModeLabel">自定义</strong>
+                  </summary>
+                  <div class="mode-tabs" role="tablist" aria-label="工作流">
+                    <button class="mode-tab active" type="button" role="tab" data-mode="custom" aria-selected="true" aria-pressed="true">自定义</button>
+                    <button class="mode-tab" type="button" role="tab" data-mode="plan-axonometric" aria-selected="false" aria-pressed="false" tabindex="-1">平面图转彩平</button>
+                    <button class="mode-tab" type="button" role="tab" data-mode="plan-axonometric-view" aria-selected="false" aria-pressed="false" tabindex="-1">彩平转轴测图</button>
+                    <button class="mode-tab" type="button" role="tab" data-mode="plan-render" aria-selected="false" aria-pressed="false" tabindex="-1">轴测图转效果图</button>
+                    <button class="mode-tab" type="button" role="tab" data-mode="design-derivation" aria-selected="false" aria-pressed="false" tabindex="-1">设计推导</button>
+                    <button class="mode-tab" type="button" role="tab" data-mode="designseries" aria-selected="false" aria-pressed="false" tabindex="-1">生成设计系列</button>
+                    <button class="mode-tab" type="button" role="tab" data-mode="photo" aria-selected="false" aria-pressed="false" tabindex="-1">现场图转效果图</button>
+                    <button class="mode-tab" type="button" role="tab" data-mode="whitemodel" aria-selected="false" aria-pressed="false" tabindex="-1">白模润色</button>
+                    <button class="mode-tab" type="button" role="tab" data-mode="panorama" aria-selected="false" aria-pressed="false" tabindex="-1">全景图生成</button>
+                    <button class="mode-tab" type="button" role="tab" data-mode="sketch" aria-selected="false" aria-pressed="false" tabindex="-1">手稿生成实景</button>
+                    <button class="mode-tab" type="button" role="tab" data-mode="materialreplace" aria-selected="false" aria-pressed="false" tabindex="-1">材质替换</button>
+                    <button class="mode-tab" type="button" role="tab" data-mode="lightingadjust" aria-selected="false" aria-pressed="false" tabindex="-1">灯光调整</button>
+                    <button class="mode-tab" type="button" role="tab" data-mode="styletransfer" aria-selected="false" aria-pressed="false" tabindex="-1">风格迁移</button>
+                  </div>
+                </details>
+                <button id="toggleAgentPanelButton" class="icon-button icon-only agent-collapse-button" type="button" title="隐藏创作面板" aria-label="隐藏创作面板" aria-controls="agentPanelContent" aria-expanded="true" aria-pressed="false">
+                  <svg><use href="#icon-panel-hide"></use></svg>
+                </button>
+              </div>
             </div>
             <section id="agentBriefInsight" class="agent-brief-insight" aria-live="polite"></section>
             <div class="agent-upload-zone" id="agentUploadZone">
@@ -921,8 +912,8 @@
               </label>
             </details>
             <div class="canvas-command agent-composer">
-              <label>
-                描述设计目标
+              <label class="composer-prompt-field">
+                <span class="composer-label-text">描述设计目标</span>
                 <textarea id="canvasCommand" rows="2" placeholder="例如：保留原始布局，提升为高端酒店大堂；使用石材、金属和暖色洗墙灯，适合客户提案。"></textarea>
               </label>
               <button id="renderButton" class="secondary-button icon-only" type="button" title="生成效果图" aria-label="生成效果图" hidden>
@@ -976,9 +967,6 @@
               <div class="canvas-command-actions">
                 <button id="thinkingModeButton" class="secondary-button thinking-mode-button" type="button" title="思考模式已关闭" aria-label="思考模式：关，已关闭" aria-pressed="false">
                   思考模式：关
-                </button>
-                <button id="agentNewCanvasButton" class="secondary-button icon-only" type="button" title="新建画布" aria-label="新建画布">
-                  <svg><use href="#icon-plus"></use></svg>
                 </button>
                 <button id="canvasGenerateButton" class="primary-button" type="button" title="生成图片" aria-label="生成图片">
                   生成图片
@@ -1052,13 +1040,114 @@
           </button>
         </header>
         <div class="app-settings-body">
+          <section class="app-settings-block theme-settings-block" aria-labelledby="themeSettingsTitle">
+            <div class="settings-title-row">
+              <span id="themeSettingsTitle" class="agent-skill-title">界面质感</span>
+              <span id="themeSettingsStatus" class="api-endpoint-status unknown">磨砂玻璃</span>
+            </div>
+            <div class="theme-toggle" role="group" aria-label="界面明暗模式">
+              <button type="button" data-theme-choice="day" aria-pressed="false">
+                <svg aria-hidden="true"><use href="#icon-light"></use></svg>
+                白天模式
+              </button>
+              <button type="button" data-theme-choice="night" aria-pressed="false">
+                <svg aria-hidden="true"><use href="#icon-focus"></use></svg>
+                黑夜模式
+              </button>
+            </div>
+            <div class="settings-range-control glass-transparency-control">
+              <div class="settings-range-head">
+                <label for="workspaceGlassTransparencyInput">功能区玻璃透明度</label>
+                <span id="workspaceGlassTransparencyValue">58%</span>
+              </div>
+              <input id="workspaceGlassTransparencyInput" type="range" min="0" max="100" value="58" aria-describedby="themeSettingsHint" />
+            </div>
+            <div class="settings-range-control glass-blur-control">
+              <div class="settings-range-head">
+                <label for="workspaceGlassBlurInput">功能区玻璃模糊度</label>
+                <span id="workspaceGlassBlurValue">68%</span>
+              </div>
+              <input id="workspaceGlassBlurInput" type="range" min="0" max="100" value="68" aria-describedby="themeSettingsHint" />
+            </div>
+            <p id="themeSettingsHint" class="settings-hint">透明度越高，越能透出无限画布底色；模糊度越低，越能看清底图图案。</p>
+          </section>
+          <section class="app-settings-block canvas-background-settings-block" aria-labelledby="canvasBackgroundTitle">
+            <div class="settings-title-row">
+              <span id="canvasBackgroundTitle" class="agent-skill-title">画布底图</span>
+              <span id="canvasBackgroundStatus" class="api-endpoint-status unknown">默认网格</span>
+            </div>
+            <div class="canvas-background-preview" id="canvasBackgroundPreview" aria-hidden="true"></div>
+            <div class="canvas-background-preset-row" role="group" aria-label="画布底图预设">
+              <button type="button" data-canvas-background-preset="default">默认</button>
+              <button type="button" data-canvas-background-preset="rice-paper">宣纸</button>
+              <button type="button" data-canvas-background-preset="ink-wash">水墨</button>
+              <button type="button" data-canvas-background-preset="paper-map-xuan">纸纹</button>
+              <button type="button" data-canvas-background-preset="paper-map-contour">等高</button>
+              <button type="button" data-canvas-background-preset="paper-map-cloth">白布</button>
+              <button type="button" data-canvas-background-preset="paper-map-mist">墨山</button>
+              <button type="button" data-canvas-background-preset="paper-map-route">路线</button>
+              <button type="button" data-canvas-background-preset="paper-map-bamboo">竹山</button>
+              <button type="button" data-canvas-background-preset="plain">纯净</button>
+            </div>
+            <div class="canvas-background-upload-row">
+              <input id="canvasBackgroundImageInput" type="file" accept="image/*" hidden />
+              <button id="uploadCanvasBackgroundButton" class="secondary-button" type="button">替换底图</button>
+              <button id="clearCanvasBackgroundButton" class="text-button" type="button">清除底图</button>
+            </div>
+            <div class="canvas-background-control-grid">
+              <label>
+                底色
+                <input id="canvasBackgroundColorInput" type="color" value="#f7f7f4" />
+              </label>
+              <label>
+                线条颜色
+                <input id="canvasGridColorInput" type="color" value="#7f5d21" />
+              </label>
+              <label>
+                线条浓淡
+                <input id="canvasGridOpacityInput" type="range" min="0" max="100" value="8" />
+              </label>
+              <label>
+                网格尺寸
+                <input id="canvasGridSizeInput" type="range" min="72" max="220" step="4" value="144" />
+              </label>
+              <label>
+                底图浓淡
+                <input id="canvasBackgroundImageOpacityInput" type="range" min="0" max="100" value="18" />
+              </label>
+            </div>
+            <p id="canvasBackgroundHint" class="settings-hint">只调整无限画布底图和网格线，不改变应用 UI 配色。</p>
+          </section>
           <section class="app-settings-block" aria-labelledby="storageSettingsTitle">
             <div class="settings-title-row">
-              <span id="storageSettingsTitle" class="agent-skill-title">存储维护</span>
+              <span id="storageSettingsTitle" class="agent-skill-title">输出目录</span>
               <button id="refreshStorageButton" class="text-button icon-only" type="button" title="刷新存储占用" aria-label="刷新存储占用">
                 <svg><use href="#icon-refresh"></use></svg>
               </button>
             </div>
+            <div class="storage-path-card">
+              <label>
+                默认保存位置
+                <input id="storageOutputDir" type="text" autocomplete="off" placeholder="选择生成图片保存目录" />
+              </label>
+              <div class="settings-actions storage-actions">
+                <button id="chooseStorageDirButton" class="text-button" type="button">
+                  <svg aria-hidden="true"><use href="#icon-folder"></use></svg>
+                  选择目录
+                </button>
+                <button id="saveStorageSettingsButton" class="secondary-button" type="button">保存位置</button>
+                <button id="resetStorageDirButton" class="text-button" type="button">恢复默认</button>
+              </div>
+            </div>
+            <div class="theme-toggle storage-prompt-toggle" role="group" aria-label="首次使用保存位置提醒">
+              <button id="storagePromptAskButton" type="button" data-storage-prompt-mode="ask" aria-pressed="true">
+                首次提醒
+              </button>
+              <button id="storagePromptNeverButton" type="button" data-storage-prompt-mode="never" aria-pressed="false">
+                不提醒
+              </button>
+            </div>
+            <p id="storagePathHint" class="settings-hint">第一次使用会提醒选择生成图片保存位置，之后也可以随时在这里修改。</p>
             <div id="storageSummary" class="settings-metric-grid" aria-live="polite">
               <div><span>生成图</span><strong>--</strong></div>
               <div><span>归档</span><strong>--</strong></div>
@@ -1071,119 +1160,130 @@
             </div>
             <p id="storageMaintenanceHint" class="settings-hint">维护操作只允许本机 localhost 执行；归档会移动文件到 archive/generated，不会删除正式作品。</p>
           </section>
+          <section class="api-settings-block" aria-labelledby="imageStudioKernelTitle">
+            <div class="settings-title-row">
+              <span id="imageStudioKernelTitle" class="agent-skill-title">内置生图内核</span>
+              <span id="imageStudioKernelStatus" class="api-endpoint-status unknown">未读取</span>
+            </div>
+            <div id="imageStudioKernelSummary" class="image-studio-kernel-summary" aria-live="polite"></div>
+            <p id="imageStudioKernelHint" class="settings-hint">老鬼AI 会优先调用项目内置 go-cli wrapper；朋友电脑上使用这里保存的 API 配置驱动生图内核。</p>
+          </section>
           <section class="api-settings-block" aria-labelledby="apiSettingsTitle">
             <div class="settings-title-row">
-              <span id="apiSettingsTitle" class="agent-skill-title">本机 API 密钥</span>
+              <span id="apiSettingsTitle" class="agent-skill-title">API 设置</span>
               <button id="refreshApiSettingsButton" class="text-button icon-only" type="button" title="刷新 API 状态" aria-label="刷新 API 状态">
                 <svg><use href="#icon-refresh"></use></svg>
               </button>
             </div>
-            <p class="settings-hint">这些配置只保存在本机用户数据目录，不会写入网页文件或发给浏览器之外的设备。</p>
+            <p class="settings-hint">思考模型 API 和生图模型 API 分开配置、分开保存。Key 只保存在本机用户数据目录，不会写入网页文件或发给浏览器之外的设备。</p>
             <div id="localApiConnectionStatus" class="api-probe-feedback" aria-live="polite"></div>
-            <div class="api-settings-grid">
-              <label>
-                思考 Base URL
-                <input id="reasoningApiBaseUrl" type="url" placeholder="https://api.example.com" autocomplete="off" />
-              </label>
-              <label>
-                思考模型
-                <input id="reasoningApiModel" type="text" placeholder="gpt-5.5" autocomplete="off" />
-              </label>
-              <label>
-                思考 API Key
-                <input id="reasoningApiKey" type="password" placeholder="sk-..." autocomplete="off" />
-              </label>
-              <label>
-                生图 Base URL
-                <input id="primaryImageApiBaseUrl" type="url" placeholder="https://api.example.com" autocomplete="off" />
-              </label>
-              <label>
-                生图模型
-                <input id="primaryImageApiModel" type="text" placeholder="gpt-image-2" autocomplete="off" />
-              </label>
-              <label>
-                生图 Responses 路径
-                <input id="primaryImageApiResponsesPath" type="text" value="/responses" autocomplete="off" />
-              </label>
-              <label>
-                生图 Generations 路径
-                <input id="primaryImageApiGenerationPath" type="text" value="/v1/images/generations" autocomplete="off" />
-              </label>
-              <label>
-                生图 Edits 路径
-                <input id="primaryImageApiEditPath" type="text" value="/v1/images/edits" autocomplete="off" />
-              </label>
-              <label>
-                生图 API Key
-                <input id="primaryImageApiKey" type="password" placeholder="sk-..." autocomplete="off" />
-              </label>
-              <label class="api-settings-wide">
-                Provider Manifest
-                <textarea id="primaryImageProviderManifest" rows="4" spellcheck="false" placeholder='{"submit":{"path":"/v1/images/generations","result":{"b64JsonPaths":["data.*.b64_json"]}}}'></textarea>
-              </label>
-            </div>
-            <div class="settings-actions">
-              <button id="saveLocalApiSettingsButton" class="secondary-button" type="button">保存本机密钥</button>
-              <button id="probeReasoningApiButton" class="text-button" type="button">检测思考 API</button>
-              <button id="probePrimaryImageApiButton" class="text-button" type="button">检测生图 API</button>
+            <div class="api-profile-layout">
+              <div class="api-profile-editor">
+                <section class="api-config-panel" aria-labelledby="reasoningApiPanelTitle">
+                  <div class="api-config-panel-head">
+                    <div>
+                      <span id="reasoningApiPanelTitle">思考模型 API</span>
+                      <small>只负责理解、分析、提示词和方案推理。</small>
+                    </div>
+                    <span class="api-kind-badge">Reasoning</span>
+                  </div>
+                  <div class="api-settings-grid">
+                    <label>
+                      思考 Base URL
+                      <input id="reasoningApiBaseUrl" type="url" placeholder="https://api.example.com" autocomplete="off" />
+                    </label>
+                    <label>
+                      思考模型
+                      <input id="reasoningApiModel" type="text" placeholder="gpt-5.5" autocomplete="off" />
+                    </label>
+                    <label class="api-settings-wide">
+                      思考 API Key
+                      <input id="reasoningApiKey" type="password" placeholder="sk-..." autocomplete="off" />
+                    </label>
+                  </div>
+                  <div class="settings-actions api-kind-actions">
+                    <button id="saveReasoningApiSettingsButton" class="secondary-button" type="button">保存思考 API</button>
+                    <button id="probeReasoningApiButton" class="text-button" type="button">检测思考 API</button>
+                  </div>
+                </section>
+                <section class="api-config-panel" aria-labelledby="imageApiPanelTitle">
+                  <div class="api-config-panel-head">
+                    <div>
+                      <span id="imageApiPanelTitle">生图模型 API</span>
+                      <small>只负责图片生成、编辑和 Image Studio 内核调用。</small>
+                    </div>
+                    <span class="api-kind-badge">Image</span>
+                  </div>
+                  <div class="api-settings-grid">
+                    <label>
+                      生图 Base URL
+                      <input id="primaryImageApiBaseUrl" type="url" placeholder="https://api.example.com" autocomplete="off" />
+                    </label>
+                    <label>
+                      生图模型
+                      <input id="primaryImageApiModel" type="text" placeholder="gpt-image-2" autocomplete="off" />
+                    </label>
+                    <label>
+                      生图 API 形态
+                      <select id="primaryImageApiMode">
+                        <option value="responses">Responses API</option>
+                        <option value="images">Images API</option>
+                      </select>
+                    </label>
+                    <label>
+                      Responses 传输
+                      <select id="primaryImageResponsesTransport">
+                        <option value="sse">HTTP SSE</option>
+                        <option value="websocket">WebSocket mode</option>
+                      </select>
+                    </label>
+                    <label>
+                      请求策略
+                      <select id="primaryImageRequestPolicy">
+                        <option value="openai">OpenAI 官方字段</option>
+                        <option value="compat">兼容扩展字段</option>
+                      </select>
+                    </label>
+                    <label>
+                      推理强度
+                      <select id="primaryImageReasoningEffort">
+                        <option value="xhigh">xhigh</option>
+                        <option value="high">high</option>
+                        <option value="medium">medium</option>
+                        <option value="low">low</option>
+                      </select>
+                    </label>
+                    <label>
+                      生图 Responses 路径
+                      <input id="primaryImageApiResponsesPath" type="text" value="/v1/responses" autocomplete="off" />
+                    </label>
+                    <label>
+                      生图 Generations 路径
+                      <input id="primaryImageApiGenerationPath" type="text" value="/v1/images/generations" autocomplete="off" />
+                    </label>
+                    <label>
+                      生图 Edits 路径
+                      <input id="primaryImageApiEditPath" type="text" value="/v1/images/edits" autocomplete="off" />
+                    </label>
+                    <label>
+                      生图 API Key
+                      <input id="primaryImageApiKey" type="password" placeholder="sk-..." autocomplete="off" />
+                    </label>
+                    <label class="api-settings-wide">
+                      Provider Manifest
+                      <textarea id="primaryImageProviderManifest" rows="4" spellcheck="false" placeholder='{"submit":{"path":"/v1/images/generations","result":{"b64JsonPaths":["data.*.b64_json"]}}}'></textarea>
+                    </label>
+                  </div>
+                  <div class="settings-actions api-kind-actions">
+                    <button id="saveImageApiSettingsButton" class="secondary-button" type="button">保存生图 API</button>
+                    <button id="probePrimaryImageApiButton" class="text-button" type="button">检测生图 API</button>
+                  </div>
+                </section>
+              </div>
             </div>
             <div id="localApiProbeFeedback" class="api-probe-feedback" aria-live="polite"></div>
             <p class="settings-hint">检测生图 API 会按当前模式真实调用一次 Images API 或 Responses 小图请求；返回图片数据才算通过。这里也可以直接粘贴 GPT Image Playground 的 customProviders 导出。</p>
             <p id="localApiSettingsSummary" class="settings-hint">等待读取本机配置。</p>
-          </section>
-          <section class="api-settings-block" aria-labelledby="imageApiSettingsTitle">
-            <div class="settings-title-row">
-              <span id="imageApiSettingsTitle" class="agent-skill-title">备用 Image Gen API</span>
-            </div>
-            <p class="settings-hint">可额外保存多个生图端点；检测后会优先使用可用端点。</p>
-            <div class="api-current-endpoint" aria-live="polite">
-              <div class="api-current-copy">
-                <span>当前连接</span>
-                <strong id="currentImageEndpointName">--</strong>
-                <small id="currentImageEndpointUrl">--</small>
-              </div>
-              <div class="api-current-meter">
-                <span id="currentImageEndpointStatus" class="api-endpoint-status unknown">未检测</span>
-                <small id="currentImageEndpointMeta">等待端点状态</small>
-              </div>
-            </div>
-            <div class="api-settings-grid">
-              <label>
-                名称
-                <input id="imageApiLabel" type="text" placeholder="例如：备用 Image Gen" autocomplete="off" />
-              </label>
-              <label>
-                Base URL / 端口
-                <input id="imageApiBaseUrl" type="url" placeholder="https://api.example.com:443" autocomplete="off" />
-              </label>
-              <label>
-                API Key
-                <input id="imageApiKey" type="password" placeholder="sk-..." autocomplete="off" />
-              </label>
-              <label>
-                Responses 路径
-                <input id="imageApiResponsesPath" type="text" value="/v1/responses" autocomplete="off" />
-              </label>
-              <label>
-                Generations 路径
-                <input id="imageApiGenerationPath" type="text" value="/v1/images/generations" autocomplete="off" />
-              </label>
-              <label>
-                Edits 路径
-                <input id="imageApiEditPath" type="text" value="/v1/images/edits" autocomplete="off" />
-              </label>
-              <label class="api-settings-wide">
-                Provider Manifest
-                <textarea id="imageApiProviderManifest" rows="4" spellcheck="false" placeholder='{"submit":{"path":"/v1/images/generations","result":{"imageUrlPaths":["data.*.url"]}}}'></textarea>
-              </label>
-            </div>
-            <div class="settings-actions">
-              <button id="saveImageApiEndpointButton" class="secondary-button" type="button">保存并启用</button>
-              <button id="probeImageApiEndpointButton" class="text-button" type="button">检测端点</button>
-            </div>
-            <div id="imageApiProbeFeedback" class="api-probe-feedback" aria-live="polite"></div>
-            <p class="settings-hint">可以保存多个 Base URL，例如不同域名、不同端口或本地服务；检测会访问每个端点的模型列表并更新可用性。这里也支持直接贴 GPT Image Playground 的 customProviders 导出。</p>
-            <div id="imageApiEndpointList" class="api-endpoint-list" aria-live="polite"></div>
           </section>
         </div>
       </article>
@@ -1245,7 +1345,24 @@
     </section>
 
     <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
-    <script src="/vendor/pannellum.js"></script>
-    <script src="/app.js" type="module"></script>
+    <script src="vendor/pannellum.js"></script>
+    <script>
+      (() => {
+        window.__LAOGUI_PENDING_START_MODE__ = "";
+        document.addEventListener("click", (event) => {
+          const button = event.target.closest?.("[data-start-mode]");
+          if (!button) return;
+          const homeView = document.getElementById("homeView");
+          const workspaceView = document.getElementById("workspaceView");
+          if (!homeView || !workspaceView || homeView.hidden) return;
+          window.__LAOGUI_PENDING_START_MODE__ = button.dataset.startMode || "custom";
+          document.body.classList.add("workspace-active");
+          document.body.classList.remove("asset-library-active");
+          homeView.hidden = true;
+          workspaceView.hidden = false;
+        }, true);
+      })();
+    </script>
+    <script src="app.js" type="module"></script>
   </body>
 </html>
