@@ -233,6 +233,77 @@ function includeDefaultImageBaseUrls() {
   return false;
 }
 
+function firstConfiguredEnv(names) {
+  for (const name of names) {
+    const direct = String(name || "").trim();
+    if (!direct) continue;
+    if (!/^[A-Z_][A-Z0-9_]*$/.test(direct)) return direct;
+    const value = String(process.env[name] || "").trim();
+    if (value) return value;
+  }
+  return "";
+}
+
+function configuredYybbBaseUrl() {
+  return firstConfiguredEnv(["YYBB_BASE_URL", "SAVED_YYBB_BASE_URL"])
+    || (firstConfiguredEnv(["YYBB_API_KEY", "SAVED_YYBB_API_KEY"]) ? "https://yybb.codes" : "");
+}
+
+function configuredReasoningBaseUrl() {
+  return normalizeBaseUrl(firstConfiguredEnv([
+    "REASONING_BASE_URL",
+    "OPENAI_BASE_URL",
+    configuredYybbBaseUrl(),
+    "SAVED_MXOU_BASE_URL"
+  ]));
+}
+
+function configuredReasoningApiKey() {
+  return firstConfiguredEnv([
+    "REASONING_API_KEY",
+    "OPENAI_API_KEY",
+    "YYBB_API_KEY",
+    "SAVED_YYBB_API_KEY",
+    "SAVED_MXOU_API_KEY"
+  ]);
+}
+
+function configuredReasoningModel() {
+  return firstConfiguredEnv([
+    "REASONING_MODEL",
+    "SAVED_YYBB_REASONING_MODEL",
+    "SAVED_MXOU_REASONING_MODEL"
+  ]) || "gpt-5.5";
+}
+
+function configuredImageModel() {
+  return firstConfiguredEnv([
+    "IMAGE_MODEL",
+    "SAVED_YYBB_IMAGE_MODEL",
+    "SAVED_MXOU_IMAGE_MODEL"
+  ]) || "gpt-image-2";
+}
+
+function configuredImageApiKey() {
+  return firstConfiguredEnv([
+    "IMAGE_API_KEY",
+    "YYBB_API_KEY",
+    "OPENAI_API_KEY",
+    "FHL_API_KEY",
+    "SAVED_YYBB_API_KEY",
+    "SAVED_MXOU_API_KEY"
+  ]);
+}
+
+function configuredImageBaseUrlAliases() {
+  return uniqueBaseUrls([
+    configuredYybbBaseUrl(),
+    firstConfiguredEnv(["OPENAI_BASE_URL"]),
+    firstConfiguredEnv(["FHL_BASE_URL", "FHL_IMAGE_BASE_URL"]),
+    firstConfiguredEnv(["SAVED_MXOU_BASE_URL"])
+  ]);
+}
+
 function costFirstImageBaseUrls() {
   const configured = splitBaseUrlList(process.env.IMAGE_COST_FIRST_BASE_URLS);
   if (configured.length) return uniqueBaseUrls(configured);
@@ -249,11 +320,12 @@ function priorityImageBaseUrls() {
 function configuredImageBaseUrls() {
   const priorityBaseUrls = priorityImageBaseUrls();
   const includeDefaults = includeDefaultImageBaseUrls();
-  const primaryFallback = "";
+  const primaryFallback = firstConfiguredEnv([configuredYybbBaseUrl(), "OPENAI_BASE_URL", "SAVED_MXOU_BASE_URL"]);
   const primary = process.env.IMAGE_BASE_URL || primaryFallback;
   return uniqueBaseUrls([
     ...priorityBaseUrls,
     ...splitBaseUrlList(process.env.IMAGE_BASE_URLS),
+    ...configuredImageBaseUrlAliases(),
     primary,
     ...(includeDefaults ? defaultImageBaseUrls() : [])
   ]);
@@ -261,18 +333,18 @@ function configuredImageBaseUrls() {
 
 const config = {
   port: Number(process.env.PORT || 4177),
-  reasoningModel: process.env.REASONING_MODEL || "gpt-5.5",
-  imageModel: process.env.IMAGE_MODEL || "gpt-image-2",
+  reasoningModel: configuredReasoningModel(),
+  imageModel: configuredImageModel(),
   reasoningProvider: {
-    baseUrl: normalizeBaseUrl(process.env.REASONING_BASE_URL || ""),
-    apiKey: process.env.REASONING_API_KEY || "",
-    responsesPath: process.env.REASONING_RESPONSES_PATH || ""
+    baseUrl: configuredReasoningBaseUrl(),
+    apiKey: configuredReasoningApiKey(),
+    responsesPath: firstConfiguredEnv(["REASONING_RESPONSES_PATH", "SAVED_YYBB_RESPONSES_PATH", "SAVED_MXOU_RESPONSES_PATH"])
   },
   imageProvider: {
-    baseUrl: normalizeBaseUrl(process.env.IMAGE_BASE_URL || ""),
+    baseUrl: normalizeBaseUrl(process.env.IMAGE_BASE_URL || firstConfiguredEnv([configuredYybbBaseUrl(), "OPENAI_BASE_URL", "SAVED_MXOU_BASE_URL"])),
     baseUrls: configuredImageBaseUrls(),
-    apiKey: process.env.IMAGE_API_KEY || "",
-    responsesPath: process.env.IMAGE_RESPONSES_PATH || "",
+    apiKey: configuredImageApiKey(),
+    responsesPath: firstConfiguredEnv(["IMAGE_RESPONSES_PATH", "SAVED_YYBB_RESPONSES_PATH", "SAVED_MXOU_RESPONSES_PATH"]),
     imageGenerationPath: process.env.IMAGE_GENERATIONS_PATH || process.env.IMAGE_GENERATION_PATH || "",
     imageEditPath: process.env.IMAGE_EDITS_PATH || process.env.IMAGE_EDIT_PATH || "",
     providerManifest: null
@@ -292,10 +364,12 @@ const config = {
     responsesTransport: process.env.IMAGE_STUDIO_RESPONSES_TRANSPORT || "sse",
     requestPolicy: process.env.IMAGE_STUDIO_REQUEST_POLICY || "openai",
     reasoningEffort: process.env.IMAGE_STUDIO_REASONING_EFFORT || "xhigh",
+    fastReasoningEffort: process.env.IMAGE_STUDIO_FAST_REASONING_EFFORT || "low",
     partialImages: boundedIntegerEnv("IMAGE_STUDIO_PARTIAL_IMAGES", 0, 0, 3),
     autoRetryCount: boundedIntegerEnv("IMAGE_STUDIO_AUTO_RETRY_COUNT", 1, 0, 8),
     allowNativeFallback: parseBooleanEnv(process.env.IMAGE_STUDIO_ALLOW_NATIVE_FALLBACK, false)
   },
+  fastImagePromptMaxChars: boundedIntegerEnv("FAST_IMAGE_PROMPT_MAX_CHARS", 1200, 600, 8000),
   maxJsonBodyBytes: boundedIntegerEnv("MAX_JSON_BODY_MB", 80, 1, 200) * 1024 * 1024,
   downloadImageMaxBytes: boundedIntegerEnv("DOWNLOAD_IMAGE_MAX_MB", 25, 1, 100) * 1024 * 1024,
   downloadImageTimeoutMs: boundedIntegerEnv("DOWNLOAD_IMAGE_TIMEOUT_SECONDS", 15, 2, 120) * 1000,
@@ -1221,15 +1295,44 @@ function imageProviderKind(baseUrl) {
 }
 
 function imageProviderApiKey(baseUrl) {
-  return config.imageProvider.apiKey;
+  if (isYybbBaseUrl(baseUrl)) {
+    return firstConfiguredEnv(["IMAGE_API_KEY", "YYBB_API_KEY", "SAVED_YYBB_API_KEY", "OPENAI_API_KEY"])
+      || config.imageProvider.apiKey;
+  }
+  if (isFhlBaseUrl(baseUrl)) {
+    return firstConfiguredEnv(["FHL_API_KEY", "IMAGE_API_KEY", "OPENAI_API_KEY"])
+      || config.imageProvider.apiKey;
+  }
+  if (firstConfiguredEnv(["SAVED_MXOU_BASE_URL"]) && normalizeBaseUrl(baseUrl) === normalizeBaseUrl(process.env.SAVED_MXOU_BASE_URL)) {
+    return firstConfiguredEnv(["SAVED_MXOU_API_KEY", "IMAGE_API_KEY", "OPENAI_API_KEY"])
+      || config.imageProvider.apiKey;
+  }
+  return firstConfiguredEnv(["IMAGE_API_KEY", "OPENAI_API_KEY", "YYBB_API_KEY", "SAVED_YYBB_API_KEY", "SAVED_MXOU_API_KEY"])
+    || config.imageProvider.apiKey;
 }
 
 function imageProviderKeySource(baseUrl) {
-  return "image";
+  if (isYybbBaseUrl(baseUrl)) return firstConfiguredEnv(["YYBB_API_KEY", "SAVED_YYBB_API_KEY"]) ? "yybb" : "image";
+  if (isFhlBaseUrl(baseUrl)) return firstConfiguredEnv(["FHL_API_KEY"]) ? "fhl" : "image";
+  if (firstConfiguredEnv(["SAVED_MXOU_BASE_URL"]) && normalizeBaseUrl(baseUrl) === normalizeBaseUrl(process.env.SAVED_MXOU_BASE_URL)) return "mxou";
+  return firstConfiguredEnv(["OPENAI_API_KEY"]) ? "openai" : "image";
 }
 
 function runtimeImageEndpointSources() {
-  return [];
+  return runtimeSettings.imageEndpoints
+    .filter((endpoint) => endpoint?.enabled !== false)
+    .map((endpoint) => ({
+      ...endpoint,
+      runtimeId: endpoint.id,
+      kind: imageProviderKind(endpoint.baseUrl),
+      keySource: "runtime",
+      apiMode: endpoint.apiMode || config.imageApiMode,
+      responsesTransport: endpoint.responsesTransport || config.imageStudioEngine.responsesTransport,
+      requestPolicy: endpoint.requestPolicy || config.imageStudioEngine.requestPolicy,
+      reasoningEffort: endpoint.reasoningEffort || config.imageStudioEngine.reasoningEffort,
+      model: endpoint.model || config.imageModel,
+      responsesPath: normalizeResponsesPathForBaseUrl(endpoint.baseUrl, endpoint.responsesPath)
+    }));
 }
 
 function imageProviderSources() {
@@ -1243,6 +1346,7 @@ function imageProviderSources() {
     apiKey: imageProviderApiKey(baseUrl),
     kind: imageProviderKind(baseUrl),
     keySource: imageProviderKeySource(baseUrl),
+    model: config.imageModel,
     imageGenerationPath: config.imageProvider.imageGenerationPath,
     imageEditPath: config.imageProvider.imageEditPath,
     providerManifest: config.imageProvider.providerManifest || null,
@@ -5287,6 +5391,7 @@ function imageStudioEngineStatus() {
     responsesTransport: normalizeResponsesTransport(config.imageStudioEngine.responsesTransport || desktop.responsesTransport || "sse"),
     requestPolicy: normalizeImageStudioRequestPolicy(config.imageStudioEngine.requestPolicy || desktop.requestPolicy || "openai"),
     reasoningEffort: normalizeImageStudioReasoningEffort(config.imageStudioEngine.reasoningEffort || desktop.reasoningEffort || "xhigh"),
+    fastReasoningEffort: normalizeImageStudioReasoningEffort(config.imageStudioEngine.fastReasoningEffort || "low"),
     partialImages: clampNumber(Number(config.imageStudioEngine.partialImages ?? desktop.partialImages ?? 0), 0, 3),
     autoRetryCount: clampNumber(Number(config.imageStudioEngine.autoRetryCount ?? desktop.autoRetryCount ?? 1), 0, 8),
     allowNativeFallback: Boolean(config.imageStudioEngine.allowNativeFallback),
@@ -5507,7 +5612,7 @@ async function writeImageStudioFhlReferences(inputImages = [], outputDir) {
   return files;
 }
 
-async function runImageStudioEngine({ prompt, inputImages = [], size = "auto", quality = "medium", sourceOverride = null, imageModelOverride = "", textModelOverride = "" } = {}) {
+async function runImageStudioEngine({ prompt, inputImages = [], size = "auto", quality = "medium", sourceOverride = null, imageModelOverride = "", textModelOverride = "", fastMode = false } = {}) {
   const status = imageStudioEngineStatus();
   if (!status.enabled || !status.available) {
     const error = new Error(status.available
@@ -5532,7 +5637,9 @@ async function runImageStudioEngine({ prompt, inputImages = [], size = "auto", q
   const apiMode = normalizeImageApiMode(source.apiMode || config.imageApiMode);
   const responsesTransport = normalizeResponsesTransport(source.responsesTransport || status.responsesTransport);
   const requestPolicy = normalizeImageStudioRequestPolicy(source.requestPolicy || status.requestPolicy);
-  const reasoningEffort = normalizeImageStudioReasoningEffort(source.reasoningEffort || status.reasoningEffort);
+  const reasoningEffort = normalizeImageStudioReasoningEffort(fastMode
+    ? status.fastReasoningEffort
+    : source.reasoningEffort || status.reasoningEffort);
   const args = [
     "--base-url", source.baseUrl,
     "--api-key", source.apiKey,
@@ -5605,7 +5712,8 @@ async function runImageStudioEngine({ prompt, inputImages = [], size = "auto", q
       api_mode: apiMode === "images" ? "images" : "responses",
       responses_transport: responsesTransport,
       request_policy: requestPolicy,
-      reasoning_effort: reasoningEffort
+      reasoning_effort: reasoningEffort,
+      fast_mode: Boolean(fastMode)
     },
     diagnostics: {
       ...diagnostics,
@@ -8990,23 +9098,33 @@ async function thinkThenGenerateImage({ prompt, inputImages, size, quality, titl
     prompt
   });
 
-  const generateWithPresetPrompt = async ({ fallbackReason = "" } = {}) => {
-    const imagePrompt = [
-      hardenFinalPromptForMode({
-        mode: normalizedMode,
-        finalPrompt: prompt,
-        promptGuard,
-        audit: directPromptAudit
-      }),
-      String(finalPromptFooter || "").trim()
-    ].filter(Boolean).join("\n\n");
+  const generateWithPresetPrompt = async ({ fallbackReason = "", directFast = false } = {}) => {
+    const presetPrompt = directFast
+      ? [prompt, String(finalPromptFooter || "").trim()].filter(Boolean).join("\n\n")
+      : [
+          hardenFinalPromptForMode({
+            mode: normalizedMode,
+            finalPrompt: prompt,
+            promptGuard,
+            audit: directPromptAudit
+          }),
+          String(finalPromptFooter || "").trim()
+        ].filter(Boolean).join("\n\n");
+    const imagePrompt = compactFastImagePrompt({
+      mode: normalizedMode,
+      prompt: presetPrompt,
+      requestedSize,
+      quality,
+      title
+    });
     const generated = await generateImageWithImageProvider({
       prompt: imagePrompt,
       inputImages,
       size: requestedSize,
       quality,
       preferReferenceEdit,
-      mode: normalizedMode
+      mode: normalizedMode,
+      fastMode: true
     });
 
     return {
@@ -9017,6 +9135,12 @@ async function thinkThenGenerateImage({ prompt, inputImages, size, quality, titl
         fallbackReason
           ? `思考融合暂时不可用，已自动使用快速预设提示词继续生图。原因：${fallbackReason}`
           : "已关闭思考模式：本次未做单独的 gpt-5.5 提示词融合，使用快速预设提示词和用户描述直接交给 Image Gen。",
+        directFast
+          ? "Image-Studio 快速直连：主动关闭思考时不注入长工作流守卫，只发送短预设提示词和输入图片。"
+          : "快速兜底：思考融合失败后保留必要工作流守卫并压缩提示词。",
+        presetPrompt.length > imagePrompt.length
+          ? `快速生图压缩：最终提示词已从 ${presetPrompt.length} 字符压缩到 ${imagePrompt.length} 字符。`
+          : `快速生图压缩：最终提示词 ${imagePrompt.length} 字符，未超过快速模式上限。`,
         directPromptAudit.length
           ? `预设提示词加固：已补回 ${directPromptAudit.length} 项关键约束：${directPromptAudit.join("；")}`
           : "预设提示词加固：最终提示词已覆盖当前功能的关键输出边界。"
@@ -9025,7 +9149,7 @@ async function thinkThenGenerateImage({ prompt, inputImages, size, quality, titl
   };
 
   if (!useReasoning) {
-    return generateWithPresetPrompt();
+    return generateWithPresetPrompt({ directFast: true });
   }
 
   const content = [
@@ -9404,7 +9528,27 @@ function hardenFinalPromptForMode({ mode, finalPrompt, promptGuard, audit }) {
   return parts.join("\n\n");
 }
 
-async function generateImageWithImageProvider({ prompt, inputImages, size, quality, preferReferenceEdit = true, mode = "" }) {
+function compactFastImagePrompt({ mode, prompt, requestedSize, quality, title }) {
+  const text = String(prompt || "").replace(/\n{3,}/g, "\n\n").trim();
+  const maxChars = config.fastImagePromptMaxChars;
+  if (!text || text.length <= maxChars) return text || "Generate the requested spatial design image.";
+  const normalizedMode = normalizeRenderMode(mode);
+  const header = [
+    "FAST_IMAGE_GENERATION_MODE:",
+    `Request title: ${title || "spatial design generation"}.`,
+    `Canvas and quality: ${requestedSize}; ${quality}.`,
+    finalOutputRuleForMode(normalizedMode)
+  ].join("\n");
+  const footer = [
+    "Fast-mode compression: long hidden workflow templates were intentionally omitted because thinking mode is off.",
+    "Use the uploaded input image as the primary visual evidence and follow the selected workflow boundary.",
+    "Avoid: no watermark, no logo, no UI overlay, no random readable text, no distorted geometry, no unrelated collage."
+  ].join("\n");
+  const budget = Math.max(800, maxChars - header.length - footer.length - 4);
+  return [header, truncateLogText(text, budget), footer].join("\n");
+}
+
+async function generateImageWithImageProvider({ prompt, inputImages, size, quality, preferReferenceEdit = true, mode = "", fastMode = false }) {
   const attempts = [];
   const attemptEvents = [];
   const standardSize = closestStandardImageSize(size);
@@ -9424,7 +9568,8 @@ async function generateImageWithImageProvider({ prompt, inputImages, size, quali
         prompt,
         inputImages,
         size,
-        quality
+        quality,
+        fastMode
       })
     });
   }
@@ -11984,11 +12129,12 @@ function normalizeRuntimeProvider(provider = {}, existing = null, { kind = "reas
   return normalized;
 }
 
-function publicRuntimeProvider(provider) {
+function publicRuntimeProvider(provider, { source = "" } = {}) {
   return {
     configured: Boolean(provider?.apiKey),
     baseUrl: provider?.baseUrl || "",
     model: provider?.model || "",
+    source,
     apiMode: provider?.apiMode || "",
     responsesTransport: provider?.responsesTransport || "",
     requestPolicy: provider?.requestPolicy || "",
@@ -12000,6 +12146,32 @@ function publicRuntimeProvider(provider) {
     providerManifestName: provider?.providerManifest?.name || "",
     updatedAt: provider?.updatedAt || ""
   };
+}
+
+function effectivePublicProvider(kind) {
+  const runtimeProvider = runtimeSettings.providers[kind];
+  if (runtimeProvider?.apiKey && runtimeProvider.baseUrl) {
+    return publicRuntimeProvider(runtimeProvider, { source: "runtime" });
+  }
+  if (kind === "image") {
+    const source = activeImageProviderSource();
+    return publicRuntimeProvider({
+      ...source,
+      model: source?.model || config.imageModel,
+      apiMode: source?.apiMode || config.imageApiMode,
+      responsesTransport: source?.responsesTransport || config.imageStudioEngine.responsesTransport,
+      requestPolicy: source?.requestPolicy || config.imageStudioEngine.requestPolicy,
+      reasoningEffort: source?.reasoningEffort || config.imageStudioEngine.reasoningEffort,
+      responsesPath: source ? providerResponsesPath(source) : "",
+      imageGenerationPath: source ? providerImageApiPath(source, "generation") : "",
+      imageEditPath: source ? providerImageApiPath(source, "edit") : ""
+    }, { source: source?.keySource || "env" });
+  }
+  return publicRuntimeProvider({
+    ...config.reasoningProvider,
+    model: config.reasoningModel,
+    responsesPath: providerResponsesPath(config.reasoningProvider)
+  }, { source: "env" });
 }
 
 function applyRuntimeProviders() {
@@ -12122,8 +12294,8 @@ function runtimeSettingsBody(req = null) {
       externalDataDir: externalDataDirEnabled,
       storage: publicStorageSettings(),
       providers: {
-        reasoning: publicRuntimeProvider(runtimeSettings.providers.reasoning),
-        image: publicRuntimeProvider(runtimeSettings.providers.image)
+        reasoning: effectivePublicProvider("reasoning"),
+        image: effectivePublicProvider("image")
       },
       providerProbes: {
         reasoning: publicProviderProbe("reasoning"),
@@ -12547,8 +12719,8 @@ function healthBody() {
     externalDataDir: externalDataDirEnabled,
     storage: publicStorageSettings(),
     runtimeProviders: {
-      reasoning: publicRuntimeProvider(runtimeSettings.providers.reasoning),
-      image: publicRuntimeProvider(runtimeSettings.providers.image)
+      reasoning: effectivePublicProvider("reasoning"),
+      image: effectivePublicProvider("image")
     },
     publicApi: {
       version: "v1",

@@ -30,7 +30,11 @@ node_modules/
 .npm/
 .cache/
 dist/
-build/
+build/*
+!build/
+!build/icon.png
+!build/icon.icns
+!build/icon.ico
 release/
 LaoguiAI-Windows-Installer-*/
 

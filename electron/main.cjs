@@ -7,6 +7,7 @@ const ROOT_DIR = path.join(__dirname, "..");
 const SERVER_ENTRY = path.join(ROOT_DIR, "server.mjs");
 const DEFAULT_PORT = Number(process.env.PORT || 4177);
 const PRELOAD_ENTRY = path.join(ROOT_DIR, "electron", "preload.cjs");
+const APP_ICON_PATH = path.join(ROOT_DIR, "electron", "assets", "icon.png");
 const SHUTDOWN_TIMEOUT_MS = 6000;
 const SERVER_SHUTDOWN_TIMEOUT_MS = 3500;
 
@@ -142,6 +143,7 @@ async function createWindow() {
     minWidth: 1120,
     minHeight: 760,
     title: "老鬼AI",
+    icon: APP_ICON_PATH,
     backgroundColor: "#11100d",
     webPreferences: {
       contextIsolation: true,

@@ -241,6 +241,8 @@ For the software build, Image Studio's `go-cli` is the image-generation core. La
 IMAGE_STUDIO_ENGINE=required
 IMAGE_STUDIO_CLI_PATH=
 IMAGE_STUDIO_RESPONSES_TRANSPORT=sse
+IMAGE_STUDIO_FAST_REASONING_EFFORT=low
+FAST_IMAGE_PROMPT_MAX_CHARS=1200
 IMAGE_STUDIO_ALLOW_NATIVE_FALLBACK=0
 ```
 
@@ -260,7 +262,7 @@ The preferred distribution layout is platform-aware:
 
 `npm run engine:image-studio` builds the current machine's platform folder and updates the legacy flat binary path for backward compatibility. Run `npm run doctor` before sharing a build; the `已打包内核平台` line tells you which friend machines are covered.
 
-The upstream image API settings use Image Studio-compatible fields: `apiMode` (`responses` or `images`), `responsesTransport` (`sse` or `websocket`), `requestPolicy` (`openai` or `compat`), `baseURL`, `imageModelID`, and `reasoningEffort`. Reasoning API settings are saved separately with their own Base URL, Key, and model. The bundled `gptcodex-image` engine receives the saved image settings as CLI flags.
+The upstream image API settings use Image Studio-compatible fields: `apiMode` (`responses` or `images`), `responsesTransport` (`sse` or `websocket`), `requestPolicy` (`openai` or `compat`), `baseURL`, `imageModelID`, and `reasoningEffort`. Reasoning API settings are saved separately with their own Base URL, Key, and model. The bundled `gptcodex-image` engine receives the saved image settings as CLI flags. When UI thinking mode is off, Laogui AI now uses a fast path: it caps the final prompt with `FAST_IMAGE_PROMPT_MAX_CHARS` and sends `IMAGE_STUDIO_FAST_REASONING_EFFORT` to the engine instead of the normal high-reasoning setting.
 
 The local Codex skill `image-studio-fhl` remains as a development fallback on this machine, but the distributed software does not depend on Codex skills or the user's Codex directory.
 
