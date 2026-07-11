@@ -1231,6 +1231,13 @@
                       </select>
                     </label>
                     <label>
+                      Images API 返回方式
+                      <select id="primaryImageImagesNewApiCompat">
+                        <option value="true">普通返回（兼容更多接口）</option>
+                        <option value="false">流式返回（接口明确支持时使用）</option>
+                      </select>
+                    </label>
+                    <label>
                       Responses 传输
                       <select id="primaryImageResponsesTransport">
                         <option value="sse">HTTP SSE</option>
@@ -1255,15 +1262,15 @@
                     </label>
                     <label>
                       生图 Responses 路径
-                      <input id="primaryImageApiResponsesPath" type="text" value="/v1/responses" autocomplete="off" />
+                      <input id="primaryImageApiResponsesPath" type="text" autocomplete="off" />
                     </label>
                     <label>
                       生图 Generations 路径
-                      <input id="primaryImageApiGenerationPath" type="text" value="/v1/images/generations" autocomplete="off" />
+                      <input id="primaryImageApiGenerationPath" type="text" autocomplete="off" />
                     </label>
                     <label>
                       生图 Edits 路径
-                      <input id="primaryImageApiEditPath" type="text" value="/v1/images/edits" autocomplete="off" />
+                      <input id="primaryImageApiEditPath" type="text" autocomplete="off" />
                     </label>
                     <label>
                       生图 API Key
@@ -1282,7 +1289,7 @@
               </div>
             </div>
             <div id="localApiProbeFeedback" class="api-probe-feedback" aria-live="polite"></div>
-            <p class="settings-hint">检测生图 API 会按当前模式真实调用一次 Images API 或 Responses 小图请求；返回图片数据才算通过。这里也可以直接粘贴 GPT Image Playground 的 customProviders 导出。</p>
+            <p class="settings-hint">检测生图 API 会按当前设置真实生成一张小图；返回图片数据才算通过。普通返回不会发送流式参数，通常兼容更多图片接口。这里也可以直接粘贴 GPT Image Playground 的 customProviders 导出。</p>
             <p id="localApiSettingsSummary" class="settings-hint">等待读取本机配置。</p>
           </section>
         </div>

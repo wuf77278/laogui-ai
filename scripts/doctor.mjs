@@ -7,12 +7,15 @@ import { execFileSync, spawnSync } from "node:child_process";
 const __filename = fileURLToPath(import.meta.url);
 const rootDir = path.dirname(path.dirname(__filename));
 const envPath = path.join(rootDir, ".env");
-const generatedDir = path.join(rootDir, "public", "generated");
-const logsDir = path.join(rootDir, "logs");
+loadDotEnv(envPath);
+
+const appDataDir = process.env.LAOGUI_DATA_DIR ? path.resolve(process.env.LAOGUI_DATA_DIR) : rootDir;
+const externalDataDirEnabled = Boolean(process.env.LAOGUI_DATA_DIR);
+const generatedDir = externalDataDirEnabled ? path.join(appDataDir, "generated") : path.join(rootDir, "public", "generated");
+const logsDir = path.join(appDataDir, "logs");
+const runtimeSettingsPath = path.join(logsDir, "runtime-settings.json");
 const imageStudioEngineDir = path.join(rootDir, "engines", "image-studio");
 const releaseImageStudioPlatforms = ["darwin-arm64", "darwin-x64", "win32-x64", "win32-arm64"];
-
-loadDotEnv(envPath);
 
 const checks = [];
 
@@ -36,6 +39,26 @@ function add(status, title, detail = "") {
 
 function hasValue(key) {
   return Boolean(String(process.env[key] || "").trim());
+}
+
+async function loadRuntimeSettings() {
+  try {
+    return JSON.parse(await fs.readFile(runtimeSettingsPath, "utf8"));
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      add("warn", "运行时设置", `无法读取 ${path.relative(rootDir, runtimeSettingsPath)}: ${error.message}`);
+    }
+    return {};
+  }
+}
+
+function runtimeProviderConfigured(settings, kind) {
+  const provider = settings?.providers?.[kind];
+  return Boolean(
+    provider
+      && String(provider.baseUrl || "").trim()
+      && String(provider.apiKey || "").trim()
+  );
 }
 
 function parseBooleanEnv(value, fallback = false) {
@@ -167,13 +190,26 @@ function diskFreeText() {
 }
 
 async function main() {
+  const runtimeSettings = await loadRuntimeSettings();
   add(nodeVersionOk() ? "ok" : "fail", "Node 版本", process.version);
   add(existsSync(envPath) ? "ok" : "fail", ".env 文件", existsSync(envPath) ? ".env 已存在" : "缺少 .env，请复制 .env.example 后填写");
 
-  const reasoningKey = hasValue("REASONING_API_KEY") || hasValue("OPENAI_API_KEY") || hasValue("YYBB_API_KEY");
-  const imageKey = hasValue("IMAGE_API_KEY") || hasValue("YYBB_API_KEY") || hasValue("OPENAI_API_KEY");
-  add(reasoningKey ? "ok" : "fail", "思考 API Key", reasoningKey ? "已配置" : "缺少 REASONING_API_KEY / OPENAI_API_KEY / YYBB_API_KEY");
-  add(imageKey ? "ok" : "fail", "生图 API Key", imageKey ? "已配置" : "缺少 IMAGE_API_KEY / YYBB_API_KEY / OPENAI_API_KEY");
+  const reasoningEnvKey = hasValue("REASONING_API_KEY") || hasValue("OPENAI_API_KEY") || hasValue("YYBB_API_KEY");
+  const imageEnvKey = hasValue("IMAGE_API_KEY") || hasValue("YYBB_API_KEY") || hasValue("OPENAI_API_KEY");
+  const reasoningRuntimeKey = runtimeProviderConfigured(runtimeSettings, "reasoning");
+  const imageRuntimeKey = runtimeProviderConfigured(runtimeSettings, "image");
+  const reasoningKey = reasoningEnvKey || reasoningRuntimeKey;
+  const imageKey = imageEnvKey || imageRuntimeKey;
+  add(
+    reasoningKey ? "ok" : "fail",
+    "思考 API Key",
+    reasoningEnvKey ? "已通过 .env 配置" : reasoningRuntimeKey ? "已通过设置面板保存" : "缺少 REASONING_API_KEY / OPENAI_API_KEY / YYBB_API_KEY"
+  );
+  add(
+    imageKey ? "ok" : "fail",
+    "生图 API Key",
+    imageEnvKey ? "已通过 .env 配置" : imageRuntimeKey ? "已通过设置面板保存" : "缺少 IMAGE_API_KEY / YYBB_API_KEY / OPENAI_API_KEY"
+  );
 
   const engineMode = normalizeImageStudioEngineMode(process.env.IMAGE_STUDIO_ENGINE || process.env.IMAGE_ENGINE);
   const platformId = imageStudioRuntimePlatformId();

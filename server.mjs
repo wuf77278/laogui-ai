@@ -363,6 +363,7 @@ const config = {
     timeoutSeconds: boundedIntegerEnv(["IMAGE_STUDIO_TIMEOUT_SECONDS", "IMAGE_STUDIO_ENGINE_TIMEOUT_SECONDS"], 360, 30, 1200),
     responsesTransport: process.env.IMAGE_STUDIO_RESPONSES_TRANSPORT || "sse",
     requestPolicy: process.env.IMAGE_STUDIO_REQUEST_POLICY || "openai",
+    imagesNewApiCompat: parseBooleanEnv(process.env.IMAGE_STUDIO_IMAGES_NEW_API_COMPAT, true),
     reasoningEffort: process.env.IMAGE_STUDIO_REASONING_EFFORT || "xhigh",
     fastReasoningEffort: process.env.IMAGE_STUDIO_FAST_REASONING_EFFORT || "low",
     partialImages: boundedIntegerEnv("IMAGE_STUDIO_PARTIAL_IMAGES", 0, 0, 3),
@@ -1294,7 +1295,15 @@ function imageProviderKind(baseUrl) {
   return "custom";
 }
 
+function runtimeImageProviderForBaseUrl(baseUrl) {
+  const provider = runtimeSettings.providers.image;
+  if (!provider?.apiKey || !provider.baseUrl) return null;
+  return normalizeBaseUrl(provider.baseUrl) === normalizeBaseUrl(baseUrl) ? provider : null;
+}
+
 function imageProviderApiKey(baseUrl) {
+  const runtimeProvider = runtimeImageProviderForBaseUrl(baseUrl);
+  if (runtimeProvider) return runtimeProvider.apiKey;
   if (isYybbBaseUrl(baseUrl)) {
     return firstConfiguredEnv(["IMAGE_API_KEY", "YYBB_API_KEY", "SAVED_YYBB_API_KEY", "OPENAI_API_KEY"])
       || config.imageProvider.apiKey;
@@ -1312,6 +1321,7 @@ function imageProviderApiKey(baseUrl) {
 }
 
 function imageProviderKeySource(baseUrl) {
+  if (runtimeImageProviderForBaseUrl(baseUrl)) return "runtime";
   if (isYybbBaseUrl(baseUrl)) return firstConfiguredEnv(["YYBB_API_KEY", "SAVED_YYBB_API_KEY"]) ? "yybb" : "image";
   if (isFhlBaseUrl(baseUrl)) return firstConfiguredEnv(["FHL_API_KEY"]) ? "fhl" : "image";
   if (firstConfiguredEnv(["SAVED_MXOU_BASE_URL"]) && normalizeBaseUrl(baseUrl) === normalizeBaseUrl(process.env.SAVED_MXOU_BASE_URL)) return "mxou";
@@ -1329,6 +1339,7 @@ function runtimeImageEndpointSources() {
       apiMode: endpoint.apiMode || config.imageApiMode,
       responsesTransport: endpoint.responsesTransport || config.imageStudioEngine.responsesTransport,
       requestPolicy: endpoint.requestPolicy || config.imageStudioEngine.requestPolicy,
+      imagesNewApiCompat: parseBooleanEnv(endpoint.imagesNewApiCompat, config.imageStudioEngine.imagesNewApiCompat),
       reasoningEffort: endpoint.reasoningEffort || config.imageStudioEngine.reasoningEffort,
       model: endpoint.model || config.imageModel,
       responsesPath: normalizeResponsesPathForBaseUrl(endpoint.baseUrl, endpoint.responsesPath)
@@ -1353,6 +1364,7 @@ function imageProviderSources() {
     apiMode: config.imageApiMode,
     responsesTransport: config.imageStudioEngine.responsesTransport,
     requestPolicy: config.imageStudioEngine.requestPolicy,
+    imagesNewApiCompat: config.imageStudioEngine.imagesNewApiCompat,
     reasoningEffort: config.imageStudioEngine.reasoningEffort,
     responsesPath: normalizeResponsesPathForBaseUrl(baseUrl, isFhlBaseUrl(baseUrl)
       ? (process.env.FHL_RESPONSES_PATH || config.imageProvider.responsesPath)
@@ -1939,12 +1951,15 @@ async function probeProviderConnection(kind, provider, { timeoutMs = 12000 } = {
         apiMode: providerApiMode,
         responsesTransport: provider.responsesTransport || config.imageStudioEngine.responsesTransport,
         requestPolicy: provider.requestPolicy || config.imageStudioEngine.requestPolicy,
+        imagesNewApiCompat: parseBooleanEnv(provider.imagesNewApiCompat, config.imageStudioEngine.imagesNewApiCompat),
         reasoningEffort: provider.reasoningEffort || config.imageStudioEngine.reasoningEffort,
         keySource: "runtime",
         label: shortRuntimeEndpointLabel(source.baseUrl)
       };
       const engineStatus = imageStudioEngineStatus();
-      const generated = engineStatus.enabled && engineStatus.available
+      const useNativeAdapter = imageProviderNeedsNativeAdapter(imageProbeSource);
+      const nativeApiMode = imageProbeSource.providerManifest ? "images" : providerApiMode;
+      const generated = engineStatus.enabled && engineStatus.available && !useNativeAdapter
         ? await runImageStudioEngine({
             prompt: "A tiny clean test image: a simple modern wooden chair on a white background. No text, no watermark.",
             inputImages: [],
@@ -1954,29 +1969,15 @@ async function probeProviderConnection(kind, provider, { timeoutMs = 12000 } = {
             imageModelOverride: model || config.imageModel,
             textModelOverride: config.reasoningModel || "gpt-5.5"
           })
-        : providerApiMode === "responses"
-        ? await openaiResponsesImageStreamFromSource({
-            model,
-            input: [
-              {
-                role: "user",
-                content: [
-                  {
-                    type: "input_text",
-                    text: "Use the image_generation tool to create exactly one tiny clean test image: a simple modern wooden chair on a white background. No text, no watermark."
-                  }
-                ]
-              }
-            ],
-            tools: [
-              {
-                type: "image_generation",
-                size: "1024x1024",
-                quality: "low",
-                output_format: "png"
-              }
-            ]
-          }, { timeoutMs, source: imageProbeSource })
+        : nativeApiMode === "responses"
+        ? await openaiResponsesImageDirect({
+            prompt: "A tiny clean test image: a simple modern wooden chair on a white background. No text, no watermark.",
+            inputImages: [],
+            size: "1024x1024",
+            quality: "low",
+            useProviderPool: false,
+            source: imageProbeSource
+          })
         : await openaiCompatibleImagesFromSource({
             prompt: "A tiny clean test image: a simple modern wooden chair on a white background. No text, no watermark.",
             inputImages: [],
@@ -2234,7 +2235,9 @@ async function openaiResponsesTextStream(payload, { timeoutMs = 240000, provider
   }
 }
 
-async function openaiResponsesImageDirect({ prompt, inputImages, size, quality, useProviderPool = true }) {
+async function openaiResponsesImageDirect({ prompt, inputImages, size, quality, useProviderPool = true, source = null }) {
+  const providerSource = source || activeImageProviderSource();
+  const imageModel = providerSource?.model || config.imageModel;
   const content = [
     {
       type: "input_text",
@@ -2255,18 +2258,28 @@ async function openaiResponsesImageDirect({ prompt, inputImages, size, quality, 
     tools: [
       {
         type: "image_generation",
+        model: imageModel,
+        action: inputImages.length ? "edit" : "generate",
         size,
         quality: normalizeImageToolQuality(quality),
-        output_format: "png"
+        output_format: "png",
+        partial_images: 0
       }
-    ]
+    ],
+    tool_choice: { type: "image_generation" },
+    reasoning: {
+      effort: normalizeImageStudioReasoningEffort(providerSource?.reasoningEffort || config.imageStudioEngine.reasoningEffort)
+    },
+    store: false,
+    stream: true,
+    instructions: "You are a tool runner. Pass the user prompt to image_generation VERBATIM. DO NOT rewrite, expand, polish, or revise it in any way. Use the exact text the user gave."
   };
   if (useProviderPool) {
     return openaiResponsesImageStreamWithProviderPool(payload, { timeoutMs: 420000, provider: "image" });
   }
   return openaiResponsesImageStreamFromSource(payload, {
     timeoutMs: 420000,
-    source: activeImageProviderSource()
+    source: providerSource
   });
 }
 
@@ -2300,6 +2313,17 @@ function providerImageApiPath(source, kind = "generation") {
     : (source.imageGenerationPath || process.env.IMAGE_GENERATIONS_PATH || process.env.IMAGE_GENERATION_PATH);
   const fallback = kind === "edit" ? "/v1/images/edits" : "/v1/images/generations";
   return normalizeProviderApiPath(configured, fallback);
+}
+
+function imageProviderNeedsNativeAdapter(source) {
+  if (!source) return false;
+  const apiMode = normalizeImageApiMode(source?.apiMode || config.imageApiMode);
+  if (source?.providerManifest || apiMode === "auto") return true;
+  if (apiMode === "images") {
+    return providerImageApiPath(source, "generation") !== "/v1/images/generations"
+      || providerImageApiPath(source, "edit") !== "/v1/images/edits";
+  }
+  return apiMode === "responses" && providerResponsesPath(source) !== "/v1/responses";
 }
 
 function appendQuery(pathname, query) {
@@ -2370,7 +2394,7 @@ function renderManifestQuery(query, context) {
 function imageApiRequestContext({ prompt, inputImages = [], size, quality, outputFormat = "png", n = 1 }, source) {
   return {
     profile: {
-      model: config.imageModel,
+      model: source?.model || config.imageModel,
       baseUrl: source.baseUrl,
       provider: source.kind || "custom"
     },
@@ -2547,7 +2571,7 @@ async function openaiCompatibleImagesFromSource({ prompt, inputImages = [], size
 
   const context = imageApiRequestContext({ prompt, inputImages: [], size, quality }, source);
   const payload = {
-    model: config.imageModel,
+    model: source?.model || config.imageModel,
     prompt: context.prompt,
     n: 1,
     size,
@@ -5390,6 +5414,7 @@ function imageStudioEngineStatus() {
     timeoutSeconds: config.imageStudioEngine.timeoutSeconds,
     responsesTransport: normalizeResponsesTransport(config.imageStudioEngine.responsesTransport || desktop.responsesTransport || "sse"),
     requestPolicy: normalizeImageStudioRequestPolicy(config.imageStudioEngine.requestPolicy || desktop.requestPolicy || "openai"),
+    imagesNewApiCompat: parseBooleanEnv(config.imageStudioEngine.imagesNewApiCompat, true),
     reasoningEffort: normalizeImageStudioReasoningEffort(config.imageStudioEngine.reasoningEffort || desktop.reasoningEffort || "xhigh"),
     fastReasoningEffort: normalizeImageStudioReasoningEffort(config.imageStudioEngine.fastReasoningEffort || "low"),
     partialImages: clampNumber(Number(config.imageStudioEngine.partialImages ?? desktop.partialImages ?? 0), 0, 3),
@@ -5637,6 +5662,7 @@ async function runImageStudioEngine({ prompt, inputImages = [], size = "auto", q
   const apiMode = normalizeImageApiMode(source.apiMode || config.imageApiMode);
   const responsesTransport = normalizeResponsesTransport(source.responsesTransport || status.responsesTransport);
   const requestPolicy = normalizeImageStudioRequestPolicy(source.requestPolicy || status.requestPolicy);
+  const imagesNewApiCompat = parseBooleanEnv(source.imagesNewApiCompat, status.imagesNewApiCompat);
   const reasoningEffort = normalizeImageStudioReasoningEffort(fastMode
     ? status.fastReasoningEffort
     : source.reasoningEffort || status.reasoningEffort);
@@ -5659,6 +5685,7 @@ async function runImageStudioEngine({ prompt, inputImages = [], size = "auto", q
     "--out-dir", outputDir,
     "--disable-preview"
   ];
+  if (apiMode === "images" && imagesNewApiCompat) args.push("--images-new-api-compat");
   for (const filePath of references) args.push("--reference-image", filePath);
 
   const result = await runCommand(status.cliPath, args, {
@@ -5712,6 +5739,7 @@ async function runImageStudioEngine({ prompt, inputImages = [], size = "auto", q
       api_mode: apiMode === "images" ? "images" : "responses",
       responses_transport: responsesTransport,
       request_policy: requestPolicy,
+      images_new_api_compat: apiMode === "images" && imagesNewApiCompat,
       reasoning_effort: reasoningEffort,
       fast_mode: Boolean(fastMode)
     },
@@ -9553,14 +9581,17 @@ async function generateImageWithImageProvider({ prompt, inputImages, size, quali
   const attemptEvents = [];
   const standardSize = closestStandardImageSize(size);
   const skillAttempts = imageGenSkillMaxAttempts();
-  const apiMode = normalizeImageApiMode(config.imageApiMode);
+  const source = activeImageProviderSource();
+  const apiMode = normalizeImageApiMode(source?.apiMode || config.imageApiMode);
+  const useNativeAdapter = imageProviderNeedsNativeAdapter(source);
+  const nativeApiMode = source?.providerManifest ? "images" : apiMode;
   let nativeEndpointRefreshPromise = null;
   const refreshNativeImageEndpoints = async () => {
     nativeEndpointRefreshPromise ||= refreshImageEndpointSpeeds();
     return nativeEndpointRefreshPromise;
   };
   const engineStatus = imageStudioEngineStatus();
-  if (engineStatus.enabled) {
+  if (engineStatus.enabled && !useNativeAdapter) {
     attempts.push({
       name: `Image Studio CLI engine ${size}`,
       endpoint: engineStatus.available ? `image-studio-cli:${path.basename(engineStatus.cliPath)}` : "image-studio-cli:missing",
@@ -9570,6 +9601,32 @@ async function generateImageWithImageProvider({ prompt, inputImages, size, quali
         size,
         quality,
         fastMode
+      })
+    });
+  }
+  if (useNativeAdapter && nativeApiMode !== "responses") {
+    attempts.push({
+      name: `Configured Images API adapter ${size}`,
+      endpoint: source.baseUrl,
+      run: () => openaiCompatibleImagesFromSource({
+        prompt,
+        inputImages: preferReferenceEdit ? inputImages : [],
+        size,
+        quality
+      }, { timeoutMs: 420000, source })
+    });
+  }
+  if (useNativeAdapter && nativeApiMode !== "images") {
+    attempts.push({
+      name: `Configured Responses API adapter ${size}`,
+      endpoint: source.baseUrl,
+      run: () => openaiResponsesImageDirect({
+        prompt,
+        inputImages,
+        size,
+        quality,
+        useProviderPool: false,
+        source
       })
     });
   }
@@ -9587,7 +9644,7 @@ async function generateImageWithImageProvider({ prompt, inputImages, size, quali
     });
   }
   const addImageGenerationAttempts = (candidateSize) => {
-    if (engineStatus.required && !engineStatus.allowNativeFallback) return;
+    if (useNativeAdapter || (engineStatus.required && !engineStatus.allowNativeFallback)) return;
     if (apiMode !== "responses") {
       attempts.push({
         name: `OpenAI-compatible Images API ${candidateSize}`,
@@ -12115,6 +12172,10 @@ function normalizeRuntimeProvider(provider = {}, existing = null, { kind = "reas
     normalized.apiMode = normalizeImageApiMode(provider.apiMode || provider.imageApiMode || existing?.apiMode || config.imageApiMode || "responses");
     normalized.responsesTransport = normalizeResponsesTransport(provider.responsesTransport || existing?.responsesTransport || config.imageStudioEngine.responsesTransport || "sse");
     normalized.requestPolicy = normalizeImageStudioRequestPolicy(provider.requestPolicy || existing?.requestPolicy || config.imageStudioEngine.requestPolicy || "openai");
+    normalized.imagesNewApiCompat = parseBooleanEnv(
+      provider.imagesNewApiCompat,
+      existing?.imagesNewApiCompat ?? config.imageStudioEngine.imagesNewApiCompat ?? true
+    );
     normalized.reasoningEffort = normalizeImageStudioReasoningEffort(provider.reasoningEffort || existing?.reasoningEffort || config.imageStudioEngine.reasoningEffort || "xhigh");
     normalized.imageGenerationPath = normalizeProviderApiPath(
       providerManifest?.submit?.path || provider.imageGenerationPath || provider.generationPath || existing?.imageGenerationPath,
@@ -12138,6 +12199,7 @@ function publicRuntimeProvider(provider, { source = "" } = {}) {
     apiMode: provider?.apiMode || "",
     responsesTransport: provider?.responsesTransport || "",
     requestPolicy: provider?.requestPolicy || "",
+    imagesNewApiCompat: provider?.imagesNewApiCompat ?? true,
     reasoningEffort: provider?.reasoningEffort || "",
     responsesPath: provider?.responsesPath || "",
     imageGenerationPath: provider?.imageGenerationPath || "",
@@ -12161,6 +12223,7 @@ function effectivePublicProvider(kind) {
       apiMode: source?.apiMode || config.imageApiMode,
       responsesTransport: source?.responsesTransport || config.imageStudioEngine.responsesTransport,
       requestPolicy: source?.requestPolicy || config.imageStudioEngine.requestPolicy,
+      imagesNewApiCompat: parseBooleanEnv(source?.imagesNewApiCompat, config.imageStudioEngine.imagesNewApiCompat),
       reasoningEffort: source?.reasoningEffort || config.imageStudioEngine.reasoningEffort,
       responsesPath: source ? providerResponsesPath(source) : "",
       imageGenerationPath: source ? providerImageApiPath(source, "generation") : "",
@@ -12195,6 +12258,7 @@ function applyRuntimeProviders() {
     config.imageApiMode = normalizeImageApiMode(image.apiMode || config.imageApiMode);
     config.imageStudioEngine.responsesTransport = normalizeResponsesTransport(image.responsesTransport || config.imageStudioEngine.responsesTransport);
     config.imageStudioEngine.requestPolicy = normalizeImageStudioRequestPolicy(image.requestPolicy || config.imageStudioEngine.requestPolicy);
+    config.imageStudioEngine.imagesNewApiCompat = parseBooleanEnv(image.imagesNewApiCompat, config.imageStudioEngine.imagesNewApiCompat);
     config.imageStudioEngine.reasoningEffort = normalizeImageStudioReasoningEffort(image.reasoningEffort || config.imageStudioEngine.reasoningEffort);
     config.imageProvider.baseUrls = uniqueBaseUrls([image.baseUrl, ...config.imageProvider.baseUrls]);
   }
@@ -12209,6 +12273,7 @@ function publicRuntimeImageEndpoint(endpoint) {
     apiMode: endpoint.apiMode || "",
     responsesTransport: endpoint.responsesTransport || "",
     requestPolicy: endpoint.requestPolicy || "",
+    imagesNewApiCompat: endpoint.imagesNewApiCompat ?? true,
     reasoningEffort: endpoint.reasoningEffort || "",
     imageGenerationPath: endpoint.imageGenerationPath,
     imageEditPath: endpoint.imageEditPath,
@@ -12305,7 +12370,7 @@ function runtimeSettingsBody(req = null) {
       imageStudioEngine: imageStudioEngineStatus(),
       imageStudioFhlSkill: imageStudioFhlSkillStatus(),
       imageBackend: "image-studio-cli-engine",
-      imageGenContract: "Images are generated through the bundled/configured Image Studio go-cli engine. Native OpenAI-compatible fallback is disabled unless IMAGE_STUDIO_ALLOW_NATIVE_FALLBACK=1.",
+      imageGenContract: "Standard OpenAI-compatible paths use the bundled Image Studio go-cli engine. Providers with custom paths or a Provider Manifest use the native HTTP adapter. Other native fallbacks remain disabled unless IMAGE_STUDIO_ALLOW_NATIVE_FALLBACK=1.",
       canManageSettings: owner,
       publicApiTokenConfigured: Boolean(config.publicApi.token),
       publicApiCorsOrigin: config.publicApi.corsOrigin || ""
@@ -13472,6 +13537,7 @@ function createOpenApiDocument(req) {
             apiMode: { type: "string", enum: ["responses", "images", "auto"] },
             responsesTransport: { type: "string" },
             requestPolicy: { type: "string" },
+            imagesNewApiCompat: { type: "boolean", default: true, description: "Images API 使用普通 JSON 返回，不发送流式参数。" },
             reasoningEffort: { type: "string" },
             responsesPath: { type: "string" },
             imageGenerationPath: { type: "string" },

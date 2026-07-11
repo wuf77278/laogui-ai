@@ -286,6 +286,7 @@ const friendExperienceModes = new Set([
   "plan-axonometric-view",
   "plan-render",
   "photo",
+  "whitemodel",
   "panorama",
   "sketch",
   "styletransfer",
@@ -630,6 +631,7 @@ const els = {
   primaryImageApiBaseUrl: $("primaryImageApiBaseUrl"),
   primaryImageApiModel: $("primaryImageApiModel"),
   primaryImageApiMode: $("primaryImageApiMode"),
+  primaryImageImagesNewApiCompat: $("primaryImageImagesNewApiCompat"),
   primaryImageResponsesTransport: $("primaryImageResponsesTransport"),
   primaryImageRequestPolicy: $("primaryImageRequestPolicy"),
   primaryImageReasoningEffort: $("primaryImageReasoningEffort"),
@@ -3827,6 +3829,7 @@ function renderApiSettingsAccess() {
     els.primaryImageApiBaseUrl,
     els.primaryImageApiModel,
     els.primaryImageApiMode,
+    els.primaryImageImagesNewApiCompat,
     els.primaryImageResponsesTransport,
     els.primaryImageRequestPolicy,
     els.primaryImageReasoningEffort,
@@ -4068,6 +4071,7 @@ function renderLocalApiSettings(settings = {}) {
   if (els.primaryImageApiBaseUrl && !els.primaryImageApiBaseUrl.value) els.primaryImageApiBaseUrl.value = image.baseUrl || "";
   if (els.primaryImageApiModel && !els.primaryImageApiModel.value) els.primaryImageApiModel.value = image.model || "";
   if (els.primaryImageApiMode) els.primaryImageApiMode.value = image.apiMode || "responses";
+  if (els.primaryImageImagesNewApiCompat) els.primaryImageImagesNewApiCompat.value = image.imagesNewApiCompat === false ? "false" : "true";
   if (els.primaryImageResponsesTransport) els.primaryImageResponsesTransport.value = image.responsesTransport || "sse";
   if (els.primaryImageRequestPolicy) els.primaryImageRequestPolicy.value = image.requestPolicy || "openai";
   if (els.primaryImageReasoningEffort) els.primaryImageReasoningEffort.value = image.reasoningEffort || "xhigh";
@@ -4116,6 +4120,7 @@ function runtimeProviderProbePayload(kind) {
       baseUrl: els.primaryImageApiBaseUrl?.value.trim() || saved.baseUrl || "",
       model: els.primaryImageApiModel?.value.trim() || saved.model || "gpt-image-2",
       apiMode: els.primaryImageApiMode?.value || saved.apiMode || "responses",
+      imagesNewApiCompat: els.primaryImageImagesNewApiCompat?.value !== "false",
       responsesTransport: els.primaryImageResponsesTransport?.value || saved.responsesTransport || "sse",
       requestPolicy: els.primaryImageRequestPolicy?.value || saved.requestPolicy || "openai",
       reasoningEffort: els.primaryImageReasoningEffort?.value || saved.reasoningEffort || "xhigh",
@@ -4148,6 +4153,7 @@ function currentImageApiPayload() {
     baseUrl: els.primaryImageApiBaseUrl?.value.trim() || "",
     model: els.primaryImageApiModel?.value.trim() || "gpt-image-2",
     apiMode: els.primaryImageApiMode?.value || "responses",
+    imagesNewApiCompat: els.primaryImageImagesNewApiCompat?.value !== "false",
     responsesTransport: els.primaryImageResponsesTransport?.value || "sse",
     requestPolicy: els.primaryImageRequestPolicy?.value || "openai",
     reasoningEffort: els.primaryImageReasoningEffort?.value || "xhigh",

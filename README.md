@@ -129,6 +129,7 @@ The app uses separate providers:
 - There is no bundled default API endpoint. Leave these env vars empty and configure both providers from Settings, or fill them explicitly for local development.
 - `IMAGE_API_MODE=responses`: 默认完全按 Image-Studio 的 Responses API 路由请求；如确实要走标准 Images API，才改成 `images`。
 - `IMAGE_STUDIO_RESPONSES_TRANSPORT=sse` / `IMAGE_STUDIO_REQUEST_POLICY=openai`: 对齐 Image-Studio 的 “HTTP SSE + OpenAI 标准” 配置。
+- `IMAGE_STUDIO_IMAGES_NEW_API_COMPAT=1`: Images API 默认使用普通返回，不发送流式参数；只有上游明确支持 Images 流式事件时才改成 `0`。
 - `IMAGE_GENERATIONS_PATH=/v1/images/generations` / `IMAGE_EDITS_PATH=/v1/images/edits`: 仅在切换到 Images API 时使用。
 - `IMAGE_PROVIDER_MANIFEST='{"submit":{"path":"/v1/images/generations","result":{"b64JsonPaths":["data.*.b64_json"],"imageUrlPaths":["data.*.url"]}}}'`: 可选，自定义 OpenAI-compatible 或异步 HTTP 生图服务的提交、轮询和结果字段映射。
 - `IMAGE_RESPONSES_PATH=/v1/responses`: FHL/OpenAI-compatible 服务的 Responses 路径；yybb 才使用 `/responses`。
@@ -252,7 +253,7 @@ The Image Studio `go-cli` source is vendored under `engines/image-studio/source/
 npm run engine:image-studio
 ```
 
-This writes `engines/image-studio/gptcodex-image` on macOS/Linux or `engines/image-studio/gptcodex-image.exe` on Windows. You can still set `IMAGE_STUDIO_CLI_PATH` for local development. In `required` mode, image generation does not fall back to the old native `/images/generations` or Responses tool path unless `IMAGE_STUDIO_ALLOW_NATIVE_FALLBACK=1` is explicitly set.
+This writes `engines/image-studio/gptcodex-image` on macOS/Linux or `engines/image-studio/gptcodex-image.exe` on Windows. You can still set `IMAGE_STUDIO_CLI_PATH` for local development. In `required` mode, standard OpenAI-compatible paths do not fall back to the old native `/images/generations` or Responses tool path unless `IMAGE_STUDIO_ALLOW_NATIVE_FALLBACK=1` is explicitly set. Providers that explicitly configure custom paths or a Provider Manifest use the native HTTP adapter so those saved mappings are honored.
 
 The preferred distribution layout is platform-aware:
 
@@ -262,7 +263,7 @@ The preferred distribution layout is platform-aware:
 
 `npm run engine:image-studio` builds the current machine's platform folder and updates the legacy flat binary path for backward compatibility. Run `npm run doctor` before sharing a build; the `已打包内核平台` line tells you which friend machines are covered.
 
-The upstream image API settings use Image Studio-compatible fields: `apiMode` (`responses` or `images`), `responsesTransport` (`sse` or `websocket`), `requestPolicy` (`openai` or `compat`), `baseURL`, `imageModelID`, and `reasoningEffort`. Reasoning API settings are saved separately with their own Base URL, Key, and model. The bundled `gptcodex-image` engine receives the saved image settings as CLI flags. When UI thinking mode is off, Laogui AI now uses a fast path: it caps the final prompt with `FAST_IMAGE_PROMPT_MAX_CHARS` and sends `IMAGE_STUDIO_FAST_REASONING_EFFORT` to the engine instead of the normal high-reasoning setting.
+The upstream image API settings use Image Studio-compatible fields: `apiMode` (`responses` or `images`), `responsesTransport` (`sse` or `websocket`), `requestPolicy` (`openai` or `compat`), `imagesNewApiCompat` (ordinary JSON Images response without streaming fields), `baseURL`, `imageModelID`, and `reasoningEffort`. Reasoning API settings are saved separately with their own Base URL, Key, and model. The bundled `gptcodex-image` engine receives the saved image settings as CLI flags. When UI thinking mode is off, Laogui AI now uses a fast path: it caps the final prompt with `FAST_IMAGE_PROMPT_MAX_CHARS` and sends `IMAGE_STUDIO_FAST_REASONING_EFFORT` to the engine instead of the normal high-reasoning setting.
 
 The local Codex skill `image-studio-fhl` remains as a development fallback on this machine, but the distributed software does not depend on Codex skills or the user's Codex directory.
 
