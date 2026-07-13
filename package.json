@@ -1,6 +1,6 @@
 {
   "name": "laogui-ai",
-  "version": "2.0.1",
+  "version": "2.1.1",
   "description": "面向建筑、室内、民宿和商业空间设计师的本地 AI 创意工作台",
   "private": true,
   "license": "MIT",
@@ -39,6 +39,7 @@
     "pack:mac:x64": "electron-builder --mac --x64",
     "pack:win": "electron-builder --win --x64",
     "pack:win:arm64": "electron-builder --win --arm64",
+    "publish:win": "npm run check && npm run engine:image-studio:win && electron-builder --win --x64 --publish always",
     "pack:all": "electron-builder --mac --arm64 --x64 --win --x64",
     "check": "node --check server.mjs && node --check public/app.js && node --check electron/main.cjs && node --check electron/preload.cjs && node --check scripts/doctor.mjs && node --check scripts/sync-vendor.mjs && npm run check:vendor",
     "doctor": "node scripts/doctor.mjs"
@@ -53,6 +54,14 @@
   "build": {
     "appId": "cn.laogui.ai",
     "productName": "老鬼AI",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "wuf77278",
+        "repo": "laogui-ai",
+        "releaseType": "release"
+      }
+    ],
     "asar": true,
     "files": [
       "server.mjs",
@@ -109,6 +118,7 @@
     }
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "pannellum": "^2.5.7",
     "three": "^0.160.0"
   }

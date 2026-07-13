@@ -1,4 +1,5 @@
 const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
+const { autoUpdater } = require("electron-updater");
 const path = require("node:path");
 const net = require("node:net");
 const { pathToFileURL } = require("node:url");
@@ -17,6 +18,14 @@ let serverModule = null;
 let mainWindow = null;
 let shutdownStarted = false;
 let forceExitTimer = null;
+let autoUpdaterConfigured = false;
+let updateState = {
+  status: "idle",
+  currentVersion: app.getVersion(),
+  availableVersion: null,
+  progress: null,
+  message: `当前版本 v${app.getVersion()}`
+};
 
 if (process.platform === "win32") {
   app.setAppUserModelId("cn.laogui.ai");
@@ -178,6 +187,104 @@ async function createWindow() {
   await mainWindow.loadURL(`http://127.0.0.1:${serverPort}`);
 }
 
+function setUpdateState(patch) {
+  updateState = { ...updateState, ...patch };
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.send("laogui:update-state", updateState);
+  }
+  return updateState;
+}
+
+async function checkForAppUpdates() {
+  if (!app.isPackaged) {
+    return setUpdateState({
+      status: "unavailable",
+      progress: null,
+      message: "开发预览模式不能检查更新，请在安装版软件中使用。"
+    });
+  }
+  if (["checking", "downloading", "downloaded", "installing"].includes(updateState.status)) {
+    return updateState;
+  }
+  setUpdateState({ status: "checking", progress: null, message: "正在连接 GitHub 检查新版本…" });
+  try {
+    await autoUpdater.checkForUpdates();
+  } catch (error) {
+    console.warn(`[electron] update check failed: ${error.message || error}`);
+    setUpdateState({
+      status: "error",
+      progress: null,
+      message: "检查更新失败，请确认电脑能正常访问 GitHub 后再试。"
+    });
+  }
+  return updateState;
+}
+
+function configureAutoUpdater() {
+  if (autoUpdaterConfigured) return;
+  autoUpdaterConfigured = true;
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.allowPrerelease = false;
+  autoUpdater.allowDowngrade = false;
+  autoUpdater.logger = console;
+
+  autoUpdater.on("checking-for-update", () => {
+    setUpdateState({ status: "checking", progress: null, message: "正在连接 GitHub 检查新版本…" });
+  });
+  autoUpdater.on("update-available", (info) => {
+    const version = String(info?.version || "").trim();
+    setUpdateState({
+      status: "downloading",
+      availableVersion: version || null,
+      progress: 0,
+      message: version ? `发现新版本 v${version}，正在自动下载…` : "发现新版本，正在自动下载…"
+    });
+  });
+  autoUpdater.on("update-not-available", () => {
+    setUpdateState({
+      status: "up-to-date",
+      availableVersion: null,
+      progress: null,
+      message: `当前已是最新版 v${app.getVersion()}`
+    });
+  });
+  autoUpdater.on("download-progress", (info) => {
+    const progress = Math.max(0, Math.min(100, Number(info?.percent) || 0));
+    setUpdateState({
+      status: "downloading",
+      progress,
+      message: `正在下载新版本… ${Math.round(progress)}%`
+    });
+  });
+  autoUpdater.on("update-downloaded", (info) => {
+    const version = String(info?.version || updateState.availableVersion || "").trim();
+    setUpdateState({
+      status: "downloaded",
+      availableVersion: version || null,
+      progress: 100,
+      message: version ? `新版本 v${version} 已下载完成，点击按钮即可完成更新。` : "新版本已下载完成，点击按钮即可完成更新。"
+    });
+  });
+  autoUpdater.on("error", (error) => {
+    console.warn(`[electron] auto update failed: ${error.message || error}`);
+    setUpdateState({
+      status: "error",
+      progress: null,
+      message: "自动更新失败，请稍后重试，或从 GitHub 下载最新版。"
+    });
+  });
+
+  if (!app.isPackaged) {
+    setUpdateState({
+      status: "unavailable",
+      message: "开发预览模式不能检查更新，请在安装版软件中使用。"
+    });
+    return;
+  }
+  setTimeout(() => checkForAppUpdates(), 8000);
+}
+
 async function shutdownLocalService() {
   if (serverModule?.closeLaoguiServer) {
     await serverModule.closeLaoguiServer({ timeoutMs: SERVER_SHUTDOWN_TIMEOUT_MS }).catch(() => {});
@@ -220,7 +327,10 @@ app.on("second-instance", () => {
   mainWindow.focus();
 });
 
-app.whenReady().then(createWindow).catch((error) => {
+app.whenReady().then(async () => {
+  await createWindow();
+  configureAutoUpdater();
+}).catch((error) => {
   dialog.showErrorBox("老鬼AI 启动失败", error.message || String(error));
   requestAppShutdown("startup-failed");
 });
@@ -232,6 +342,15 @@ ipcMain.handle("laogui:select-directory", async () => {
   });
   if (result.canceled || !result.filePaths?.[0]) return null;
   return result.filePaths[0];
+});
+
+ipcMain.handle("laogui:get-update-state", () => updateState);
+ipcMain.handle("laogui:check-for-updates", () => checkForAppUpdates());
+ipcMain.handle("laogui:install-update", () => {
+  if (updateState.status !== "downloaded") return updateState;
+  setUpdateState({ status: "installing", message: "正在关闭软件并安装更新…" });
+  setImmediate(() => autoUpdater.quitAndInstall(false, true));
+  return updateState;
 });
 
 app.on("before-quit", (event) => {

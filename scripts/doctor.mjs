@@ -54,10 +54,17 @@ async function loadRuntimeSettings() {
 
 function runtimeProviderConfigured(settings, kind) {
   const provider = settings?.providers?.[kind];
-  return Boolean(
-    provider
+  if (provider
       && String(provider.baseUrl || "").trim()
-      && String(provider.apiKey || "").trim()
+      && String(provider.apiKey || "").trim()) {
+    return true;
+  }
+  if (kind !== "image") return false;
+  const endpoints = Array.isArray(settings?.imageEndpoints) ? settings.imageEndpoints : [];
+  return endpoints.some((endpoint) =>
+    endpoint?.enabled !== false
+      && String(endpoint.baseUrl || "").trim()
+      && String(endpoint.apiKey || "").trim()
   );
 }
 
@@ -194,17 +201,9 @@ async function main() {
   add(nodeVersionOk() ? "ok" : "fail", "Node 版本", process.version);
   add(existsSync(envPath) ? "ok" : "fail", ".env 文件", existsSync(envPath) ? ".env 已存在" : "缺少 .env，请复制 .env.example 后填写");
 
-  const reasoningEnvKey = hasValue("REASONING_API_KEY") || hasValue("OPENAI_API_KEY") || hasValue("YYBB_API_KEY");
   const imageEnvKey = hasValue("IMAGE_API_KEY") || hasValue("YYBB_API_KEY") || hasValue("OPENAI_API_KEY");
-  const reasoningRuntimeKey = runtimeProviderConfigured(runtimeSettings, "reasoning");
   const imageRuntimeKey = runtimeProviderConfigured(runtimeSettings, "image");
-  const reasoningKey = reasoningEnvKey || reasoningRuntimeKey;
   const imageKey = imageEnvKey || imageRuntimeKey;
-  add(
-    reasoningKey ? "ok" : "fail",
-    "思考 API Key",
-    reasoningEnvKey ? "已通过 .env 配置" : reasoningRuntimeKey ? "已通过设置面板保存" : "缺少 REASONING_API_KEY / OPENAI_API_KEY / YYBB_API_KEY"
-  );
   add(
     imageKey ? "ok" : "fail",
     "生图 API Key",

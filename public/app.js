@@ -121,12 +121,17 @@ const state = {
   historyPanelOpen: false,
   statusPanelOpen: false,
   activeImageBaseUrl: "",
-  runtimeProviders: { reasoning: null, image: null },
+  runtimeProviders: { image: null },
+  imageApiProfiles: [],
+  editingImageApiProfileId: "",
+  activeImageApiProfileId: "",
+  imageApiEditorMode: "auto",
+  imageApiProfileFormDirty: false,
   storageSettings: null,
   imageStudioEngine: null,
   imageStudioFhlSkill: null,
-  providerProbes: { reasoning: null, image: null },
-  providerProbeBusy: { reasoning: false, image: false },
+  providerProbes: { image: null },
+  providerProbeBusy: { image: false },
   imageApiProbeFeedback: null,
   canManageApiSettings: false,
   storagePromptShown: false,
@@ -190,7 +195,7 @@ const state = {
   thinking: {
     status: "idle",
     target: "",
-    text: "每次生成前，gpt-5.5 会先综合读取参考图、空间约束、材料灯光、构图策略和审美自检，再交给 Image Gen 出图。"
+    text: "提示词优化默认关闭；关闭时使用简洁提示词极速生图，开启时使用项目内置预设优化完整提示词。"
   },
   canvas: {
     layoutVersion: CANVAS_LAYOUT_VERSION,
@@ -334,7 +339,11 @@ function sanitizeLegacyPlanDisplayText(text = "") {
     .replace(/平面图转\s*3D\s*平面图/g, "平面图转彩色平面图")
     .replace(/3D\s*平面图转轴测图/g, "彩色平面图转轴测图")
     .replace(/3D\s*平面图转效果图/g, "轴测图转效果图")
-    .replace(/目标：平面图转彩色平面图/g, "目标：平面图转彩色平面图");
+    .replace(/目标：平面图转彩色平面图/g, "目标：平面图转彩色平面图")
+    .replace(/gpt-5\.5/gi, "项目内置预设")
+    .replace(/独立文本分析\s*API/g, "额外接口")
+    .replace(/文本分析\s*API/g, "项目内置预设")
+    .replace(/方案推理/g, "方案推导");
 }
 
 const planWorkflowRecommendationText = "推荐链路提示：平面图先转为彩色平面图，再由彩色平面图转高精度轴测图，最后在轴测图上框选区域生成人视角效果图。这个链路只作为提示，不会强制切换或自动执行。";
@@ -507,6 +516,10 @@ const els = {
   appSettingsModal: document.querySelector(".app-settings-modal"),
   appSettingsBody: document.querySelector(".app-settings-body"),
   settingsCloseButton: $("settingsCloseButton"),
+  updateStatus: $("updateStatus"),
+  currentVersionText: $("currentVersionText"),
+  updateStatusText: $("updateStatusText"),
+  checkForUpdatesButton: $("checkForUpdatesButton"),
   themeChoiceButtons: Array.from(document.querySelectorAll("[data-theme-choice]")),
   themeSettingsStatus: $("themeSettingsStatus"),
   workspaceGlassTransparencyInput: $("workspaceGlassTransparencyInput"),
@@ -625,9 +638,11 @@ const els = {
   imageStudioKernelSummary: $("imageStudioKernelSummary"),
   imageStudioKernelHint: $("imageStudioKernelHint"),
   refreshApiSettingsButton: $("refreshApiSettingsButton"),
-  reasoningApiBaseUrl: $("reasoningApiBaseUrl"),
-  reasoningApiModel: $("reasoningApiModel"),
-  reasoningApiKey: $("reasoningApiKey"),
+  imageApiProfileName: $("imageApiProfileName"),
+  imageApiProfileList: $("imageApiProfileList"),
+  addImageApiProfileButton: $("addImageApiProfileButton"),
+  activateImageApiProfileButton: $("activateImageApiProfileButton"),
+  imageApiPanelTitle: $("imageApiPanelTitle"),
   primaryImageApiBaseUrl: $("primaryImageApiBaseUrl"),
   primaryImageApiModel: $("primaryImageApiModel"),
   primaryImageApiMode: $("primaryImageApiMode"),
@@ -640,12 +655,10 @@ const els = {
   primaryImageApiEditPath: $("primaryImageApiEditPath"),
   primaryImageApiKey: $("primaryImageApiKey"),
   primaryImageProviderManifest: $("primaryImageProviderManifest"),
-  probeReasoningApiButton: $("probeReasoningApiButton"),
   probePrimaryImageApiButton: $("probePrimaryImageApiButton"),
   localApiConnectionStatus: $("localApiConnectionStatus"),
   localApiProbeFeedback: $("localApiProbeFeedback"),
   localApiSettingsSummary: $("localApiSettingsSummary"),
-  saveReasoningApiSettingsButton: $("saveReasoningApiSettingsButton"),
   saveImageApiSettingsButton: $("saveImageApiSettingsButton"),
   imageApiProbeFeedback: $("imageApiProbeFeedback"),
   imageOptionsPanel: $("imageOptionsPanel"),
@@ -728,6 +741,7 @@ let canvasMinimapFrame = 0;
 let pendingCanvasMinimapNodes = null;
 let selectionCanvasFrame = 0;
 let settingsReturnFocus = null;
+let desktopUpdateState = null;
 const overlayFocusReturn = new WeakMap();
 let restoringCanvasState = false;
 let canvasStateSaveTimer = 0;
@@ -1011,7 +1025,7 @@ function defaultThinkingState() {
   return {
     status: "idle",
     target: "",
-    text: "思考模式默认关闭；需要 gpt-5.5 先做提示词融合时，请在本次生成前手动开启一次。"
+    text: "提示词优化默认关闭；关闭时使用简洁提示词极速生图，开启时使用项目内置预设优化完整提示词。"
   };
 }
 
@@ -3739,31 +3753,28 @@ async function refreshHealth() {
     const response = await fetch("/api/health");
     const data = await response.json();
     state.activeImageBaseUrl = data.imageBaseUrl || "";
-    state.runtimeProviders = data.runtimeProviders || state.runtimeProviders;
+    syncImageApiProfiles({
+      imageEndpoints: data.imageEndpoints,
+      activeImageBaseUrl: data.imageBaseUrl,
+      activeImageEndpointId: data.activeImageEndpointId
+    });
+    state.runtimeProviders = { image: data.runtimeProviders?.image || state.runtimeProviders?.image || null };
     state.storageSettings = data.storage || state.storageSettings;
     state.imageStudioEngine = data.imageStudioEngine || state.imageStudioEngine;
     state.imageStudioFhlSkill = data.imageStudioFhlSkill || state.imageStudioFhlSkill;
-    const reasoningReady = data.reasoningConfigured ?? data.keyConfigured;
     const imageReady = data.imageConfigured ?? data.keyConfigured;
-    const apiDisplayLabel = [
-      data.reasoningBaseUrl ? `思考 ${shortEndpoint(data.reasoningBaseUrl)}` : "",
-      data.imageBaseUrl ? `生图 ${shortEndpoint(data.imageBaseUrl)}` : ""
-    ].filter(Boolean).join(" / ");
+    const apiDisplayLabel = data.imageBaseUrl ? `生图 ${shortEndpoint(data.imageBaseUrl)}` : "生图 API";
     const imageBackendLabel = data.imageBackend === "responses-image-generation-tool"
       ? "Image Gen"
       : data.imageBackend === "openai-compatible-images-api"
         ? "Images API"
         : "Image";
-    state.apiReady = Boolean(reasoningReady && imageReady);
-    els.modelStatus.textContent = reasoningReady && imageReady
-      ? (apiDisplayLabel ? `AI · ${apiDisplayLabel}` : "AI 就绪")
-      : reasoningReady || imageReady
-        ? "服务配置待检查"
-        : "服务未配置";
-    els.modelStatus.title = reasoningReady && imageReady
-      ? (friendExperienceMode ? `AI 服务已连接：${apiDisplayLabel || "--"}` : `思考：${data.reasoningBaseUrl || "--"}；生图：${data.imageBaseUrl || "--"}；后端：${data.imageBackend || imageBackendLabel}`)
+    state.apiReady = Boolean(imageReady);
+    els.modelStatus.textContent = imageReady ? `AI · ${apiDisplayLabel}` : "请配置生图 API";
+    els.modelStatus.title = imageReady
+      ? (friendExperienceMode ? `AI 服务已连接：${apiDisplayLabel}` : `生图：${data.imageBaseUrl || "--"}；后端：${data.imageBackend || imageBackendLabel}`)
       : els.modelStatus.textContent;
-    els.modelStatus.className = `status-pill ${reasoningReady && imageReady ? "ready" : "error"}`;
+    els.modelStatus.className = `status-pill ${imageReady ? "ready" : "error"}`;
     renderApiSettings();
     renderTaskProgressPanel();
     applyFriendExperienceUi();
@@ -3780,9 +3791,10 @@ async function refreshApiSettings({ silent = false } = {}) {
   try {
     const data = await requestJson("/api/settings");
     const settings = data.settings || {};
-    state.runtimeProviders = settings.providers || state.runtimeProviders;
+    state.runtimeProviders = { image: settings.providers?.image || state.runtimeProviders?.image || null };
+    if (Array.isArray(settings.imageEndpoints)) state.imageApiProfiles = settings.imageEndpoints;
     state.storageSettings = settings.storage || state.storageSettings;
-    state.providerProbes = settings.providerProbes || state.providerProbes;
+    state.providerProbes = { image: settings.providerProbes?.image || state.providerProbes?.image || null };
     state.activeImageBaseUrl = settings.activeImageBaseUrl || state.activeImageBaseUrl;
     state.imageStudioEngine = settings.imageStudioEngine || state.imageStudioEngine;
     state.imageStudioFhlSkill = settings.imageStudioFhlSkill || state.imageStudioFhlSkill;
@@ -3793,8 +3805,10 @@ async function refreshApiSettings({ silent = false } = {}) {
     renderStorageAccess();
     maybeShowFirstRunStoragePrompt();
     if (!silent) toast("API 设置已刷新");
+    return settings;
   } catch (error) {
     if (!silent) toast(error.message);
+    return null;
   }
 }
 
@@ -3823,9 +3837,9 @@ function ensureCanManageApiSettings() {
 function renderApiSettingsAccess() {
   const disabled = !state.canManageApiSettings;
   [
-    els.reasoningApiBaseUrl,
-    els.reasoningApiModel,
-    els.reasoningApiKey,
+    els.imageApiProfileName,
+    els.addImageApiProfileButton,
+    els.activateImageApiProfileButton,
     els.primaryImageApiBaseUrl,
     els.primaryImageApiModel,
     els.primaryImageApiMode,
@@ -3838,17 +3852,22 @@ function renderApiSettingsAccess() {
     els.primaryImageApiEditPath,
     els.primaryImageProviderManifest,
     els.primaryImageApiKey,
-    els.saveReasoningApiSettingsButton,
     els.saveImageApiSettingsButton,
-    els.probeReasoningApiButton,
     els.probePrimaryImageApiButton
   ].forEach((control) => {
     if (control) control.disabled = disabled;
   });
+  if (els.activateImageApiProfileButton) {
+    const profile = currentEditingImageApiProfile();
+    const active = Boolean(profile && isActiveImageApiProfile(profile));
+    els.activateImageApiProfileButton.disabled = disabled || !profile || active;
+    els.activateImageApiProfileButton.textContent = active ? "当前正在使用" : "设为当前使用";
+  }
+  renderImageApiProfileList();
 }
 
-function apiProviderLabel(kind) {
-  return kind === "image" ? "生图" : "思考";
+function apiProviderLabel() {
+  return "生图";
 }
 
 function compactApiProbeMessage(value, maxLength = 72) {
@@ -3895,10 +3914,7 @@ function apiProbeStatusInfo(probe, busy = false) {
 }
 
 function localApiProbeFallbackBaseUrl(kind) {
-  if (kind === "image") {
-    return els.primaryImageApiBaseUrl?.value.trim() || state.runtimeProviders?.image?.baseUrl || "";
-  }
-  return els.reasoningApiBaseUrl?.value.trim() || state.runtimeProviders?.reasoning?.baseUrl || "";
+  return els.primaryImageApiBaseUrl?.value.trim() || state.runtimeProviders?.image?.baseUrl || "";
 }
 
 function apiProviderProbeDetail(kind, probe, busy = false) {
@@ -3917,7 +3933,7 @@ function apiProviderProbeDetail(kind, probe, busy = false) {
 
 function runtimeProviderConnectionDetail(kind, provider = {}, probe = null) {
   const baseUrl = provider.baseUrl || "";
-  const model = provider.model || (kind === "image" ? "gpt-image-2" : "gpt-5.5");
+  const model = provider.model || "gpt-image-2";
   const keyText = provider.configured ? "Key 已保存" : "未保存 Key";
   const probeText = probe
     ? apiProviderProbeDetail(kind, probe, false)
@@ -3942,7 +3958,6 @@ function renderImageStudioKernel() {
   if (!els.imageStudioKernelSummary && !els.imageStudioKernelStatus) return;
   const engine = state.imageStudioEngine || state.imageStudioFhlSkill || null;
   const imageProvider = state.runtimeProviders?.image || {};
-  const reasoningProvider = state.runtimeProviders?.reasoning || {};
   const statusInfo = imageStudioKernelStatusInfo(engine);
   const modeLabel = engine?.mode === "required" ? "软件内核必经" : engine?.mode === "optional" ? "可选引擎" : engine?.mode || "--";
   const providerLabel = engine?.required ? "required" : "optional";
@@ -3951,10 +3966,7 @@ function renderImageStudioKernel() {
     imageProvider.apiMode || "",
     imageProvider.responsesTransport || ""
   ].filter(Boolean).join(" · ") || "--";
-  const modelLabel = [
-    imageProvider.model || "gpt-image-2",
-    reasoningProvider.model || ""
-  ].filter(Boolean).join(" / ");
+  const modelLabel = imageProvider.model || "gpt-image-2";
   if (els.imageStudioKernelStatus) {
     els.imageStudioKernelStatus.textContent = statusInfo.label;
     els.imageStudioKernelStatus.className = `api-endpoint-status ${statusInfo.className}`;
@@ -3980,7 +3992,7 @@ function renderImageStudioKernel() {
 function renderLocalApiConnectionStatus() {
   if (!els.localApiConnectionStatus) return;
   const providers = state.runtimeProviders || {};
-  els.localApiConnectionStatus.innerHTML = ["reasoning", "image"].map((kind) => {
+  els.localApiConnectionStatus.innerHTML = ["image"].map((kind) => {
     const provider = providers[kind] || {};
     const probe = state.providerProbes?.[kind] || null;
     const configured = Boolean(provider.configured);
@@ -4003,7 +4015,7 @@ function renderLocalApiConnectionStatus() {
 
 function renderLocalApiProbeFeedback() {
   if (!els.localApiProbeFeedback) return;
-  els.localApiProbeFeedback.innerHTML = ["reasoning", "image"].map((kind) => {
+  els.localApiProbeFeedback.innerHTML = ["image"].map((kind) => {
     const probe = state.providerProbes?.[kind] || null;
     const busy = Boolean(state.providerProbeBusy?.[kind]);
     const statusInfo = apiProbeStatusInfo(probe, busy);
@@ -4057,39 +4069,159 @@ function readManifestTextareaValue(control) {
   }
 }
 
+function imageApiProfileProvider(profile = null) {
+  return profile?.image && typeof profile.image === "object" ? profile.image : profile || {};
+}
+
+function imageApiProfileHasSavedKey(profile = null) {
+  const provider = imageApiProfileProvider(profile);
+  return Boolean(provider.keyConfigured ?? provider.configured ?? provider.apiKeyConfigured);
+}
+
+function normalizedProfileBaseUrl(value = "") {
+  return String(value || "").trim().replace(/\/+$/, "");
+}
+
+function isActiveImageApiProfile(profile = null) {
+  if (!profile) return false;
+  if (state.activeImageApiProfileId) return profile.id === state.activeImageApiProfileId;
+  if (profile.active === true) return true;
+  const profileBaseUrl = normalizedProfileBaseUrl(imageApiProfileProvider(profile).baseUrl);
+  return Boolean(profileBaseUrl && profileBaseUrl === normalizedProfileBaseUrl(state.activeImageBaseUrl));
+}
+
+function currentEditingImageApiProfile() {
+  const id = state.editingImageApiProfileId;
+  return id ? state.imageApiProfiles.find((profile) => profile.id === id) || null : null;
+}
+
+function syncImageApiProfiles(settings = {}) {
+  if (Array.isArray(settings.imageEndpoints)) state.imageApiProfiles = settings.imageEndpoints;
+  const explicitActiveId = String(settings.activeImageEndpointId || settings.activeImageProfileId || "").trim();
+  const activeBaseUrl = settings.activeImageBaseUrl || state.activeImageBaseUrl || "";
+  const activeProfile = state.imageApiProfiles.find((profile) => profile.active === true)
+    || state.imageApiProfiles.find((profile) => normalizedProfileBaseUrl(imageApiProfileProvider(profile).baseUrl) === normalizedProfileBaseUrl(activeBaseUrl));
+  state.activeImageApiProfileId = explicitActiveId || activeProfile?.id || "";
+}
+
+function renderImageApiProfileList() {
+  if (!els.imageApiProfileList) return;
+  const profiles = Array.isArray(state.imageApiProfiles) ? state.imageApiProfiles : [];
+  if (!profiles.length) {
+    els.imageApiProfileList.innerHTML = `<p class="muted">还没有配置，点击“添加配置”开始。</p>`;
+    return;
+  }
+  const readOnly = !state.canManageApiSettings;
+  els.imageApiProfileList.innerHTML = profiles.map((profile) => {
+    const provider = imageApiProfileProvider(profile);
+    const active = isActiveImageApiProfile(profile);
+    const editing = profile.id === state.editingImageApiProfileId;
+    const savedKeyText = imageApiProfileHasSavedKey(profile) ? "Key 已保存" : "未保存 Key";
+    const endpointText = [provider.model || "gpt-image-2", shortEndpoint(provider.baseUrl || "")].filter(Boolean).join(" · ");
+    return `
+      <div class="api-profile-item ${active ? "active" : ""}">
+        <button class="api-profile-main" type="button" data-image-api-profile-action="edit" data-profile-id="${escapeAttr(profile.id)}" ${readOnly ? "disabled" : ""} aria-label="编辑 ${escapeAttr(profile.label || "未命名配置")}">
+          <span class="api-profile-dot"></span>
+          <strong>${escapeHtml(profile.label || "未命名配置")}</strong>
+          <small>${escapeHtml(endpointText || "未填写接口地址")}</small>
+          <small>${escapeHtml(active ? `当前使用 · ${savedKeyText}` : `${editing ? "正在编辑 · " : ""}${savedKeyText}`)}</small>
+        </button>
+        <div class="api-profile-role-actions">
+          <button class="text-button" type="button" data-image-api-profile-action="edit" data-profile-id="${escapeAttr(profile.id)}" ${readOnly ? "disabled" : ""}>编辑</button>
+          <button class="text-button" type="button" data-image-api-profile-action="activate" data-profile-id="${escapeAttr(profile.id)}" ${readOnly || active ? "disabled" : ""}>${active ? "当前使用" : "设为当前"}</button>
+          <button class="text-button icon-only" type="button" data-image-api-profile-action="delete" data-profile-id="${escapeAttr(profile.id)}" title="删除配置" aria-label="删除 ${escapeAttr(profile.label || "配置")}" ${readOnly ? "disabled" : ""}>
+            <svg><use href="#icon-trash"></use></svg>
+          </button>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function fillImageApiProfileEditor(profile = null) {
+  const provider = imageApiProfileProvider(profile);
+  const baseUrl = provider.baseUrl || "";
+  if (els.imageApiProfileName) els.imageApiProfileName.value = profile?.label || "";
+  if (els.primaryImageApiBaseUrl) els.primaryImageApiBaseUrl.value = baseUrl;
+  if (els.primaryImageApiModel) els.primaryImageApiModel.value = provider.model || "gpt-image-2";
+  if (els.primaryImageApiMode) els.primaryImageApiMode.value = provider.apiMode || "responses";
+  if (els.primaryImageImagesNewApiCompat) els.primaryImageImagesNewApiCompat.value = provider.imagesNewApiCompat === false ? "false" : "true";
+  if (els.primaryImageResponsesTransport) els.primaryImageResponsesTransport.value = provider.responsesTransport || "sse";
+  if (els.primaryImageRequestPolicy) els.primaryImageRequestPolicy.value = provider.requestPolicy || "openai";
+  if (els.primaryImageReasoningEffort) els.primaryImageReasoningEffort.value = provider.reasoningEffort || "xhigh";
+  if (els.primaryImageApiResponsesPath) els.primaryImageApiResponsesPath.value = provider.responsesPath || defaultImageResponsesPathForBaseUrl(baseUrl);
+  if (els.primaryImageApiGenerationPath) els.primaryImageApiGenerationPath.value = provider.imageGenerationPath || "/v1/images/generations";
+  if (els.primaryImageApiEditPath) els.primaryImageApiEditPath.value = provider.imageEditPath || "/v1/images/edits";
+  if (els.primaryImageProviderManifest) els.primaryImageProviderManifest.value = manifestToTextareaValue(provider.providerManifest);
+  if (els.primaryImageApiKey) {
+    els.primaryImageApiKey.value = "";
+    els.primaryImageApiKey.placeholder = imageApiProfileHasSavedKey(profile)
+      ? "已保存，如不修改请留空"
+      : "请输入 API Key";
+  }
+  if (els.imageApiPanelTitle) els.imageApiPanelTitle.textContent = profile ? "编辑生图 API" : "添加生图 API";
+  state.imageApiProfileFormDirty = false;
+  renderImageApiProfileList();
+  renderApiSettingsAccess();
+}
+
+function canDiscardImageApiProfileDraft() {
+  return !state.imageApiProfileFormDirty || window.confirm("当前修改还没有保存，继续后会放弃这些修改。确定继续吗？");
+}
+
+function startNewImageApiProfile() {
+  if (!ensureCanManageApiSettings() || !canDiscardImageApiProfileDraft()) return;
+  state.editingImageApiProfileId = "";
+  state.imageApiEditorMode = "new";
+  fillImageApiProfileEditor(null);
+  focusElement(els.imageApiProfileName);
+}
+
+function editImageApiProfile(id) {
+  if (!ensureCanManageApiSettings() || !canDiscardImageApiProfileDraft()) return;
+  const profile = state.imageApiProfiles.find((item) => item.id === id);
+  if (!profile) {
+    toast("没有找到这个配置");
+    return;
+  }
+  state.editingImageApiProfileId = profile.id;
+  state.imageApiEditorMode = "edit";
+  fillImageApiProfileEditor(profile);
+  focusElement(els.imageApiProfileName);
+}
+
 function renderLocalApiSettings(settings = {}) {
   const providers = settings.providers || state.runtimeProviders || {};
-  state.runtimeProviders = providers;
+  state.runtimeProviders = { image: providers.image || state.runtimeProviders?.image || null };
+  syncImageApiProfiles(settings);
   if (settings.storage) state.storageSettings = settings.storage;
   if (settings.imageStudioEngine) state.imageStudioEngine = settings.imageStudioEngine;
   if (settings.imageStudioFhlSkill) state.imageStudioFhlSkill = settings.imageStudioFhlSkill;
-  state.providerProbes = settings.providerProbes || state.providerProbes || {};
-  const reasoning = providers.reasoning || {};
+  state.providerProbes = { image: settings.providerProbes?.image || state.providerProbes?.image || null };
   const image = providers.image || {};
-  if (els.reasoningApiBaseUrl && !els.reasoningApiBaseUrl.value) els.reasoningApiBaseUrl.value = reasoning.baseUrl || "";
-  if (els.reasoningApiModel && !els.reasoningApiModel.value) els.reasoningApiModel.value = reasoning.model || "";
-  if (els.primaryImageApiBaseUrl && !els.primaryImageApiBaseUrl.value) els.primaryImageApiBaseUrl.value = image.baseUrl || "";
-  if (els.primaryImageApiModel && !els.primaryImageApiModel.value) els.primaryImageApiModel.value = image.model || "";
-  if (els.primaryImageApiMode) els.primaryImageApiMode.value = image.apiMode || "responses";
-  if (els.primaryImageImagesNewApiCompat) els.primaryImageImagesNewApiCompat.value = image.imagesNewApiCompat === false ? "false" : "true";
-  if (els.primaryImageResponsesTransport) els.primaryImageResponsesTransport.value = image.responsesTransport || "sse";
-  if (els.primaryImageRequestPolicy) els.primaryImageRequestPolicy.value = image.requestPolicy || "openai";
-  if (els.primaryImageReasoningEffort) els.primaryImageReasoningEffort.value = image.reasoningEffort || "xhigh";
-  if (els.primaryImageApiResponsesPath && !els.primaryImageApiResponsesPath.value) {
-    els.primaryImageApiResponsesPath.value = image.responsesPath || defaultImageResponsesPathForBaseUrl(image.baseUrl);
+  const editingProfile = currentEditingImageApiProfile();
+  if (state.imageApiEditorMode === "auto" || (state.imageApiEditorMode === "edit" && !editingProfile)) {
+    const initialProfile = state.imageApiProfiles.find((profile) => isActiveImageApiProfile(profile)) || state.imageApiProfiles[0] || null;
+    state.editingImageApiProfileId = initialProfile?.id || "";
+    state.imageApiEditorMode = initialProfile ? "edit" : "new";
+    fillImageApiProfileEditor(initialProfile);
+  } else if (state.imageApiEditorMode === "edit" && editingProfile && !state.imageApiProfileFormDirty) {
+    fillImageApiProfileEditor(editingProfile);
+  } else {
+    renderImageApiProfileList();
   }
-  if (els.primaryImageApiGenerationPath && !els.primaryImageApiGenerationPath.value) els.primaryImageApiGenerationPath.value = image.imageGenerationPath || "/v1/images/generations";
-  if (els.primaryImageApiEditPath && !els.primaryImageApiEditPath.value) els.primaryImageApiEditPath.value = image.imageEditPath || "/v1/images/edits";
-  if (els.primaryImageProviderManifest && !els.primaryImageProviderManifest.value) els.primaryImageProviderManifest.value = manifestToTextareaValue(image.providerManifest);
   if (els.localApiSettingsSummary) {
     const dataDir = settings.dataDir ? ` · 数据目录：${settings.dataDir}` : "";
-    const reasoningText = reasoning.configured ? "思考 Key 已保存" : "未保存思考 Key";
     const imageText = image.configured ? "生图 Key 已保存" : "未保存生图 Key";
-    const probeText = ["reasoning", "image"]
+    const activeProfile = state.imageApiProfiles.find((profile) => isActiveImageApiProfile(profile));
+    const profileText = state.imageApiProfiles.length
+      ? `已保存 ${state.imageApiProfiles.length} 套配置${activeProfile ? `；当前：${activeProfile.label || "未命名配置"}` : ""}`
+      : "还没有保存配置";
+    const probeText = ["image"]
       .map((kind) => apiProviderProbeSummary(kind, state.providerProbes?.[kind]))
       .filter(Boolean)
       .join("；");
-    els.localApiSettingsSummary.textContent = [reasoningText, imageText, probeText]
+    els.localApiSettingsSummary.textContent = [profileText, imageText, probeText]
       .filter(Boolean)
       .join("；") + dataDir;
   }
@@ -4098,58 +4230,31 @@ function renderLocalApiSettings(settings = {}) {
   renderImageStudioKernel();
 }
 
-async function saveRuntimeProvider(kind, payload) {
-  const data = await requestJson("/api/settings/providers", {
-    method: "POST",
-    body: JSON.stringify({ kind, ...payload })
-  });
-  state.runtimeProviders = data.settings?.providers || state.runtimeProviders;
-  state.providerProbes = data.settings?.providerProbes || state.providerProbes;
-  state.activeImageBaseUrl = data.settings?.activeImageBaseUrl || state.activeImageBaseUrl;
-  renderLocalApiSettings(data.settings || {});
-  renderApiSettings();
-  return data;
-}
-
 function runtimeProviderProbePayload(kind) {
-  const saved = state.runtimeProviders?.[kind] || {};
-  if (kind === "image") {
-    const apiKey = els.primaryImageApiKey?.value.trim() || "";
-    return {
-      kind,
-      baseUrl: els.primaryImageApiBaseUrl?.value.trim() || saved.baseUrl || "",
-      model: els.primaryImageApiModel?.value.trim() || saved.model || "gpt-image-2",
-      apiMode: els.primaryImageApiMode?.value || saved.apiMode || "responses",
-      imagesNewApiCompat: els.primaryImageImagesNewApiCompat?.value !== "false",
-      responsesTransport: els.primaryImageResponsesTransport?.value || saved.responsesTransport || "sse",
-      requestPolicy: els.primaryImageRequestPolicy?.value || saved.requestPolicy || "openai",
-      reasoningEffort: els.primaryImageReasoningEffort?.value || saved.reasoningEffort || "xhigh",
-      responsesPath: els.primaryImageApiResponsesPath?.value.trim() || saved.responsesPath || defaultImageResponsesPathForBaseUrl(els.primaryImageApiBaseUrl?.value.trim() || saved.baseUrl),
-      imageGenerationPath: els.primaryImageApiGenerationPath?.value.trim() || saved.imageGenerationPath || "/v1/images/generations",
-      imageEditPath: els.primaryImageApiEditPath?.value.trim() || saved.imageEditPath || "/v1/images/edits",
-      ...readManifestTextareaValue(els.primaryImageProviderManifest),
-      ...(apiKey ? { apiKey } : {})
-    };
-  }
-  const apiKey = els.reasoningApiKey?.value.trim() || "";
+  const profile = currentEditingImageApiProfile();
+  const saved = imageApiProfileProvider(profile);
+  const apiKey = els.primaryImageApiKey?.value.trim() || "";
   return {
     kind,
-    baseUrl: els.reasoningApiBaseUrl?.value.trim() || saved.baseUrl || "",
-    model: els.reasoningApiModel?.value.trim() || saved.model || "gpt-5.5",
+    ...(profile?.id ? { profileId: profile.id } : {}),
+    baseUrl: els.primaryImageApiBaseUrl?.value.trim() || saved.baseUrl || "",
+    model: els.primaryImageApiModel?.value.trim() || saved.model || "gpt-image-2",
+    apiMode: els.primaryImageApiMode?.value || saved.apiMode || "responses",
+    imagesNewApiCompat: els.primaryImageImagesNewApiCompat?.value !== "false",
+    responsesTransport: els.primaryImageResponsesTransport?.value || saved.responsesTransport || "sse",
+    requestPolicy: els.primaryImageRequestPolicy?.value || saved.requestPolicy || "openai",
+    reasoningEffort: els.primaryImageReasoningEffort?.value || saved.reasoningEffort || "xhigh",
+    responsesPath: els.primaryImageApiResponsesPath?.value.trim() || saved.responsesPath || defaultImageResponsesPathForBaseUrl(els.primaryImageApiBaseUrl?.value.trim() || saved.baseUrl),
+    imageGenerationPath: els.primaryImageApiGenerationPath?.value.trim() || saved.imageGenerationPath || "/v1/images/generations",
+    imageEditPath: els.primaryImageApiEditPath?.value.trim() || saved.imageEditPath || "/v1/images/edits",
+    ...readManifestTextareaValue(els.primaryImageProviderManifest),
     ...(apiKey ? { apiKey } : {})
-  };
-}
-
-function currentReasoningApiPayload() {
-  return {
-    baseUrl: els.reasoningApiBaseUrl?.value.trim() || "",
-    model: els.reasoningApiModel?.value.trim() || "gpt-5.5",
-    apiKey: els.reasoningApiKey?.value.trim() || ""
   };
 }
 
 function currentImageApiPayload() {
   const payload = {
+    label: els.imageApiProfileName?.value.trim() || "",
     baseUrl: els.primaryImageApiBaseUrl?.value.trim() || "",
     model: els.primaryImageApiModel?.value.trim() || "gpt-image-2",
     apiMode: els.primaryImageApiMode?.value || "responses",
@@ -4167,8 +4272,8 @@ function currentImageApiPayload() {
 }
 
 function runtimeProviderProbeReady(kind, payload) {
-  const saved = state.runtimeProviders?.[kind] || {};
-  return Boolean(payload.baseUrl && (payload.apiKey || saved.configured));
+  const profile = currentEditingImageApiProfile();
+  return Boolean(payload.baseUrl && (payload.apiKey || imageApiProfileHasSavedKey(profile)));
 }
 
 async function postRuntimeProviderProbe(payload) {
@@ -4190,10 +4295,11 @@ async function postRuntimeProviderProbe(payload) {
 
 function applyProbeSettings(data = {}) {
   const settings = data.settings || {};
-  if (settings.providers) state.runtimeProviders = settings.providers;
+  if (settings.providers) state.runtimeProviders = { image: settings.providers.image || state.runtimeProviders?.image || null };
+  syncImageApiProfiles(settings);
   if (settings.imageStudioEngine) state.imageStudioEngine = settings.imageStudioEngine;
   if (settings.imageStudioFhlSkill) state.imageStudioFhlSkill = settings.imageStudioFhlSkill;
-  if (settings.providerProbes) state.providerProbes = settings.providerProbes;
+  if (settings.providerProbes) state.providerProbes = { image: settings.providerProbes.image || state.providerProbes?.image || null };
   state.activeImageBaseUrl = settings.activeImageBaseUrl || data.imageBaseUrl || state.activeImageBaseUrl;
   if ("canManageSettings" in settings) state.canManageApiSettings = settings.canManageSettings !== false;
 }
@@ -4201,7 +4307,7 @@ function applyProbeSettings(data = {}) {
 async function probeRuntimeProvider(kind) {
   if (!ensureCanManageApiSettings()) return false;
   const label = apiProviderLabel(kind);
-  const button = kind === "image" ? els.probePrimaryImageApiButton : els.probeReasoningApiButton;
+  const button = els.probePrimaryImageApiButton;
   let payload;
   try {
     payload = runtimeProviderProbePayload(kind);
@@ -4276,28 +4382,6 @@ async function probeRuntimeProvider(kind) {
   }
 }
 
-async function saveReasoningApiSettings() {
-  if (!ensureCanManageApiSettings()) return;
-  const reasoningPayload = currentReasoningApiPayload();
-  const savedReasoning = state.runtimeProviders?.reasoning || {};
-  if (!reasoningPayload.baseUrl || (!reasoningPayload.apiKey && !savedReasoning.configured)) {
-    toast("请填写思考 API 的 Base URL 和 Key");
-    return;
-  }
-  setBusy(els.saveReasoningApiSettingsButton, true, "保存中");
-  try {
-    if (!reasoningPayload.apiKey && savedReasoning.configured) delete reasoningPayload.apiKey;
-    await saveRuntimeProvider("reasoning", reasoningPayload);
-    if (els.reasoningApiKey) els.reasoningApiKey.value = "";
-    await refreshHealth();
-    toast("思考 API 已保存");
-  } catch (error) {
-    toast(error.message);
-  } finally {
-    setBusy(els.saveReasoningApiSettingsButton, false);
-  }
-}
-
 async function saveImageApiSettings() {
   if (!ensureCanManageApiSettings()) return;
   let imagePayload;
@@ -4307,18 +4391,43 @@ async function saveImageApiSettings() {
     toast(error.message);
     return;
   }
-  const savedImage = state.runtimeProviders?.image || {};
-  if (!imagePayload.baseUrl || (!imagePayload.apiKey && !savedImage.configured)) {
-    toast("请填写生图 API 的 Base URL 和 Key");
+  const editingProfile = currentEditingImageApiProfile();
+  if (!imagePayload.label) {
+    toast("请先填写配置名称");
+    focusElement(els.imageApiProfileName);
+    return;
+  }
+  if (!imagePayload.baseUrl || (!imagePayload.apiKey && !imageApiProfileHasSavedKey(editingProfile))) {
+    toast("请填写接口地址和 API Key");
     return;
   }
   setBusy(els.saveImageApiSettingsButton, true, "保存中");
   try {
-    if (!imagePayload.apiKey && savedImage.configured) delete imagePayload.apiKey;
-    await saveRuntimeProvider("image", imagePayload);
+    if (!imagePayload.apiKey && imageApiProfileHasSavedKey(editingProfile)) delete imagePayload.apiKey;
+    const profileId = editingProfile?.id || "";
+    const data = await requestJson(profileId
+      ? `/api/settings/image-endpoints/${encodeURIComponent(profileId)}`
+      : "/api/settings/image-endpoints", {
+      method: profileId ? "PATCH" : "POST",
+      body: JSON.stringify(imagePayload)
+    });
     if (els.primaryImageApiKey) els.primaryImageApiKey.value = "";
+    state.imageApiProfileFormDirty = false;
+    const settings = await refreshApiSettings({ silent: true });
+    const savedProfileId = data.endpoint?.id || data.profile?.id || data.id || profileId;
+    const savedProfile = state.imageApiProfiles.find((profile) => profile.id === savedProfileId)
+      || state.imageApiProfiles.find((profile) => profile.label === imagePayload.label
+        && normalizedProfileBaseUrl(imageApiProfileProvider(profile).baseUrl) === normalizedProfileBaseUrl(imagePayload.baseUrl));
+    if (savedProfile) {
+      state.editingImageApiProfileId = savedProfile.id;
+      state.imageApiEditorMode = "edit";
+      fillImageApiProfileEditor(savedProfile);
+    } else if (settings) {
+      state.imageApiEditorMode = "auto";
+      renderLocalApiSettings(settings);
+    }
     await refreshHealth();
-    toast("生图 API 已保存");
+    toast("配置已保存");
   } catch (error) {
     toast(error.message);
   } finally {
@@ -4326,9 +4435,53 @@ async function saveImageApiSettings() {
   }
 }
 
-async function saveLocalApiSettings() {
-  await saveReasoningApiSettings();
-  await saveImageApiSettings();
+async function activateImageApiProfile(id = state.editingImageApiProfileId) {
+  if (!ensureCanManageApiSettings()) return;
+  const profile = state.imageApiProfiles.find((item) => item.id === id);
+  if (!profile) {
+    toast("请先选择一个已保存的配置");
+    return;
+  }
+  if (isActiveImageApiProfile(profile)) return;
+  setBusy(els.activateImageApiProfileButton, true, "切换中");
+  try {
+    await requestJson(`/api/settings/image-endpoints/${encodeURIComponent(profile.id)}/activate`, {
+      method: "POST",
+      body: "{}"
+    });
+    state.activeImageApiProfileId = profile.id;
+    await refreshApiSettings({ silent: true });
+    await refreshHealth();
+    toast(`已切换到：${profile.label || "当前配置"}`);
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    setBusy(els.activateImageApiProfileButton, false);
+    renderApiSettingsAccess();
+  }
+}
+
+async function deleteImageApiProfile(id) {
+  if (!ensureCanManageApiSettings()) return;
+  const profile = state.imageApiProfiles.find((item) => item.id === id);
+  if (!profile) {
+    toast("没有找到这个配置");
+    return;
+  }
+  if (!window.confirm(`确定删除“${profile.label || "未命名配置"}”吗？`)) return;
+  try {
+    await requestJson(`/api/settings/image-endpoints/${encodeURIComponent(profile.id)}`, { method: "DELETE" });
+    if (state.editingImageApiProfileId === profile.id) {
+      state.editingImageApiProfileId = "";
+      state.imageApiEditorMode = "auto";
+      state.imageApiProfileFormDirty = false;
+    }
+    await refreshApiSettings({ silent: true });
+    await refreshHealth();
+    toast("配置已删除");
+  } catch (error) {
+    toast(error.message);
+  }
 }
 
 function renderStorageSummary(summary = null) {
@@ -5138,7 +5291,13 @@ async function useHistoryLogAsInput(log) {
 function formatActualImageParams(params = null, imageApi = "") {
   const parts = [];
   if (imageApi) parts.push(imageApi);
-  if (params?.size) parts.push(params.size);
+  if (params?.requested_size && params?.size && params.requested_size !== params.size) {
+    parts.push(`请求 ${params.requested_size} → 实际 ${params.size}`);
+  } else if (params?.size) {
+    parts.push(params.size);
+  } else if (params?.requested_size) {
+    parts.push(`请求 ${params.requested_size}`);
+  }
   if (params?.quality) parts.push(`quality ${params.quality}`);
   if (params?.output_format) parts.push(params.output_format);
   if (params?.moderation) parts.push(`moderation ${params.moderation}`);
@@ -5274,7 +5433,7 @@ async function deleteTaskLogRecord(log) {
 
 function taskTypeLabel(type) {
   const labels = {
-    plan: "方案推理",
+    plan: "方案推导",
     "generate-image": "方向出图",
     "render-from-images": "图片生成",
     "analyze-design-series": "参考图分析",
@@ -5615,10 +5774,6 @@ function getActiveImageEndpoint() {
   return state.runtimeProviders?.image?.baseUrl || state.activeImageBaseUrl || "";
 }
 
-function getReasoningEndpointLabel() {
-  return state.runtimeProviders?.reasoning?.baseUrl || "gpt-5.5";
-}
-
 async function createPlan(options = {}) {
   const brief = readBrief();
   const mode = normalizeClientMode(options.mode || state.mode);
@@ -5651,7 +5806,7 @@ async function createPlan(options = {}) {
     referenceCount: activeReferenceImages().length
   });
   setBusy(busyButton, true, "推导中");
-  toast("gpt-5.5 正在推导设计元素与方案方向");
+  toast("正在使用项目内置预设推导设计元素与方案方向");
   try {
     const data = await api("/api/plan", { brief });
     state.plan = data.plan;
@@ -5702,11 +5857,11 @@ async function generateImage(directionId) {
     status: "active",
     target: direction.name,
     text: useThinkingMode
-      ? `正在为「${direction.name}」推理空间镜头、材料表达、灯光层次和画面风险。`
-      : `思考模式已关闭，正在使用快速预设直接生成「${direction.name}」。`
+      ? `正在使用项目预设为「${direction.name}」优化镜头、材料、灯光和输出约束。`
+      : `极速模式正在使用简洁提示词直接生成「${direction.name}」。`
   };
   render();
-  toast(`${useThinkingMode ? "gpt-5.5 → Image Gen" : "快速预设 → Image Gen"} 正在生成「${direction.name}」`);
+  toast(`${useThinkingMode ? "预设提示词优化 → 生图" : "极速模式 → 生图"} 正在生成「${direction.name}」`);
   try {
     const data = await api("/api/generate-image", {
       brief: readBrief(),
@@ -5715,7 +5870,7 @@ async function generateImage(directionId) {
       userPrompt: direction.image_prompt || currentCanvasUserPrompt(),
       size: selectedGenerationSize(),
       quality: selectedGenerationQuality(),
-      thinkingEnabled: useThinkingMode
+      promptOptimizationEnabled: useThinkingMode
     });
     direction.image = data.image;
     updateActiveTask({
@@ -5731,8 +5886,8 @@ async function generateImage(directionId) {
       status: "done",
       target: direction.name,
       text: data.image?.thinking || (useThinkingMode
-        ? `gpt-5.5 已完成「${direction.name}」的生成策略推理，并调用 Image Gen 输出视觉。`
-        : `已使用预设提示词调用 Image Gen 输出「${direction.name}」。`)
+        ? `项目预设已完成「${direction.name}」的提示词优化，并调用生图 AI 输出视觉。`
+        : `极速模式已使用简洁提示词输出「${direction.name}」。`)
     };
     render();
     completeActiveTask("success", "方向出图完成");
@@ -6851,7 +7006,7 @@ async function renderFromImages(options = {}) {
   }
   renderWorkflowCanvas();
   const engineLabel = generationEngineLabel(mode);
-  const pipelineLabel = useThinkingMode ? `gpt-5.5 → ${engineLabel}` : `预设提示词 → ${engineLabel}`;
+  const pipelineLabel = useThinkingMode ? `预设提示词优化 → ${engineLabel}` : `极速模式 → ${engineLabel}`;
   toast(usesPlanColorPipeline
     ? "推荐链路正在生成：彩色平面图 → 轴测图"
     : isPlanAxonometricStep && primaryImage
@@ -6866,7 +7021,7 @@ async function renderFromImages(options = {}) {
       updateActiveTask({
         current: index + 1,
         status: "running",
-        phase: usesPlanColorPipeline ? "彩平中转" : useThinkingMode ? "提示词融合" : "生图中",
+        phase: usesPlanColorPipeline ? "彩平中转" : useThinkingMode ? "提示词优化" : "极速生图",
         endpoint: generationEndpointLabel(mode),
         event: usesPlanColorPipeline
           ? `开始推荐链路 ${index + 1}/${outputCount}：先彩色平面图，再高精度轴测图`
@@ -6899,7 +7054,7 @@ async function renderFromImages(options = {}) {
         renderRegion: regionInfo,
         size: outputSize,
         quality: outputQuality,
-        thinkingEnabled: useThinkingMode
+        promptOptimizationEnabled: useThinkingMode
       });
       const record = {
         ...data.render,
@@ -7007,7 +7162,7 @@ async function analyzeDesignSeriesReferences() {
     text: "正在识别参考图类型：空间、材料、家具、灯光、色彩、氛围与构图，并整理成套设计建议。"
   };
   renderWorkflowCanvas();
-  toast("gpt-5.5 正在识别参考图");
+  toast("正在使用本地识别整理参考图");
   try {
     const data = await api("/api/analyze-design-series", {
       brief: readBrief(),
@@ -7072,11 +7227,11 @@ async function generateDesignSeries(options = {}) {
     status: "active",
     target: "生成设计系列",
     text: outputCount > 1
-      ? `${useThinkingMode ? "正在根据参考图识别结果组织成套设计策略" : "思考模式已关闭，正在使用设计系列预设"}，并调用 Image Gen 生成 ${outputCount} 张设计系列图。`
-      : `${useThinkingMode ? "正在根据参考图识别结果组织成套设计策略" : "思考模式已关闭，正在使用设计系列预设"}，并调用 Image Gen 生成一套设计图。`
+      ? `${useThinkingMode ? "正在使用项目预设优化成套设计提示词" : "极速模式正在使用精简设计系列预设"}，并调用生图 AI 生成 ${outputCount} 张设计系列图。`
+      : `${useThinkingMode ? "正在使用项目预设优化成套设计提示词" : "极速模式正在使用精简设计系列预设"}，并调用生图 AI 生成一套设计图。`
   };
   renderWorkflowCanvas();
-  toast(outputCount > 1 ? `${useThinkingMode ? "gpt-5.5 → Image Gen" : "快速预设 → Image Gen"} 正在生成 ${outputCount} 张设计系列图，最多并发 ${DESIGN_SERIES_PARALLEL_LIMIT} 张` : `${useThinkingMode ? "gpt-5.5 → Image Gen" : "快速预设 → Image Gen"} 正在生成设计系列图`);
+  toast(outputCount > 1 ? `${useThinkingMode ? "预设提示词优化 → 生图" : "极速模式 → 生图"} 正在生成 ${outputCount} 张设计系列图，最多并发 ${DESIGN_SERIES_PARALLEL_LIMIT} 张` : `${useThinkingMode ? "预设提示词优化 → 生图" : "极速模式 → 生图"} 正在生成设计系列图`);
   try {
     let latestRecord = null;
     let reusableAnalysis = useThinkingMode ? state.designSeriesAnalysis : null;
@@ -7149,9 +7304,7 @@ async function generateDesignSeries(options = {}) {
         seriesCount: outputCount,
         size: outputSize,
         quality: outputQuality,
-        thinkingEnabled: useThinkingMode,
-        reuseSeriesReasoning: true,
-        promptFusionEnabled: useThinkingMode
+        promptOptimizationEnabled: useThinkingMode
       });
       reusableAnalysis = enforceClientDesignSeriesProjectType(data.analysis);
       if (!lockedSeriesAnalysis && reusableAnalysis) {
@@ -7204,8 +7357,8 @@ async function generateDesignSeries(options = {}) {
       status: "done",
       target: latestRecord?.title || "生成设计系列",
       text: outputCount > 1
-        ? `${state.designSeriesAnalysis?.fallback_reason ? "参考图分析已降级为内置预设" : useThinkingMode ? "gpt-5.5 已完成参考图识别、系列建议和出图策略" : "已使用设计系列内置预设"}，并调用 Image Gen 生成 ${outputCount} 张设计系列图。`
-        : `${state.designSeriesAnalysis?.fallback_reason ? "参考图分析已降级为内置预设" : useThinkingMode ? "gpt-5.5 已完成参考图识别、系列建议和出图策略" : "已使用设计系列内置预设"}，并调用 Image Gen 生成设计系列图。`
+        ? `${state.designSeriesAnalysis?.fallback_reason ? "参考图分析已降级为内置预设" : useThinkingMode ? "项目预设已完成设计系列提示词优化" : "极速模式已使用精简设计系列预设"}，并调用生图 AI 生成 ${outputCount} 张设计系列图。`
+        : `${state.designSeriesAnalysis?.fallback_reason ? "参考图分析已降级为内置预设" : useThinkingMode ? "项目预设已完成设计系列提示词优化" : "极速模式已使用精简设计系列预设"}，并调用生图 AI 生成设计系列图。`
     };
     renderGeneratedResult();
     renderDesignSeriesAnalysisView();
@@ -7564,7 +7717,7 @@ function imageModelingRenderFromMeta(meta) {
         ? "expanded-subject-reference"
         : "white-background-subject-reference"),
     intent: meta.intent || (stepText.includes("cad-reference")
-      ? "生图模式生成 CAD 结构参考图，帮助 gpt-5.5 在正式建模时稳定识别体块、开口和层级。"
+      ? "生图模式生成 CAD 结构参考图，帮助项目内置预设稳定识别体块、开口和层级。"
       : stepText.includes("outpaint")
         ? "生图模式完善主体建筑扩图，可直接作为 3D 建模输入，也可选生成白底主体图。"
         : "生图模式生成白底主体标准图，作为 3D 建模输入。"),
@@ -7615,7 +7768,7 @@ async function generateImageModelFromPhoto(options = {}) {
     total: 1,
     userPrompt,
     referenceCount: activeReferenceImages().length,
-    endpoint: getReasoningEndpointLabel()
+    endpoint: "项目内置预设"
   });
   setBusy(busyButton, true, "建模中");
   const startedAt = new Date();
@@ -8030,7 +8183,7 @@ function buildCurrentIntent() {
     return [
       `当前能力按钮：${meaning.label}`,
       `按钮意义：${meaning.meaning}`,
-      "思考模式：关闭。不做额外提示词融合，使用快速预设和用户描述直接生图。",
+      "提示词优化：关闭。使用当前功能的精简预设和用户描述极速生图。",
       `保留重点：${meaning.preserve}`,
       `变化重点：${meaning.change}`,
       inputAnalysisText,
@@ -8055,8 +8208,8 @@ function buildCurrentIntent() {
     `当前能力按钮：${meaning.label}`,
     `按钮意义：${meaning.meaning}`,
     state.thinkingModeEnabled
-      ? "思考模式：开启。先用 gpt-5.5 读取输入图、参考图、当前按钮功能、用户描述和预设模板，再优化最终提示词交给 Image Gen。"
-      : "思考模式：关闭。不做额外提示词融合，使用快速预设和用户描述直接生图。",
+      ? "提示词优化：开启。使用项目内置提示词库，根据当前功能、输入图、参考图和用户描述组织完整提示词，再交给生图 AI，不需要额外配置接口。"
+      : "提示词优化：关闭。使用当前功能的精简预设和用户描述极速生图。",
     featureOptimizationNotes[normalizeClientMode(state.mode)],
     `保留重点：${meaning.preserve}`,
     `变化重点：${meaning.change}`,
@@ -8581,7 +8734,7 @@ function designSeriesCountPrompt(count = state.generation.count) {
     "办公系列规则：如果参考图识别为办公项目，必须按办公项目生成，不得混入卧室、客房、酒店套房、民宿、床、泡池或住宅私密空间。",
     "数量策略：4张时优先覆盖最能说明项目的入口/公共核心/关键私密或重点功能/节点；6张时补足室外到达、支持空间和更完整动线；8张时拆出更多真实使用场景，形成完整项目图集。",
     "参数策略：图片比例、清晰度/分辨率、质量档位和生成数量全部服从当前生图设置；不要在提示词里固定横屏、4:3、4K或固定8张。",
-    "思考模式：开启时要更多保留原参考图的视觉 DNA，包括品牌线索、色彩、材质、灯光、构图、空间节奏、家具物件语言和关键细节，但仍然要推演为不同空间而不是复制同一角度。",
+    "提示词优化：开启时使用项目内置预设完整整理原参考图的视觉 DNA，包括品牌线索、色彩、材质、灯光、构图、空间节奏、家具物件语言和关键细节，但仍然要推演为不同空间而不是复制同一角度。",
     "先建立系列圣经：项目DNA、空间动线、材质系统、灯光系统、重复母题、家具语言、镜头节奏、渲染质感。",
     "所有图片必须像同一个项目、同一套材质系统、同一个设计团队、同一次渲染输出；每张图空间或视角不同，但风格、材料、元素和审美 DNA 保持一致。",
     "深层设计系列定义：统一风格不是重复同一张图；必须把参考图扩展为多场域、多视角、多角度、多功能分区的项目图集。",
@@ -8697,14 +8850,14 @@ function selectedGenerationQuality() {
 }
 
 function thinkingPipelineLabel() {
-  return state.thinkingModeEnabled ? "gpt-5.5 → Image Gen" : "快速预设 → Image Gen";
+  return state.thinkingModeEnabled ? "预设提示词优化 → 生图" : "极速模式 → 生图";
 }
 
 function refreshThinkingModeButtons() {
   [els.thinkingModeButton, els.floatingThinkingModeButton].filter(Boolean).forEach((button) => {
     const enabled = state.thinkingModeEnabled;
-    const label = enabled ? "思考模式已开启" : "思考模式已关闭";
-    const visibleText = enabled ? "思考模式：开" : "思考模式：关";
+    const label = enabled ? "提示词优化已开启" : "提示词优化已关闭";
+    const visibleText = enabled ? "提示词优化：开" : "提示词优化：关";
     const accessibleLabel = button.classList.contains("icon-only")
       ? label
       : `${visibleText}，${enabled ? "已开启" : "已关闭"}`;
@@ -8722,15 +8875,15 @@ function setThinkingModeEnabled(enabled) {
   state.thinkingModeEnabled = Boolean(enabled);
   state.thinking = {
     status: "idle",
-    target: state.thinkingModeEnabled ? "思考模式" : "预设模式",
+    target: state.thinkingModeEnabled ? "提示词优化" : "极速模式",
     text: state.thinkingModeEnabled
-      ? "思考模式已开启：本次访问期间会先调用 gpt-5.5 读取输入图、参考图、当前按钮意义和用户描述；重新打开页面后默认关闭。"
-      : "思考模式已关闭：不做额外提示词融合，使用快速预设提示词和用户描述直接交给 Image Gen。"
+      ? "提示词优化已开启：使用项目内置预设整理当前功能、输入图、参考图和用户描述，不需要额外配置接口；重新打开页面后默认关闭。"
+      : "提示词优化已关闭：使用当前功能的简洁提示词和用户描述进入极速生图。"
   };
   refreshThinkingModeButtons();
   renderWorkflowCanvas();
   scheduleCanvasStateSave({ delay: 400 });
-  toast(state.thinkingModeEnabled ? "思考模式已开启，本次访问期间生效" : "思考模式已关闭");
+  toast(state.thinkingModeEnabled ? "提示词优化已开启，本次访问期间生效" : "提示词优化已关闭，已切换为极速模式");
 }
 
 function toggleThinkingMode() {
@@ -8785,7 +8938,7 @@ function refreshGenerationControls() {
   const panoramaMode = isPanoramaMode(normalizedMode);
   const referenceOnly = isReferenceOnlyMode(normalizedMode);
   const imageModelingMode = normalizedMode === "image-modeling";
-  const reasoningOnlyMode = ["design-derivation", "image-modeling"].includes(normalizedMode);
+  const fixedOutputMode = ["design-derivation", "image-modeling"].includes(normalizedMode);
   const hasVisibleInput = imageModelingMode
     ? Boolean(state.primaryImage)
     : referenceOnly
@@ -8808,8 +8961,8 @@ function refreshGenerationControls() {
   document.body.classList.toggle("reference-only-mode", referenceOnly);
   document.body.classList.toggle("panorama-mode", panoramaMode);
   document.body.classList.remove("white-model-mode");
-  if (els.imageOptionsPanel) els.imageOptionsPanel.hidden = reasoningOnlyMode;
-  if (els.canvasFloatingParams) els.canvasFloatingParams.hidden = reasoningOnlyMode;
+  if (els.imageOptionsPanel) els.imageOptionsPanel.hidden = fixedOutputMode;
+  if (els.canvasFloatingParams) els.canvasFloatingParams.hidden = fixedOutputMode;
   if (els.uploadPreviewBlock) {
     els.uploadPreviewBlock.hidden = !hasVisibleInput;
   }
@@ -12517,7 +12670,7 @@ function buildCanvasNodes() {
       title: "资源 / 模板库",
       width: 330,
       html: `
-        <p>已选资源会参与 gpt-5.5 的生成策略。</p>
+        <p>已选资源会参与项目内置预设的生成策略。</p>
         <div class="asset-list">
           ${state.assets.map((asset) => `
             <div class="asset-row">
@@ -12637,7 +12790,7 @@ function buildCanvasNodes() {
           </div>
         `
         : `
-          <p>上传参考图后，gpt-5.5 会自动识别参考图类型，并给出成套设计建议。</p>
+          <p>上传参考图后，本地识别会整理参考图类型，并给出成套设计建议。</p>
           <div class="node-actions wrap">
             ${uiIconButton({ className: "secondary-button", icon: "icon-spark", label: "识别参考图", attrs: `data-analyze-series="true" ${state.referenceImages.length ? "" : "disabled"}` })}
           </div>
@@ -12670,7 +12823,7 @@ function buildCanvasNodes() {
 
   const commandGenerateRequirement = generationInputRequirement(normalizedMode);
   const commandGenerateLabel = commandGenerateRequirement.ready
-    ? (state.thinkingModeEnabled ? "思考并生成" : "直接生成")
+    ? (state.thinkingModeEnabled ? "优化提示词并生成" : "极速生成")
     : commandGenerateRequirement.message;
   const generateAttrs = `data-canvas-generate="true" ${generationDisabledAttrs(normalizedMode)}`;
   const commandNodeActions = normalizedMode === "image-modeling" && state.primaryImage
@@ -12694,16 +12847,18 @@ function buildCanvasNodes() {
 
   nodes.push({
     id: "think",
-    kind: state.thinking.status === "active" ? "Thinking" : "Agent",
+    kind: state.thinking.status === "active"
+      ? (state.thinkingModeEnabled ? "提示词优化" : "极速生成")
+      : "生图助手",
     title: state.thinkingModeEnabled
-      ? (state.thinking.status === "active" ? "gpt-5.5 正在思考" : "gpt-5.5 思考节点")
-      : "预设提示词节点",
+      ? (state.thinking.status === "active" ? "正在优化提示词" : "提示词优化节点")
+      : "极速提示词节点",
     width: 360,
     html: `
       <p>${escapeHtml(sanitizeLegacyPlanDisplayText(state.thinking.text))}</p>
       <div class="tag-row">
-        <span class="tag">${state.thinking.status === "active" ? (state.thinkingModeEnabled ? "推理中" : "生成中") : state.thinking.status === "done" ? "已完成" : "待命"}</span>
-        <span class="tag">${state.thinkingModeEnabled ? "先思考" : "跳过思考"}</span>
+        <span class="tag">${state.thinking.status === "active" ? (state.thinkingModeEnabled ? "优化中" : "极速生成中") : state.thinking.status === "done" ? "已完成" : "待命"}</span>
+        <span class="tag">${state.thinkingModeEnabled ? "先优化提示词" : "简洁提示词"}</span>
         <span class="tag">再调用 ${escapeHtml(generationEngineLabel(state.mode))}</span>
       </div>
       ${state.thinking.target ? `<p>目标：${escapeHtml(normalizedMode === "image-modeling" ? suggestedModeLabel(normalizedMode) : sanitizeLegacyPlanDisplayText(state.thinking.target))}</p>` : ""}
@@ -12782,7 +12937,7 @@ function buildCanvasNodes() {
         ? `<p>点击生成按钮，系统会提取平面图线段并生成 DXF / SVG。</p>
            <div class="node-actions">${uiIconButton({ className: "secondary-button", icon: "icon-spark", label: "生成 CAD", attrs: `data-render-trigger="true"` })}</div>`
         : state.mode === "design-derivation"
-          ? `<p>点击推导后，gpt-5.5 会先拆解设计元素，再整理为可继续出图的方案方向。</p>
+          ? `<p>点击推导后，项目内置预设会先拆解设计元素，再整理为可继续出图的方案方向。</p>
              <div class="node-actions">${uiIconButton({ className: "secondary-button", icon: "icon-think", label: "推导方案", attrs: `data-render-trigger="true"` })}</div>`
         : normalizedMode === "image-modeling" && !imageModelingReady
           ? `<p>请先上传要转成 CAD 的图片。当前版本会生成 DXF / SVG 线稿，暂不做 3D 建模。</p>
@@ -12790,7 +12945,7 @@ function buildCanvasNodes() {
           : !inputRequirement.ready
             ? `<p>${escapeHtml(inputRequirement.message)}。上传后这里会显示可生成的结果位。</p>
                <div class="node-actions">${uiIconButton({ className: "secondary-button", icon: "icon-upload", label: inputRequirement.message, attrs: "disabled" })}</div>`
-          : `<p>${escapeHtml(state.thinkingModeEnabled ? `点击生成后，gpt-5.5 会先做当前阶段策略，再调用 ${generationEngineLabel(state.mode)} 生成${resultTitle}。` : `点击生成后，会使用网页预设提示词直接调用 ${generationEngineLabel(state.mode)} 生成${resultTitle}。`)}</p>
+          : `<p>${escapeHtml(state.thinkingModeEnabled ? `点击生成后，会先使用项目内置预设优化完整提示词，再调用 ${generationEngineLabel(state.mode)} 生成${resultTitle}。` : `点击生成后，会使用简洁提示词极速调用 ${generationEngineLabel(state.mode)} 生成${resultTitle}。`)}</p>
              <div class="node-actions">${uiIconButton({ className: "secondary-button", icon: "icon-image", label: actionLabel, attrs: `data-render-trigger="true"` })}</div>`
     });
   }
@@ -12829,7 +12984,7 @@ function buildCanvasNodes() {
   if (state.plan) {
     nodes.push({
       id: "plan",
-      kind: "Reasoning",
+      kind: "方案推导",
       title: state.plan.project_title,
       width: 360,
       html: `<p>${escapeHtml(state.plan.project_summary || state.plan.design_read)}</p>`
@@ -16657,7 +16812,7 @@ function outputSlotTitle(mode) {
 
 function generationEngineLabel(mode = state.mode) {
   const normalized = normalizeClientMode(mode);
-  if (normalized === "design-derivation") return "gpt-5.5";
+  if (normalized === "design-derivation") return "项目内置预设";
   if (normalized === "image-modeling") return "本地CAD提取";
   if (["colorgrade", "cutout", "upscale", "sharpen"].includes(normalized)) return "本地算法";
   return "Image Gen";
@@ -16665,7 +16820,7 @@ function generationEngineLabel(mode = state.mode) {
 
 function generationEndpointLabel(mode = state.mode) {
   const normalized = normalizeClientMode(mode);
-  if (normalized === "design-derivation") return getReasoningEndpointLabel();
+  if (normalized === "design-derivation") return "项目内置预设";
   if (normalized === "image-modeling") return "Browser Canvas";
   if (["colorgrade", "cutout", "upscale", "sharpen"].includes(normalized)) return "Browser Canvas";
   return getActiveImageEndpoint();
@@ -16695,7 +16850,7 @@ function generationThinkingText(mode = state.mode) {
   }
   if (normalizedMode === "colorgrade") return "正在打开本地调色面板，调节后直接输出新图片。";
   if (normalizedMode === "cutout") return "正在打开抠图面板，先用 AI 视觉识别主体轮廓。";
-  if (!state.thinkingModeEnabled) return "思考模式已关闭：本次不做额外提示词融合，直接使用当前功能预设、隐藏提示词和用户描述交给 Image Gen。";
+  if (!state.thinkingModeEnabled) return "极速模式：使用当前功能的精简预设和用户描述直接生图，不加载完整提示词优化规则。";
   if (normalizedMode === "plan-render") {
     return state.selection
       ? `正在读取轴测图，并锁定${selectionRegionLabel(state.selection)}生成人视角效果图。${planWorkflowRecommendationText}`
@@ -19988,6 +20143,121 @@ function setSettingsButtonState(open) {
   });
 }
 
+function renderDesktopUpdateState(nextState = desktopUpdateState) {
+  const value = nextState || {
+    status: "idle",
+    currentVersion: null,
+    message: "安装版软件启动后会自动检查 GitHub 上的新版本。"
+  };
+  desktopUpdateState = value;
+  const labels = {
+    idle: "准备检查",
+    checking: "正在检查",
+    downloading: "正在下载",
+    downloaded: "可以更新",
+    installing: "正在安装",
+    "up-to-date": "已是最新版",
+    error: "更新失败",
+    unavailable: "安装版可用"
+  };
+  const statusClasses = {
+    downloaded: "available",
+    "up-to-date": "available",
+    checking: "warning",
+    downloading: "warning",
+    installing: "warning",
+    error: "error",
+    unavailable: "disabled"
+  };
+  if (els.updateStatus) {
+    els.updateStatus.className = `api-endpoint-status ${statusClasses[value.status] || "unknown"}`;
+    els.updateStatus.textContent = labels[value.status] || labels.idle;
+  }
+  if (els.currentVersionText) {
+    els.currentVersionText.textContent = value.currentVersion
+      ? `当前版本：v${value.currentVersion}`
+      : "自动更新仅在安装版软件中可用。";
+  }
+  if (els.updateStatusText) els.updateStatusText.textContent = value.message || "准备检查新版本。";
+  if (!els.checkForUpdatesButton) return;
+  const progress = Math.max(0, Math.min(100, Number(value.progress) || 0));
+  const buttonLabels = {
+    checking: "正在检查…",
+    downloading: `正在下载 ${Math.round(progress)}%`,
+    downloaded: "立即重启并更新",
+    installing: "正在安装…",
+    "up-to-date": "再次检查",
+    error: "重新检查",
+    unavailable: "检查更新"
+  };
+  els.checkForUpdatesButton.textContent = buttonLabels[value.status] || "检查更新";
+  els.checkForUpdatesButton.disabled = ["checking", "downloading", "installing", "unavailable"].includes(value.status);
+}
+
+async function refreshDesktopUpdateState({ silent = true } = {}) {
+  if (!window.laoguiDesktop?.getUpdateState) {
+    renderDesktopUpdateState({
+      status: "unavailable",
+      currentVersion: null,
+      message: "请打开安装版老鬼AI使用自动更新。"
+    });
+    return;
+  }
+  try {
+    renderDesktopUpdateState(await window.laoguiDesktop.getUpdateState());
+  } catch (error) {
+    renderDesktopUpdateState({
+      status: "error",
+      currentVersion: desktopUpdateState?.currentVersion || null,
+      message: "读取更新状态失败，请重新打开软件后再试。"
+    });
+    if (!silent) toast(error.message || "读取更新状态失败");
+  }
+}
+
+async function handleDesktopUpdateButtonClick() {
+  if (!window.laoguiDesktop?.checkForUpdates) {
+    toast("自动更新仅在安装版软件中可用");
+    return;
+  }
+  if (desktopUpdateState?.status === "downloaded") {
+    const confirmed = window.confirm("新版本已经下载完成。现在关闭软件并完成更新吗？");
+    if (!confirmed) return;
+    renderDesktopUpdateState({ ...desktopUpdateState, status: "installing", message: "正在关闭软件并安装更新…" });
+    await window.laoguiDesktop.installUpdate();
+    return;
+  }
+  renderDesktopUpdateState({
+    ...desktopUpdateState,
+    status: "checking",
+    progress: null,
+    message: "正在连接 GitHub 检查新版本…"
+  });
+  try {
+    renderDesktopUpdateState(await window.laoguiDesktop.checkForUpdates());
+  } catch (error) {
+    renderDesktopUpdateState({
+      ...desktopUpdateState,
+      status: "error",
+      progress: null,
+      message: "检查更新失败，请确认电脑能正常访问 GitHub 后再试。"
+    });
+    toast(error.message || "检查更新失败");
+  }
+}
+
+function initializeDesktopUpdateUi() {
+  renderDesktopUpdateState();
+  window.laoguiDesktop?.onUpdateState?.((nextState) => {
+    const previousStatus = desktopUpdateState?.status;
+    renderDesktopUpdateState(nextState);
+    if (nextState?.status === "downloaded" && previousStatus !== "downloaded") {
+      toast("新版本已下载完成，可以在设置中重启更新");
+    }
+  });
+  refreshDesktopUpdateState();
+}
+
 function openSettings(trigger = document.activeElement) {
   if (!els.appSettingsOverlay) return;
   settingsReturnFocus = isFocusableTarget(trigger) ? trigger : els.workspaceSettingsButton || els.settingsButton;
@@ -19999,6 +20269,7 @@ function openSettings(trigger = document.activeElement) {
   renderStorageAccess();
   renderLocalApiSettings({ providers: state.runtimeProviders, providerProbes: state.providerProbes });
   renderApiSettings();
+  refreshDesktopUpdateState();
   refreshStorageSummary({ silent: true });
   refreshApiSettings({ silent: true });
   requestAnimationFrame(() => {
@@ -20511,6 +20782,7 @@ els.workspaceStatusCloseButton?.addEventListener("click", () => {
 });
 els.settingsButton?.addEventListener("click", () => openSettings(els.settingsButton));
 els.workspaceSettingsButton?.addEventListener("click", () => openSettings(els.workspaceSettingsButton));
+els.checkForUpdatesButton?.addEventListener("click", handleDesktopUpdateButtonClick);
 els.themeChoiceButtons.forEach((button) => {
   button.addEventListener("click", () => applyTheme(button.dataset.themeChoice === "day" ? "day" : "night"));
 });
@@ -20689,10 +20961,41 @@ els.storagePromptButtons.forEach((button) => {
 els.cleanupTestGeneratedButton?.addEventListener("click", () => runStorageMaintenance("cleanup-test-generated", {}, els.cleanupTestGeneratedButton));
 els.archiveGeneratedButton?.addEventListener("click", () => runStorageMaintenance("archive-generated", { olderThanDays: 30 }, els.archiveGeneratedButton));
 els.pruneLogsButton?.addEventListener("click", () => runStorageMaintenance("prune-task-logs", { keepDays: 30 }, els.pruneLogsButton));
-els.saveReasoningApiSettingsButton?.addEventListener("click", saveReasoningApiSettings);
+els.addImageApiProfileButton?.addEventListener("click", startNewImageApiProfile);
 els.saveImageApiSettingsButton?.addEventListener("click", saveImageApiSettings);
-els.probeReasoningApiButton?.addEventListener("click", () => probeRuntimeProvider("reasoning"));
 els.probePrimaryImageApiButton?.addEventListener("click", () => probeRuntimeProvider("image"));
+els.activateImageApiProfileButton?.addEventListener("click", () => activateImageApiProfile());
+els.imageApiProfileList?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-image-api-profile-action]");
+  if (!button || button.disabled) return;
+  const id = button.dataset.profileId || "";
+  const action = button.dataset.imageApiProfileAction || "";
+  if (action === "edit") editImageApiProfile(id);
+  if (action === "activate") activateImageApiProfile(id);
+  if (action === "delete") deleteImageApiProfile(id);
+});
+[
+  els.imageApiProfileName,
+  els.primaryImageApiBaseUrl,
+  els.primaryImageApiModel,
+  els.primaryImageApiMode,
+  els.primaryImageImagesNewApiCompat,
+  els.primaryImageResponsesTransport,
+  els.primaryImageRequestPolicy,
+  els.primaryImageReasoningEffort,
+  els.primaryImageApiResponsesPath,
+  els.primaryImageApiGenerationPath,
+  els.primaryImageApiEditPath,
+  els.primaryImageApiKey,
+  els.primaryImageProviderManifest
+].forEach((control) => {
+  control?.addEventListener("input", () => {
+    state.imageApiProfileFormDirty = true;
+  });
+  control?.addEventListener("change", () => {
+    state.imageApiProfileFormDirty = true;
+  });
+});
 els.aspectRatioButtons.forEach((button) => button.addEventListener("click", () => {
   setGenerationAspect(button.dataset.aspectRatio || "source");
 }));
@@ -21083,6 +21386,7 @@ function initializeHomeVideoSequence() {
 }
 
 initializeHomeVideoSequence();
+initializeDesktopUpdateUi();
 state.anonymousClientId = getOrCreateClientId();
 state.clientId = state.anonymousClientId;
 loadThemePreference();

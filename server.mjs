@@ -249,31 +249,8 @@ function configuredYybbBaseUrl() {
     || (firstConfiguredEnv(["YYBB_API_KEY", "SAVED_YYBB_API_KEY"]) ? "https://yybb.codes" : "");
 }
 
-function configuredReasoningBaseUrl() {
-  return normalizeBaseUrl(firstConfiguredEnv([
-    "REASONING_BASE_URL",
-    "OPENAI_BASE_URL",
-    configuredYybbBaseUrl(),
-    "SAVED_MXOU_BASE_URL"
-  ]));
-}
-
-function configuredReasoningApiKey() {
-  return firstConfiguredEnv([
-    "REASONING_API_KEY",
-    "OPENAI_API_KEY",
-    "YYBB_API_KEY",
-    "SAVED_YYBB_API_KEY",
-    "SAVED_MXOU_API_KEY"
-  ]);
-}
-
-function configuredReasoningModel() {
-  return firstConfiguredEnv([
-    "REASONING_MODEL",
-    "SAVED_YYBB_REASONING_MODEL",
-    "SAVED_MXOU_REASONING_MODEL"
-  ]) || "gpt-5.5";
+function configuredImageToolRunnerModel() {
+  return firstConfiguredEnv(["IMAGE_STUDIO_TEXT_MODEL", "IMAGE_TOOL_RUNNER_MODEL"]) || "gpt-5.5";
 }
 
 function configuredImageModel() {
@@ -333,13 +310,8 @@ function configuredImageBaseUrls() {
 
 const config = {
   port: Number(process.env.PORT || 4177),
-  reasoningModel: configuredReasoningModel(),
+  imageToolRunnerModel: configuredImageToolRunnerModel(),
   imageModel: configuredImageModel(),
-  reasoningProvider: {
-    baseUrl: configuredReasoningBaseUrl(),
-    apiKey: configuredReasoningApiKey(),
-    responsesPath: firstConfiguredEnv(["REASONING_RESPONSES_PATH", "SAVED_YYBB_RESPONSES_PATH", "SAVED_MXOU_RESPONSES_PATH"])
-  },
   imageProvider: {
     baseUrl: normalizeBaseUrl(process.env.IMAGE_BASE_URL || firstConfiguredEnv([configuredYybbBaseUrl(), "OPENAI_BASE_URL", "SAVED_MXOU_BASE_URL"])),
     baseUrls: configuredImageBaseUrls(),
@@ -371,6 +343,7 @@ const config = {
     allowNativeFallback: parseBooleanEnv(process.env.IMAGE_STUDIO_ALLOW_NATIVE_FALLBACK, false)
   },
   fastImagePromptMaxChars: boundedIntegerEnv("FAST_IMAGE_PROMPT_MAX_CHARS", 1200, 600, 8000),
+  optimizedImagePromptMaxChars: boundedIntegerEnv("OPTIMIZED_IMAGE_PROMPT_MAX_CHARS", 24000, 8000, 32000),
   maxJsonBodyBytes: boundedIntegerEnv("MAX_JSON_BODY_MB", 80, 1, 200) * 1024 * 1024,
   downloadImageMaxBytes: boundedIntegerEnv("DOWNLOAD_IMAGE_MAX_MB", 25, 1, 100) * 1024 * 1024,
   downloadImageTimeoutMs: boundedIntegerEnv("DOWNLOAD_IMAGE_TIMEOUT_SECONDS", 15, 2, 120) * 1000,
@@ -402,7 +375,6 @@ let lastImageEndpointPrecheckAt = 0;
 let imageEndpointPrecheckPromise = null;
 const runtimeSettings = {
   providers: {
-    reasoning: null,
     image: null
   },
   imageEndpoints: [],
@@ -1042,15 +1014,8 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function providerFor(kind) {
-  if (kind === "image") return config.imageProvider;
-  return config.reasoningProvider;
-}
-
-function providerKeyNames(kind) {
-  return kind === "image"
-    ? "IMAGE_API_KEY or YYBB_API_KEY"
-    : "REASONING_API_KEY or OPENAI_API_KEY";
+function providerFor() {
+  return config.imageProvider;
 }
 
 function providerUrl(source, pathname) {
@@ -1281,6 +1246,36 @@ function providerManifestFromInput(input, existing = null) {
 
 config.imageProvider.providerManifest = normalizeProviderManifest(readJsonEnv(["IMAGE_PROVIDER_MANIFEST", "IMAGE_API_PROVIDER_MANIFEST"]));
 
+const envImageRuntimeBaseline = {
+  imageProvider: {
+    ...config.imageProvider,
+    baseUrls: [...config.imageProvider.baseUrls],
+    providerManifest: config.imageProvider.providerManifest || null
+  },
+  imageModel: config.imageModel,
+  imageApiMode: config.imageApiMode,
+  responsesTransport: config.imageStudioEngine.responsesTransport,
+  requestPolicy: config.imageStudioEngine.requestPolicy,
+  imagesNewApiCompat: config.imageStudioEngine.imagesNewApiCompat,
+  reasoningEffort: config.imageStudioEngine.reasoningEffort
+};
+
+function restoreEnvImageRuntimeBaseline() {
+  config.imageProvider.baseUrl = envImageRuntimeBaseline.imageProvider.baseUrl;
+  config.imageProvider.baseUrls = [...envImageRuntimeBaseline.imageProvider.baseUrls];
+  config.imageProvider.apiKey = envImageRuntimeBaseline.imageProvider.apiKey;
+  config.imageProvider.responsesPath = envImageRuntimeBaseline.imageProvider.responsesPath;
+  config.imageProvider.imageGenerationPath = envImageRuntimeBaseline.imageProvider.imageGenerationPath;
+  config.imageProvider.imageEditPath = envImageRuntimeBaseline.imageProvider.imageEditPath;
+  config.imageProvider.providerManifest = envImageRuntimeBaseline.imageProvider.providerManifest || null;
+  config.imageModel = envImageRuntimeBaseline.imageModel;
+  config.imageApiMode = envImageRuntimeBaseline.imageApiMode;
+  config.imageStudioEngine.responsesTransport = envImageRuntimeBaseline.responsesTransport;
+  config.imageStudioEngine.requestPolicy = envImageRuntimeBaseline.requestPolicy;
+  config.imageStudioEngine.imagesNewApiCompat = envImageRuntimeBaseline.imagesNewApiCompat;
+  config.imageStudioEngine.reasoningEffort = envImageRuntimeBaseline.reasoningEffort;
+}
+
 function isYybbBaseUrl(baseUrl) {
   return /(^|\/\/)(?:[^/]*\.)?yybb\.(?:codes|dog)(?:\/|$)/i.test(String(baseUrl || ""));
 }
@@ -1296,7 +1291,7 @@ function imageProviderKind(baseUrl) {
 }
 
 function runtimeImageProviderForBaseUrl(baseUrl) {
-  const provider = runtimeSettings.providers.image;
+  const provider = activeRuntimeImageEndpoint();
   if (!provider?.apiKey || !provider.baseUrl) return null;
   return normalizeBaseUrl(provider.baseUrl) === normalizeBaseUrl(baseUrl) ? provider : null;
 }
@@ -1328,26 +1323,39 @@ function imageProviderKeySource(baseUrl) {
   return firstConfiguredEnv(["OPENAI_API_KEY"]) ? "openai" : "image";
 }
 
+function runtimeImageEndpointSource(endpoint) {
+  if (!endpoint?.baseUrl || !endpoint?.apiKey) return null;
+  return {
+    ...endpoint,
+    runtimeId: endpoint.id,
+    kind: imageProviderKind(endpoint.baseUrl),
+    keySource: "runtime",
+    apiMode: endpoint.apiMode || config.imageApiMode,
+    responsesTransport: endpoint.responsesTransport || config.imageStudioEngine.responsesTransport,
+    requestPolicy: endpoint.requestPolicy || config.imageStudioEngine.requestPolicy,
+    imagesNewApiCompat: parseBooleanEnv(endpoint.imagesNewApiCompat, config.imageStudioEngine.imagesNewApiCompat),
+    reasoningEffort: endpoint.reasoningEffort || config.imageStudioEngine.reasoningEffort,
+    model: endpoint.model || config.imageModel,
+    responsesPath: normalizeResponsesPathForBaseUrl(endpoint.baseUrl, endpoint.responsesPath)
+  };
+}
+
+function allRuntimeImageEndpointSources() {
+  return runtimeSettings.imageEndpoints
+    .map(runtimeImageEndpointSource)
+    .filter(Boolean);
+}
+
 function runtimeImageEndpointSources() {
   return runtimeSettings.imageEndpoints
-    .filter((endpoint) => endpoint?.enabled !== false)
-    .map((endpoint) => ({
-      ...endpoint,
-      runtimeId: endpoint.id,
-      kind: imageProviderKind(endpoint.baseUrl),
-      keySource: "runtime",
-      apiMode: endpoint.apiMode || config.imageApiMode,
-      responsesTransport: endpoint.responsesTransport || config.imageStudioEngine.responsesTransport,
-      requestPolicy: endpoint.requestPolicy || config.imageStudioEngine.requestPolicy,
-      imagesNewApiCompat: parseBooleanEnv(endpoint.imagesNewApiCompat, config.imageStudioEngine.imagesNewApiCompat),
-      reasoningEffort: endpoint.reasoningEffort || config.imageStudioEngine.reasoningEffort,
-      model: endpoint.model || config.imageModel,
-      responsesPath: normalizeResponsesPathForBaseUrl(endpoint.baseUrl, endpoint.responsesPath)
-    }));
+    .filter((endpoint) => endpoint?.enabled === true)
+    .map(runtimeImageEndpointSource)
+    .filter(Boolean);
 }
 
 function imageProviderSources() {
   const runtimeSources = runtimeImageEndpointSources();
+  if (runtimeSources.length) return runtimeSources;
   const runtimeBaseUrls = new Set(runtimeSources.map((source) => normalizeBaseUrl(source.baseUrl)));
   const envSources = config.imageProvider.baseUrls
     .filter((baseUrl) => !runtimeBaseUrls.has(normalizeBaseUrl(baseUrl)))
@@ -1536,9 +1544,9 @@ function markImageEndpointFailure(source, error, { probe = false } = {}) {
   stat.cooldownUntil = now + baseCooldown * failureCount;
 }
 
-function imageEndpointHealth() {
+function imageEndpointHealth(sources = imageProviderSources()) {
   const now = Date.now();
-  return imageProviderSources().map((source) => {
+  return sources.map((source) => {
     const stat = imageEndpointStat(source.baseUrl);
     const blockReason = imageEndpointBlockReason(source, now);
     return {
@@ -1574,7 +1582,6 @@ function imageEndpointHealth() {
 }
 
 const providerProbeStats = {
-  reasoning: null,
   image: null
 };
 
@@ -1675,8 +1682,10 @@ function hydrateImageEndpointStatsFromTaskLogs(limit = 120) {
     }
   }
 
-  const preferred = orderedImageProviderSources()[0];
-  if (preferred) config.imageProvider.baseUrl = preferred.baseUrl;
+  if (!activeRuntimeImageEndpoint()) {
+    const preferred = orderedImageProviderSources()[0];
+    if (preferred) config.imageProvider.baseUrl = preferred.baseUrl;
+  }
 }
 
 async function probeImageEndpointSource(source, { timeoutMs = 12000 } = {}) {
@@ -1702,7 +1711,14 @@ async function probeImageEndpointSource(source, { timeoutMs = 12000 } = {}) {
 
 async function probeImageEndpoints({ timeoutMs = 12000, endpointId = "", baseUrl = "", autoActivate = true } = {}) {
   const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
-  const allSources = imageProviderSources().filter((source) => source.apiKey);
+  const savedSources = allRuntimeImageEndpointSources();
+  const allSources = endpointId || normalizedBaseUrl
+    ? [...savedSources, ...imageProviderSources()].filter((source, index, list) => (
+        list.findIndex((candidate) => candidate.runtimeId
+          ? candidate.runtimeId === source.runtimeId
+          : normalizeBaseUrl(candidate.baseUrl) === normalizeBaseUrl(source.baseUrl)) === index
+      )).filter((source) => source.apiKey)
+    : imageProviderSources().filter((source) => source.apiKey);
   const sources = allSources.filter((source) => {
     if (endpointId && source.runtimeId !== endpointId) return false;
     if (normalizedBaseUrl && normalizeBaseUrl(source.baseUrl) !== normalizedBaseUrl) return false;
@@ -1715,17 +1731,17 @@ async function probeImageEndpoints({ timeoutMs = 12000, endpointId = "", baseUrl
       error.status = 404;
       throw error;
     }
-    return imageEndpointHealth();
+    return imageEndpointHealth(endpointId || normalizedBaseUrl ? sources : imageProviderSources());
   }
 
   await Promise.all(sources.map((source) => probeImageEndpointSource(source, { timeoutMs })));
 
-  if (autoActivate) {
+  if (autoActivate && !activeRuntimeImageEndpoint()) {
     const preferred = orderedImageProviderSources()[0];
     if (preferred) config.imageProvider.baseUrl = preferred.baseUrl;
     console.log(`[image-provider] active endpoint: ${config.imageProvider.baseUrl}`);
   }
-  return imageEndpointHealth();
+  return imageEndpointHealth(endpointId || normalizedBaseUrl ? sources : imageProviderSources());
 }
 
 async function refreshImageEndpointSpeeds({ force = false } = {}) {
@@ -1857,64 +1873,12 @@ async function runCurlModelsRequest(url, apiKey, timeoutMs) {
   return body;
 }
 
-async function probeResponsesTextProvider(source, model, timeoutMs) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(providerUrl(source, providerResponsesPath(source)), {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${source.apiKey}`,
-        "content-type": "application/json",
-        accept: "text/event-stream"
-      },
-      body: JSON.stringify({
-        model,
-        input: "Reply with exactly OK. This is a local API connectivity test.",
-        stream: true
-      }),
-      signal: controller.signal
-    });
-
-    if (!response.ok) {
-      const errorBody = await safeJsonResponse(response);
-      const message = errorBody?.error?.message || errorBody?.message || response.statusText || "Responses test failed";
-      const error = new Error(message);
-      error.status = response.status;
-      error.details = errorBody;
-      throw error;
-    }
-
-    const contentType = response.headers.get("content-type") || "";
-    if (!contentType.includes("event-stream")) {
-      const body = await response.json().catch(() => ({}));
-      return findOutputText(body) || body?.output_text || "";
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let text = "";
-    while (true) {
-      const { value, done } = await reader.read();
-      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-      let boundary = buffer.indexOf("\n\n");
-      while (boundary >= 0) {
-        const frame = buffer.slice(0, boundary);
-        buffer = buffer.slice(boundary + 2);
-        text += parseResponsesTextFromSseFrame(frame);
-        boundary = buffer.indexOf("\n\n");
-      }
-      if (done) break;
-    }
-    if (buffer.trim()) text += parseResponsesTextFromSseFrame(buffer);
-    return text.trim();
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 async function probeProviderConnection(kind, provider, { timeoutMs = 12000 } = {}) {
+  if (kind !== "image") {
+    const error = new Error("只支持检测生图 API");
+    error.status = 400;
+    throw error;
+  }
   const started = Date.now();
   const source = {
     baseUrl: normalizeBaseUrl(provider.baseUrl),
@@ -1926,7 +1890,7 @@ async function probeProviderConnection(kind, provider, { timeoutMs = 12000 } = {
     kind
   };
   if (!source.baseUrl || !source.apiKey) {
-    const error = new Error(kind === "image" ? "请先填写生图 API Base URL 和 Key。" : "请先填写思考 API Base URL 和 Key。");
+    const error = new Error("请先填写生图 API Base URL 和 Key。");
     error.status = 400;
     throw error;
   }
@@ -1939,7 +1903,7 @@ async function probeProviderConnection(kind, provider, { timeoutMs = 12000 } = {
     let modelListed = null;
     let imageProbeSource = null;
 
-    if (kind === "image") {
+    {
       const providerApiMode = normalizeImageApiMode(provider.apiMode || config.imageApiMode);
       imageProbeSource = {
         ...source,
@@ -1967,7 +1931,7 @@ async function probeProviderConnection(kind, provider, { timeoutMs = 12000 } = {
             quality: "low",
             sourceOverride: imageProbeSource,
             imageModelOverride: model || config.imageModel,
-            textModelOverride: config.reasoningModel || "gpt-5.5"
+            textModelOverride: config.imageToolRunnerModel
           })
         : nativeApiMode === "responses"
         ? await openaiResponsesImageDirect({
@@ -1986,9 +1950,6 @@ async function probeProviderConnection(kind, provider, { timeoutMs = 12000 } = {
             }, { timeoutMs, source: imageProbeSource });
       imageBytes = generated.buffer?.length || 0;
       message = `${generated.imageApi === "image-studio-cli" ? "Image Studio CLI" : generated.imageApi === "responses" ? "Responses Image Gen" : "Images API"} 检测成功，已返回图片数据 ${formatBytes(imageBytes)}。`;
-    } else {
-      const text = await probeResponsesTextProvider({ ...source, responsesPath }, model, timeoutMs);
-      message = text ? `Responses 文本检测成功：${truncateLogText(text, 80)}` : "Responses 文本检测成功。";
     }
 
     const result = {
@@ -2038,68 +1999,6 @@ async function probeProviderConnection(kind, provider, { timeoutMs = 12000 } = {
       markImageEndpointFailure(imageSource, error, { probe: true });
     }
     return result;
-  }
-}
-
-async function openaiChatCompletionStream(payload, { timeoutMs = 180000, provider = "reasoning" } = {}) {
-  const source = providerFor(provider);
-  if (!source.apiKey) {
-    const error = new Error(`Missing ${providerKeyNames(provider)}`);
-    error.status = 503;
-    throw error;
-  }
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(providerUrl(source, "/v1/chat/completions"), {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${source.apiKey}`,
-        "content-type": "application/json",
-        accept: "text/event-stream"
-      },
-      body: JSON.stringify({ ...payload, stream: true }),
-      signal: controller.signal
-    });
-
-    const contentType = response.headers.get("content-type") || "";
-    if (!response.ok) {
-      const errorBody = await safeJsonResponse(response);
-      const message = errorBody?.error?.message || errorBody?.message || response.statusText || "Model request failed";
-      const error = new Error(message);
-      error.status = response.status;
-      error.details = errorBody;
-      throw error;
-    }
-
-    if (!contentType.includes("event-stream")) {
-      const body = await response.json();
-      return body?.choices?.[0]?.message?.content || "";
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let text = "";
-
-    while (true) {
-      const { value, done } = await reader.read();
-      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-      let boundary = buffer.indexOf("\n\n");
-      while (boundary >= 0) {
-        const frame = buffer.slice(0, boundary);
-        buffer = buffer.slice(boundary + 2);
-        text += parseSseFrame(frame);
-        boundary = buffer.indexOf("\n\n");
-      }
-      if (done) break;
-    }
-
-    if (buffer.trim()) text += parseSseFrame(buffer);
-    return text;
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -2179,62 +2078,6 @@ async function openaiResponsesImageStreamFromSource(payload, { timeoutMs = 42000
   }
 }
 
-async function openaiResponsesTextStream(payload, { timeoutMs = 240000, provider = "reasoning" } = {}) {
-  const source = providerFor(provider);
-  if (!source.apiKey) {
-    const error = new Error(`Missing ${providerKeyNames(provider)}`);
-    error.status = 503;
-    throw error;
-  }
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(providerUrl(source, providerResponsesPath(source)), {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${source.apiKey}`,
-        "content-type": "application/json",
-        accept: "text/event-stream"
-      },
-      body: JSON.stringify({ ...payload, stream: true }),
-      signal: controller.signal
-    });
-
-    if (!response.ok) {
-      const errorBody = await safeJsonResponse(response);
-      const message = errorBody?.error?.message || errorBody?.message || response.statusText || "Model request failed";
-      const error = new Error(message);
-      error.status = response.status;
-      error.details = errorBody;
-      throw error;
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let text = "";
-
-    while (true) {
-      const { value, done } = await reader.read();
-      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-      let boundary = buffer.indexOf("\n\n");
-      while (boundary >= 0) {
-        const frame = buffer.slice(0, boundary);
-        buffer = buffer.slice(boundary + 2);
-        text += parseResponsesTextFromSseFrame(frame);
-        boundary = buffer.indexOf("\n\n");
-      }
-      if (done) break;
-    }
-
-    if (buffer.trim()) text += parseResponsesTextFromSseFrame(buffer);
-    return text.trim();
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 async function openaiResponsesImageDirect({ prompt, inputImages, size, quality, useProviderPool = true, source = null }) {
   const providerSource = source || activeImageProviderSource();
   const imageModel = providerSource?.model || config.imageModel;
@@ -2253,7 +2096,7 @@ async function openaiResponsesImageDirect({ prompt, inputImages, size, quality, 
     }))
   ];
   const payload = {
-    model: config.reasoningModel,
+    model: config.imageToolRunnerModel,
     input: [{ role: "user", content }],
     tools: [
       {
@@ -2913,6 +2756,24 @@ function pickActualImageParams(source) {
   return Object.keys(actual).length ? actual : undefined;
 }
 
+function imageBufferDimensions(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 24) return null;
+  const pngSignature = "89504e470d0a1a0a";
+  if (buffer.subarray(0, 8).toString("hex") !== pngSignature) return null;
+  const width = buffer.readUInt32BE(16);
+  const height = buffer.readUInt32BE(20);
+  return width > 0 && height > 0 ? { width, height } : null;
+}
+
+function actualImageParamsFromBuffer(buffer, params = null, requestedSize = "") {
+  const dimensions = imageBufferDimensions(buffer);
+  return {
+    ...(params || {}),
+    ...(requestedSize ? { requested_size: normalizeImageSize(requestedSize) } : {}),
+    ...(dimensions ? { size: `${dimensions.width}x${dimensions.height}` } : {})
+  };
+}
+
 function mergeActualImageParams(...sources) {
   const merged = Object.assign({}, ...sources.filter((source) => source && Object.keys(source).length));
   return Object.keys(merged).length ? merged : undefined;
@@ -3023,202 +2884,64 @@ function stripDataUrlPrefix(value) {
     : String(value);
 }
 
-function parseSseFrame(frame) {
-  const lines = frame.split(/\r?\n/);
-  const data = lines
-    .filter((line) => line.startsWith("data:"))
-    .map((line) => line.slice(5).trimStart())
-    .join("\n");
-
-  if (!data || data === "[DONE]") return "";
-  try {
-    const event = JSON.parse(data);
-    const choice = event?.choices?.[0];
-    return choice?.delta?.content || choice?.message?.content || "";
-  } catch {
-    return "";
-  }
-}
-
-function briefDeliveryContext(brief = {}) {
-  const parts = [
-    brief.projectStage ? `Project stage: ${brief.projectStage}` : "",
-    brief.deliveryPurpose ? `Delivery purpose: ${brief.deliveryPurpose}` : "",
-    brief.reviewAudience ? `Review audience: ${brief.reviewAudience}` : "",
-    brief.preserveNotes ? `Must preserve: ${brief.preserveNotes}` : "",
-    brief.constraints ? `Constraints: ${brief.constraints}` : ""
-  ].filter(Boolean);
-  return parts.length ? parts.join("\n") : "No extra delivery metadata provided.";
-}
-
-async function createDesignPlan(brief) {
-  const system = [
-    "You are a senior creative director for architecture, interiors, retail, hospitality, exhibition and residential space design.",
-    "Use gpt-5.5 level reasoning to turn a designer brief into practical creative directions.",
-    "Think like a working designer: first diagnose site and user intent, then set spatial order, then compose material, lighting, camera and atmosphere, then run an aesthetic critique before finalizing.",
-    designerAgentAestheticRubric(),
-    "Return valid JSON only. No markdown. No explanatory wrapper.",
-    "Write in concise professional Chinese.",
-    "Every visual direction must be buildable as a spatial concept, not only a decorative style.",
-    "Avoid copying named living designers. Avoid fake certainty about codes, budget or engineering feasibility."
-  ].join(" ");
-
-  const user = {
-    task: "Generate a first-round concept board plan for a spatial design creative platform.",
-    brief,
-    delivery_context: briefDeliveryContext(brief),
-    required_schema: {
-      project_title: "string",
-      project_summary: "string",
-      design_read: "string",
-      directions: [
-        {
-          id: "string, short slug",
-          name: "string",
-          concept: "string",
-          spatial_strategy: "string",
-          plan_moves: ["string"],
-          palette: [
-            { name: "string", hex: "string" }
-          ],
-          materials: ["string"],
-          lighting: "string",
-          signature_moments: ["string"],
-          image_prompt: "English prompt for gpt-image-2, 9:16 editorial architecture/interior concept image, no brand logos, no text",
-          client_pitch: "string",
-          risks: ["string"]
-        }
-      ],
-      proposal_sections: ["string"],
-      next_questions: ["string"]
-    },
-    constraints: [
-      "Return exactly 3 design directions.",
-      "Each direction must include 4-6 plan_moves and 4-6 materials.",
-      "Each image_prompt must describe architecture, layout, materials, camera, lighting and atmosphere.",
-      "Reflect projectStage, deliveryPurpose and reviewAudience in design_read, client_pitch and proposal_sections.",
-      "Treat preserveNotes and constraints as design invariants before style language; surface related tradeoffs in risks.",
-      "Use realistic materials and spatial vocabulary.",
-      "Every direction must pass the designer aesthetic rubric: clear spatial order, proportion, material authenticity, lighting hierarchy, restrained palette, focal point, negative space, contextual fit and feasibility.",
-      "Avoid generic showroom looks, random decoration, impossible materials, cluttered styling and one-note color palettes."
-    ]
-  };
-
-  const payload = {
-    model: config.reasoningModel,
-    messages: [
-      { role: "system", content: system },
-      { role: "user", content: JSON.stringify(user, null, 2) }
-    ],
-    response_format: { type: "json_object" },
-    temperature: 0.45,
-    max_completion_tokens: 3600
-  };
-
-  let result;
-  let text = "";
-  try {
-    text = await openaiChatCompletionStream(payload, { timeoutMs: 240000 });
-  } catch (error) {
-    if (error.status !== 400) throw error;
-    const fallback = { ...payload };
-    delete fallback.response_format;
-    text = await openaiChatCompletionStream(fallback, { timeoutMs: 240000 });
-  }
-
-  const parsed = parseModelJson(text);
-  return normalizePlan(parsed, brief);
-}
-
-function parseModelJson(text) {
-  if (!text.trim()) throw new Error("gpt-5.5 returned an empty planning result");
-  const cleaned = String(text)
-    .trim()
-    .replace(/^```(?:json)?/i, "")
-    .replace(/```$/i, "")
-    .trim();
-  try {
-    return JSON.parse(cleaned);
-  } catch (error) {
-    const jsonText = extractFirstJsonObject(cleaned);
-    if (!jsonText) {
-      const next = new Error("gpt-5.5 did not return JSON");
-      next.rawText = truncateLogText(cleaned, 12000);
-      throw next;
-    }
-    try {
-      return JSON.parse(jsonText);
-    } catch (innerError) {
-      const next = new Error(`gpt-5.5 returned invalid JSON: ${innerError.message || error.message || innerError}`);
-      next.rawText = truncateLogText(jsonText, 12000);
-      throw next;
-    }
-  }
-}
-
-async function parseModelJsonWithRepair(text, purpose = "model output JSON") {
-  try {
-    return parseModelJson(text);
-  } catch (error) {
-    const rawText = String(error.rawText || text || "").trim();
-    if (!rawText) throw error;
-    const payload = {
-      model: config.reasoningModel,
-      input: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "input_text",
-              text: [
-                "Repair the following assistant output into one valid JSON object.",
-                `Purpose: ${purpose}.`,
-                "Do not add new facts. Preserve keys and values as much as possible.",
-                "Use double-quoted JSON strings only. Escape line breaks inside strings. Remove comments, markdown, trailing commas, and unfinished fragments.",
-                "Return valid JSON only.",
-                rawText
-              ].join("\n\n")
-            }
-          ]
-        }
-      ],
-      max_output_tokens: 5200
-    };
-    const repaired = await openaiResponsesTextStream(payload, { timeoutMs: 120000, provider: "reasoning" });
-    return parseModelJson(repaired);
-  }
-}
-
-function extractFirstJsonObject(text) {
-  const source = String(text || "");
-  const start = source.indexOf("{");
-  if (start < 0) return "";
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let index = start; index < source.length; index += 1) {
-    const char = source[index];
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-      } else if (char === "\\") {
-        escaped = true;
-      } else if (char === "\"") {
-        inString = false;
+async function createDesignPlan(brief = {}) {
+  const projectName = String(brief.projectName || brief.spaceType || "未命名空间项目");
+  const spaceType = String(brief.spaceType || brief.projectType || "空间项目");
+  const style = String(brief.style || "克制、自然、耐看");
+  const functions = String(brief.functions || "清晰分区、顺畅动线、舒适使用");
+  const invariants = [brief.preserveNotes, brief.constraints].filter(Boolean).join("；") || "保持功能、尺度与落地性";
+  const commonPrompt = `${projectName}, ${spaceType}, ${style}, functions: ${functions}, preserve: ${invariants}`;
+  return normalizePlan({
+    project_title: projectName,
+    project_summary: `围绕“${spaceType}”使用本地预设整理三套可继续生图的设计方向。`,
+    design_read: `核心需求：${functions}。风格方向：${style}。必须保留：${invariants}。`,
+    directions: [
+      {
+        id: "ordered-foundation",
+        name: "秩序基线",
+        concept: "先建立清晰的空间秩序、比例和动线，再用克制材料完成整体气质。",
+        spatial_strategy: "以主轴、主功能区和留白关系组织空间，减少无意义装饰。",
+        plan_moves: ["明确主入口和视觉焦点", "梳理主次动线", "整合高频功能区", "控制家具与通道尺度", "保留连续留白"],
+        palette: [{ name: "暖白", hex: "#E8E1D4" }, { name: "木色", hex: "#B89F7A" }, { name: "深灰", hex: "#394047" }, { name: "柔黑", hex: "#1F2933" }],
+        materials: ["暖白矿物涂料", "自然木饰面", "哑光石材", "细纹金属", "低反射玻璃"],
+        lighting: "自然光优先，结合均匀间接光和少量重点照明。",
+        signature_moments: ["入口框景", "连续材质主墙", "安静的核心焦点", "光影过渡"],
+        image_prompt: `${commonPrompt}. Direction: ordered spatial foundation, clear circulation, restrained warm materials, natural daylight, soft indirect lighting, editorial architecture render, no text, no logo, no people.`,
+        client_pitch: "这是风险最低、最容易落地并保持长期耐看的基础方向。",
+        risks: ["过度克制可能显得平淡，需要通过比例和细节提升识别度", "施工节点需保持简洁精准"]
+      },
+      {
+        id: "material-depth",
+        name: "材料层次",
+        concept: "用有限材料的粗细、冷暖和反射差异建立丰富但统一的触感。",
+        spatial_strategy: "保持布局清楚，通过墙、地、顶和固定家具的材料关系形成层次。",
+        plan_moves: ["锁定四至六种主材料", "建立粗糙与细腻对比", "统一收口和分缝", "在重点区域增加触感", "控制高反射表面"],
+        palette: [{ name: "砂岩", hex: "#C7B299" }, { name: "陶土", hex: "#8F6F52" }, { name: "雾灰", hex: "#D7D9D3" }, { name: "炭黑", hex: "#394047" }],
+        materials: ["浅色石材", "烟熏木饰面", "手工肌理涂料", "拉丝金属", "织物或藤编"],
+        lighting: "用侧光和洗墙光突出材料纹理，整体色温保持统一。",
+        signature_moments: ["材料转角", "触感近景", "主墙与家具一体化", "柔和反射"],
+        image_prompt: `${commonPrompt}. Direction: tactile material depth, stone, timber, mineral plaster, brushed metal, precise joints, side lighting revealing texture, layered interior composition, no text, no logo, no people.`,
+        client_pitch: "通过真实材料和工艺细节建立项目记忆点，适合近看和客户提案。",
+        risks: ["材料种类过多会失去统一感", "需提前确认样板和收口工艺"]
+      },
+      {
+        id: "light-narrative",
+        name: "光影叙事",
+        concept: "以自然光、功能光和重点光的层级引导空间体验。",
+        spatial_strategy: "让主要功能节点按明暗节奏串联，形成进入、停留和转折。",
+        plan_moves: ["确定主要采光方向", "设置明暗过渡", "给核心功能独立照明", "隐藏非必要灯具", "为夜间场景保留层次"],
+        palette: [{ name: "柔白", hex: "#F0EADF" }, { name: "暖金", hex: "#C7B299" }, { name: "棕灰", hex: "#8F6F52" }, { name: "夜灰", hex: "#1F2933" }],
+        materials: ["低光泽木材", "透光玻璃", "细腻涂料", "暖色金属", "柔软织物"],
+        lighting: "自然光作为主光，间接光补足环境，局部重点光负责焦点。",
+        signature_moments: ["入口光带", "主功能焦点光", "墙面渐变光", "夜间温暖节点"],
+        image_prompt: `${commonPrompt}. Direction: cinematic but practical light hierarchy, natural daylight, warm indirect lighting, focused accents, calm shadows, clear spatial depth, editorial interior render, no text, no logo, no people.`,
+        client_pitch: "以光影提升氛围和空间节奏，不依赖复杂造型也能形成明显体验。",
+        risks: ["照度不足会影响实际使用", "需要结合灯具参数和现场调试"]
       }
-      continue;
-    }
-    if (char === "\"") {
-      inString = true;
-      continue;
-    }
-    if (char === "{") depth += 1;
-    if (char === "}") {
-      depth -= 1;
-      if (depth === 0) return source.slice(start, index + 1);
-    }
-  }
-  return "";
+    ],
+    proposal_sections: ["项目理解", "空间秩序", "三套设计方向", "材料与色彩", "灯光策略", "风险与下一步"],
+    next_questions: ["最需要优先解决的功能是什么？", "哪些现状条件必须保留？", "预算与施工周期范围是多少？", "更偏好白天还是夜间氛围？"]
+  }, brief);
 }
 
 function normalizePlan(plan, brief) {
@@ -3245,7 +2968,7 @@ function normalizePlan(plan, brief) {
     proposal_sections: asStringArray(plan.proposal_sections).slice(0, 8),
     next_questions: asStringArray(plan.next_questions).slice(0, 8),
     meta: {
-      reasoning_model: config.reasoningModel,
+      planning_backend: "local-preset",
       image_model: config.imageModel,
       created_at: new Date().toISOString()
     }
@@ -4466,7 +4189,7 @@ function fallbackSpatialImageModelingAnalysis({ body = {}, brief = {}, intent = 
     ...(providedAnalysis || {}),
     subject: providedAnalysis?.subject || brief.projectName || primaryImage?.name || "室内空间",
     sourceType: /^(object|product|image-reference)?$/i.test(String(providedAnalysis?.sourceType || "")) ? sourceType : providedAnalysis?.sourceType || sourceType,
-    summary: providedAnalysis?.summary || `reasoning 端点未完成分析：${reasoningFallbackReason(error)}。已生成空间类兜底分析用于继续 3D 建模。`,
+    summary: providedAnalysis?.summary || `已使用项目内置预设生成空间分析：${localFallbackReason(error)}。`,
     confidence: Math.min(0.58, Number(providedAnalysis?.confidence || 0.58) || 0.58),
     completeness: {
       isComplete: true,
@@ -4475,7 +4198,7 @@ function fallbackSpatialImageModelingAnalysis({ body = {}, brief = {}, intent = 
       missingParts: [],
       edgeContact: [],
       recommendation: "端点超时，先生成可编辑基础模型；后续通过选择对象校正尺寸、位置和角度。",
-      reason: reasoningFallbackReason(error)
+      reason: localFallbackReason(error)
     },
     targetBounds: providedAnalysis?.targetBounds || { x: 0.08, y: 0.08, width: 0.84, height: 0.84 },
     targetShape: providedAnalysis?.targetShape || {
@@ -4497,7 +4220,7 @@ function fallbackSpatialImageModelingAnalysis({ body = {}, brief = {}, intent = 
     excludedRegions: asStringArray(providedAnalysis?.excludedRegions).length ? providedAnalysis.excludedRegions : ["photo shadows", "specular highlights", "background noise"],
     layers,
     fallbackAnalysis: true,
-    fallbackReason: reasoningFallbackReason(error)
+    fallbackReason: localFallbackReason(error)
   }, body);
 }
 
@@ -4688,14 +4411,14 @@ function fallbackInteriorWhiteModelSceneFromAnalysis(modelingAnalysis = {}, { br
     title: `${brief.projectName || primaryImage?.name || "室内空间"} · 兜底3D模型`,
     sourceType: modelingAnalysis.sourceType || "interior-photo",
     units: "meters",
-    summary: `reasoning 端点超时/中止，已先根据${cadReferenceMeta ? "CAD结构参考图和" : ""}图片分析生成可编辑基础室内模型；可继续拖拽校正位置、尺寸和角度后导出。`,
+    summary: `已根据${cadReferenceMeta ? "CAD结构参考图和" : ""}本地空间预设生成可编辑基础室内模型；可继续拖拽校正位置、尺寸和角度后导出。`,
     confidence: 0.54,
     assumptions: [
       "这是端点超时后的本地参数化兜底模型，不是完整 AI 推理结果。",
       "单张室内图背面、遮挡区域和真实尺寸需要人工复核。"
     ],
     limitations: [
-      `原始建模请求未完成：${reasoningFallbackReason(error)}`,
+      `已使用项目内置预设：${localFallbackReason(error)}`,
       "细部造型、复杂异形构件和精确家具尺寸需要继续编辑。"
     ],
     spacePlan: {
@@ -4961,7 +4684,7 @@ function normalizeWhiteModelScene(parsed, { brief = {}, intent = "", primaryImag
       type: primaryImage.type || null,
       sourceType: primaryImage.sourceType || null
     } : null,
-    reasoningModel: config.reasoningModel,
+    reasoningModel: "local-preset",
     createdAt: new Date().toISOString()
   };
 }
@@ -5606,8 +5329,7 @@ function imageStudioEffectiveModel(source = {}, requestedModel = "") {
 
 function imageStudioCliSize(size) {
   const text = String(size || "").trim();
-  if (!text || text === "auto") return closestStandardImageSize(text);
-  return closestStandardImageSize(text);
+  return normalizeImageSize(text || "auto");
 }
 
 function imageStudioCliDiagnostics(output, rawPath = "") {
@@ -5676,7 +5398,7 @@ async function runImageStudioEngine({ prompt, inputImages = [], size = "auto", q
     "--quality", normalizeImageToolQuality(quality),
     "--output-format", "png",
     "--image-model", imageStudioEffectiveModel(source, imageModelOverride),
-    "--text-model", textModelOverride || config.reasoningModel || "gpt-5.5",
+    "--text-model", textModelOverride || config.imageToolRunnerModel,
     "--request-policy", requestPolicy,
     "--reasoning-effort", reasoningEffort,
     "--partial-images", String(status.partialImages),
@@ -6380,8 +6102,8 @@ function normalizeImageModelingAnalysis(value = {}, body = {}) {
     },
     cadReferenceImage: source.cadReferenceImage || source.cad_reference_image || source.modelingCadPrepass?.image || source.modeling_cad_prepass?.image || null,
     cadReferenceParameters: source.cadReferenceParameters || source.cad_reference_parameters || null,
-    source: "gpt-5.5-vision-layer-analysis",
-    model: config.reasoningModel
+    source: String(source.source || "local-preset"),
+    model: String(source.model || "local-preset")
   };
 }
 
@@ -6535,7 +6257,7 @@ async function createImageModelingWhiteBackgroundPrepass({ body = {}, primaryIma
     buffer: generated.buffer,
     slug: `image-modeling-white-${slugify(primaryImage.name || brief.projectName || "subject")}`,
     meta: {
-      reasoning_model: generated.reasoningModel || config.reasoningModel,
+      reasoning_model: generated.reasoningModel || config.imageToolRunnerModel,
       image_model: config.imageModel,
       prompt_library_version: promptLibraryVersion,
       mode: shouldOutpaint ? "image-modeling-white-background-outpaint" : "image-modeling-white-background",
@@ -6627,7 +6349,7 @@ async function createImageModelingOutpaintPrepass({ body = {}, primaryImage = {}
     buffer: generated.buffer,
     slug: `image-modeling-outpaint-${slugify(primaryImage.name || brief.projectName || "subject")}`,
     meta: {
-      reasoning_model: generated.reasoningModel || config.reasoningModel,
+      reasoning_model: generated.reasoningModel || config.imageToolRunnerModel,
       image_model: config.imageModel,
       prompt_library_version: promptLibraryVersion,
       mode: "image-modeling-subject-outpaint",
@@ -6777,7 +6499,7 @@ async function createImageModelingCadReferencePrepass({ body = {}, primaryImage 
     buffer: generated.buffer,
     slug: `image-modeling-cad-reference-${slugify(primaryImage.name || brief.projectName || "subject")}`,
     meta: {
-      reasoning_model: generated.reasoningModel || config.reasoningModel,
+      reasoning_model: generated.reasoningModel || config.imageToolRunnerModel,
       image_model: config.imageModel,
       prompt_library_version: promptLibraryVersion,
       mode: "image-modeling-cad-reference",
@@ -6793,7 +6515,7 @@ async function createImageModelingCadReferencePrepass({ body = {}, primaryImage 
       inputImageType: "cad-structure-reference",
       prompt,
       sourcePrompt: prompt,
-      intent: "生成 CAD 友好的结构参考图，帮助 gpt-5.5 在正式建模时稳定识别体块、开口、屋顶和层级。",
+      intent: "生成 CAD 友好的结构参考图，帮助本地建模预设稳定组织体块、开口、屋顶和层级。",
       endpoint: generated.endpoint,
       attempt: generated.attempt,
       attempts: generated.attempts,
@@ -6995,7 +6717,7 @@ async function createImageModelingPreprocessAnalysis(body = {}, action = "") {
     summary: action === "outpaint"
       ? "已选择先完善主体建筑扩图；扩图结果可直接进入 3D 建模，白底主体图为可选清洁化步骤。"
       : action === "cad-reference"
-        ? "已生成 CAD 友好的结构参考图。正式建模时会把这张结构图和主体输入一起交给 gpt-5.5，帮助稳定识别体块、开口、屋顶和层级。"
+        ? "已生成 CAD 友好的结构参考图。正式建模时会按这张结构图和主体输入使用本地预设组织体块、开口、屋顶和层级。"
       : action === "white-from-expanded"
         ? "已选择从主体建筑扩图结果生成白底主体图，作为 3D 建模输入。"
         : "已选择从原始参考图直接生成主体建筑白底图，作为 3D 建模输入。",
@@ -7108,126 +6830,34 @@ async function analyzeImageModelingSubject(body = {}) {
     return createImageModelingPreprocessAnalysis(body, preprocessAction);
   }
   const subjectImage = body.subjectImage || body.subject_image || {};
-  const subjectDataUrl = String(subjectImage.dataUrl || "").trim();
   const subjectSelection = body.subjectSelection || body.selection || null;
-  const analysisInputImages = [{
-    type: "input_image",
-    image_url: sourceDataUrl
-  }];
-  if (subjectDataUrl && subjectDataUrl !== sourceDataUrl) {
-    analysisInputImages.push({
-      type: "input_image",
-      image_url: subjectDataUrl
-    });
-  }
-
-  const prompt = [
-    "You are gpt-5.5 vision acting as a pre-modeling subject and layer recognition assistant.",
-    "Inspect the boxed subject before any 3D generation. Decide exactly what should become geometry and what should be ignored.",
-    ...imageModelingIntegratedCadPromptLines("analysis", sourcePrimaryImage?.sourceType || body.primaryImage?.sourceType || ""),
-    body.modelingInputRole
-      ? `Input image note: ${String(body.modelingInputRole).slice(0, 360)}`
-      : subjectDataUrl && subjectDataUrl !== sourceDataUrl
-        ? "Input image 1 is the original uploaded image and input image 2 is the user's boxed subject crop. Analyze the boxed subject crop, but return all normalized coordinates relative to the original image."
-        : "Input image note: this is the original uploaded image.",
-    subjectSelection
-      ? `User boxed subject selection on the original image: x=${Number(subjectSelection.x || 0).toFixed(4)}, y=${Number(subjectSelection.y || 0).toFixed(4)}, width=${Number(subjectSelection.width || 0).toFixed(4)}, height=${Number(subjectSelection.height || 0).toFixed(4)}.`
-      : "No manual subject box was provided.",
-    "Return a real subject silhouette/shape, normalized bounding boxes, visible modeling features, and layer roles so the next CAD-friendly modeling step can stay focused.",
-    "Coordinate rules: bounds use x, y, width, height from 0 to 1 relative to the full image.",
-    "Shape rules: targetShape is what the user will visually confirm. It must follow the visible subject silhouette, not a square/rectangular selection box.",
-    "Completeness rules:",
-    "- Judge whether the boxed subject is complete or cut off.",
-    "- If the subject is incomplete, identify the missing sides or missing parts and recommend outpainting before white-background generation.",
-    "- If the subject is complete, say that no outpaint is needed.",
-    "Selection rules:",
-    "- If this is a product/object photo, select the actual foreground object as the main subject. Exclude display props such as plates, trays, plinths, turntables, tabletops, shadows and background surfaces unless the user explicitly asks to model them.",
-    "- Include a base/support only when it is physically attached to the object or essential to the object's real structure, not merely something the object sits on for photography.",
-    "- For a round fruit/object such as an apple, identify the exact object class and the characteristic geometry: ellipsoid body, asymmetric shoulders, top dimple/stem socket, attached stem if visible, bottom flattening/calyx if inferable. Use targetShape.type='ellipse' or a 12-32 point polygon tightly around the fruit body. Do not include the display plate/base in targetBounds, targetShape, or includeInModel layers unless explicitly requested.",
-    "- Do not describe a common object with only one generic layer. Add separate includeInModel layers for any visible/inferable structural feature that materially changes the 3D silhouette.",
-    "- If this is an architectural exterior photo, select the whole building as the modeling subject. Exclude sky, trees, people, cars, road, signage, lens distortion and background unless they are explicitly requested.",
-    "- For a building exterior, split the whole building into includeInModel layers: main mass/envelope, front facade, side-depth/rear inferred mass, roof or parapet, eaves/cornice, windows, doors/entry, balcony/columns/steps/base/plinth, and major material bands.",
-    "- If this is an interior image, select the built space envelope and major furniture/structure layers, not random texture, highlights, shadows, UI or background blur.",
-    "- Split the selected subject into modeling layers: shell/envelope, openings, structure, major furniture/product parts, base/support, key repeated elements.",
-    "- Mark decorative texture, specular highlights, shadows, labels, watermarks, sky/background and image frame as excluded regions unless the user explicitly asks to model them.",
-    "- The next stage will model only includeInModel=true layers.",
-    "- Write layer ids in stable descriptive snake_case when practical. Avoid vague ids like part1, obj2 or thing.",
-    "- Prefer identifying editable systems the downstream CAD model can preserve: facade bays, roof masses, columns, rails, slabs, shelves, brackets, sockets, lids, handles, supports and repeated modules.",
-    "Return valid JSON only, no markdown, in this exact shape:",
-    JSON.stringify({
-      modelingAnalysis: {
-        subject: "short Chinese subject name",
-        sourceType: "object-photo | interior-photo | architecture-photo | floor-plan-reference",
-        summary: "what is selected and why",
-        confidence: 0.78,
-        completeness: {
-          isComplete: true,
-          score: 0.86,
-          label: "完整 or 不完整",
-          missingParts: ["top edge"],
-          edgeContact: ["top"],
-          recommendation: "直接生成白底主体图 or 建议扩图补全后再生成白底主体图",
-          reason: "why the subject is or is not complete"
-        },
-        targetBounds: { x: 0.12, y: 0.08, width: 0.76, height: 0.84 },
-        targetShape: {
-          type: "ellipse",
-          centerX: 0.5,
-          centerY: 0.52,
-          radiusX: 0.26,
-          radiusY: 0.31,
-          note: "visible subject silhouette, not a rectangular box"
-        },
-        modelingScope: "only the selected object/building/space; exclude photographic background unless explicitly requested",
-        scaleStrategy: "scale assumptions for meters",
-        primitiveStrategy: "boxes/cylinders/spheres/planes strategy",
-        visualProfile: {
-          silhouette: "specific visible outline and asymmetry",
-          viewAngle: "front / three-quarter / side / top",
-          characteristicFeatures: ["features that must become geometry"],
-          materialZones: ["major color/material zones that help recognition but are not highlights"],
-          nonGeometry: ["highlights and shadows that must not become geometry"]
-        },
-        depthRelations: ["front object in front of ignored display surface", "rear wall behind furniture"],
-        excludedRegions: ["display plate/tray/plinth", "shadow", "specular highlight", "background blur"],
-        layers: [
-          {
-            id: "main-body",
-            label: "main subject body",
-            role: "product body or spatial shell",
-            includeInModel: true,
-            priority: 1,
-            bounds: { x: 0.2, y: 0.2, width: 0.6, height: 0.6 },
-            depthOrder: 1,
-            primitiveHint: "sphere",
-            geometryHints: ["rounded main mass", "slightly flattened top"],
-            material: "visible material/color",
-            scaleRole: "primary scale reference",
-            notes: "visible/inferred"
-          }
-        ]
-      }
-    }, null, 2),
-    `Project brief: ${JSON.stringify(brief)}`,
-    `User modeling request: ${intent || "Create a CAD-friendly 3D model from this image."}`
-  ].join("\n");
-
-  const payload = {
-    model: config.reasoningModel,
-    input: [
-      {
-        role: "user",
-        content: [
-          { type: "input_text", text: prompt },
-          ...analysisInputImages
-        ]
-      }
-    ],
-    max_output_tokens: 3600
+  const localError = new Error("使用项目内置建模预设");
+  const seedAnalysis = {
+    subject: intent || brief.projectName || sourcePrimaryImage.name || "图片主体",
+    sourceType: sourcePrimaryImage.sourceType || body.sourceType || "",
+    summary: "已按用户描述、图片类型和选区使用本地预设整理建模范围。"
   };
-
-  const text = await openaiResponsesTextStream(payload, { timeoutMs: 240000, provider: "reasoning" });
-  const analysis = normalizeImageModelingAnalysis(await parseModelJsonWithRepair(text, "image-modeling subject analysis"), body);
+  const knownAnalysis = knownObjectTemplateAnalysis(seedAnalysis, { intent, primaryImage: sourcePrimaryImage });
+  const analysis = knownAnalysis
+    ? normalizeImageModelingAnalysis(knownAnalysis, body)
+    : shouldFallbackToSpatialImageModelingRequest(body, body.modelingAnalysis || body.analysis || {}, { brief, intent, primaryImage: sourcePrimaryImage })
+      ? fallbackSpatialImageModelingAnalysis({ body, brief, intent, primaryImage: sourcePrimaryImage, providedAnalysis: body.modelingAnalysis || body.analysis || null, error: localError })
+      : normalizeImageModelingAnalysis({
+          ...seedAnalysis,
+          sourceType: "object-photo",
+          confidence: 0.5,
+          completeness: { isComplete: true, score: 0.55, label: "本地预设", missingParts: [], edgeContact: [], recommendation: "可继续生成可编辑基础模型", reason: "使用项目内置预设" },
+          targetBounds: subjectSelection || { x: 0.1, y: 0.1, width: 0.8, height: 0.8 },
+          targetShape: { type: "rectangle", x: 0.1, y: 0.1, width: 0.8, height: 0.8, note: "local preset subject bounds" },
+          modelingScope: "用户选区或图片中央主体；排除背景、阴影和文字",
+          scaleStrategy: "使用可编辑的通用比例，后续由用户校正",
+          primitiveStrategy: "使用 CAD 友好的基础体块",
+          visualProfile: { silhouette: "local preset bounds", viewAngle: "single image", characteristicFeatures: [], materialZones: [], nonGeometry: ["背景", "阴影", "高光", "文字"] },
+          excludedRegions: ["背景", "阴影", "高光", "水印", "文字"],
+          layers: [{ id: "main_body", label: "主要主体", role: "product body", includeInModel: true, priority: 1, bounds: subjectSelection || { x: 0.1, y: 0.1, width: 0.8, height: 0.8 }, depthOrder: 1, primitiveHint: "box", geometryHints: ["可编辑基础体块"], material: "按参考图配色", scaleRole: "primary", notes: "本地预设" }],
+          source: "local-preset",
+          model: "local-preset"
+        }, body);
   let whiteBackgroundPrepass = null;
   if (shouldUseImageModelingWhiteBackgroundPrepass(body)) {
     try {
@@ -7315,8 +6945,8 @@ async function generateImageModel(body = {}) {
                 : "This is the original uploaded image."
           });
   } catch (error) {
-    if (!isReasoningFallbackError(error) || !shouldFallbackToSpatialImageModelingRequest(body, providedAnalysis, { brief, intent, primaryImage: modelingPrimaryImage })) throw error;
-    console.warn(`[image-modeling] analysis reasoning fallback: ${reasoningFallbackReason(error)}`);
+    if (!isLocalFallbackError(error) || !shouldFallbackToSpatialImageModelingRequest(body, providedAnalysis, { brief, intent, primaryImage: modelingPrimaryImage })) throw error;
+    console.warn(`[image-modeling] using local analysis fallback: ${localFallbackReason(error)}`);
     modelingAnalysis = fallbackSpatialImageModelingAnalysis({
       body,
       brief,
@@ -7361,7 +6991,7 @@ async function generateImageModel(body = {}) {
   }
   const commonObjectAnalysis = knownObjectTemplateAnalysis(modelingAnalysis, { intent, primaryImage: modelingPrimaryImage });
   const hasDirectCadReference = Boolean(cadReferencePrepass?.image?.dataUrl);
-  const templateScene = parseBooleanEnv(process.env.IMAGE_MODELING_COMMON_OBJECT_TEMPLATES, true) && commonObjectAnalysis && !hasDirectCadReference
+  const templateScene = parseBooleanEnv(process.env.IMAGE_MODELING_COMMON_OBJECT_TEMPLATES, true) && commonObjectAnalysis
     ? commonObjectTemplateSceneFromAnalysis(commonObjectAnalysis, { intent, primaryImage: modelingPrimaryImage })
     : null;
   const prepassMeta = imageModelingPrepassForClient(whiteBackgroundPrepass, {
@@ -7416,233 +7046,57 @@ async function generateImageModel(body = {}) {
       summary: `${summaryPrefix}${model.summary || "已根据图片生成可旋转预览的参数化 3D 模型。"}`
     });
   }
-  const cadReferenceDrivesModeling = Boolean(cadReferenceMeta?.dataUrl);
-  const modelingInputNotes = cadReferenceDrivesModeling
-    ? [
-        "Input image 1 is the generated CAD structure reference. It is the PRIMARY geometry source for this modeling step. Follow its cleaned silhouette, part boundaries, proportions, openings, seams, axes and simplified depth cues when constructing CAD primitives.",
-        "Input image 2 is the original or prepared subject photo. Use it only as secondary evidence for subject identity, view angle, color/material zones and details that the CAD guide preserves. Do not let photographic background, props, shadows, highlights, texture noise or display surfaces override the CAD structure reference.",
-        primaryImage?.dataUrl && primaryImage.dataUrl !== modelingDataUrl
-          ? "Input image 3 is the original uploaded photo. Use it only to resolve ambiguity after the CAD structure reference and prepared subject input."
-          : "",
-        "When CAD structure reference and original photo conflict, prefer the CAD structure reference for geometry, object count, footprint, major silhouette and editable part separation."
-      ]
-    : [
-        "Input image 1 is the main modeling subject reference and should drive the final massing, silhouette and scale relationships.",
-        primaryImage?.dataUrl && primaryImage.dataUrl !== modelingDataUrl
-          ? "Input image 2 is the original uploaded photo. Use it to preserve real view angle cues, material zones and visible depth evidence; do not reintroduce removed background clutter."
-          : ""
-      ];
-  const prompt = [
-    "You are gpt-5.5 acting as a pragmatic image-to-CAD modeling assistant for architects and designers.",
-    cadReferenceDrivesModeling
-      ? "Reference fidelity contract: the CAD structure reference image is the source of truth for geometry. The original upload is secondary evidence for subject identity and color/material zones. Do not redesign, restyle, add ignored props, or convert the subject into another category."
-      : "Reference fidelity contract: the uploaded image is the source of truth. First honor whether it is an interior, exterior, floor plan, or object photo; then model only that kind of subject. Do not redesign, restyle, simplify into a generic room, or change an interior photo into an exterior/cutaway box.",
-    "Use the pre-modeling vision analysis as the binding scope. Convert only the selected subject/layers into a lightweight parametric 3D scene made from CAD-friendly primitives that match the reference photo's visible camera, layout, major planes and object positions.",
-    ...imageModelingIntegratedCadPromptLines("model", enrichedModelingAnalysis?.sourceType || modelingAnalysis?.sourceType || ""),
-    ...modelingInputNotes.filter(Boolean),
-    "Treat targetShape as the confirmed silhouette. Do not model the rectangular targetBounds as geometry; it is only a rough locator.",
-    "This is not photogrammetry. Build a clean editable approximation that preserves the main silhouette, masses, proportions, openings, repeated elements, material zones, and useful CAD footprint.",
-    "Prefer boxes, cylinders, spheres and planes. Use meters. Size order is [width, depth, height]. Coordinate system: x = width, y = vertical height, z = depth. Put object centers in position [x,y,z].",
-    "CRITICAL SIZE RULE: object.size must always be [width, depth, height], never [width, height, depth]. A facade panel 4m wide x 2.6m high x 0.08m thick must be size [4, 0.08, 2.6]. A roof slab 8m wide x 10m deep x 0.24m thick must be size [8, 10, 0.24]. A column 0.5m x 0.5m x 3m high must be size [0.5, 0.5, 3].",
-    "Interior-photo mandatory behavior: if sourceType is interior-photo or the image visibly shows a room, the output MUST be an inside-the-room model. Return sourceType='interior-photo'. Include floor, back/side walls, ceiling or ceiling edge when visible, doors/windows/openings, built-in cabinetry/counters, tables, seats/sofas, shelves, lighting/ceiling features, columns/beams if visible, and the main furniture positions according to the reference image.",
-    "Interior-photo camera rule: preserve the reference image's eye-level or near eye-level interior perspective in spacePlan and previewCamera. Do not use an exterior axonometric as the conceptual model. If depth is uncertain, infer conservatively from the photo's floor lines, wall corners, ceiling lines and furniture scale.",
-    "Interior-photo quality floor: normally use 24-80 purposeful primitives. A floor plus a few walls and boxes is not acceptable. Separate walls, openings, cabinet runs, countertops, table tops, legs, sofa/seat bases/backs, shelves, ceiling bands and light strips when they are visible or strongly implied.",
-    "For interiors: include floor, walls, openings, counters, tables, seats, shelves, fixtures, columns, beams and main furniture if selected by the analysis.",
-    "For architectural exterior photos: model the whole building, not a flat poster. Include main mass, side/rear inferred depth, front facade, roof/parapet/eaves, entry, windows/doors, columns/balconies/steps/base/plinth and major material bands. Do not add interior ceiling lights, room furniture, sky, trees, cars, roads or people unless selected by the analysis.",
-    "Architecture-exterior quality floor: normally use 32-96 purposeful primitives. A single block with a few window rectangles is not acceptable for a whole building model.",
-    "For architecture, separate the model into legible systems: site/base, stacked masses, side depth returns, roof planes or parapets, floor slabs/eaves, facade openings, entry/steps, railings/columns, and major material zones. Use thin depth for facade glass/railings and thin height for roof/slab/eave plates.",
-    "For product/object photos: model the confirmed foreground object only. Do not add display props, plates, trays, tabletops, plinths, room floor/walls/background, or generic supports unless the confirmed analysis explicitly marks them includeInModel=true as physically attached structural parts.",
-    "For rounded product subjects such as an apple, use multiple ellipsoid/sphere/cylinder primitives to approximate curved body lobes, shoulders, dimples, stem sockets, attached stems and bottom flattening. Never turn the silhouette into a box-shaped room, tray, or open container.",
-    "Object-photo quality floor: common products must normally use 8-24 purposeful primitives. One generic body plus one accessory is not acceptable unless the subject is truly that simple.",
-    "Every object-photo result must include notes explaining which parts are visible and which are inferred from the single image.",
-    "Do not turn shadows, specular highlights, photographic noise, logos, labels or decorative texture patches into standalone geometry unless the analysis explicitly marks them includeInModel=true.",
-    "Use 8-24 objects for simple products, 24-80 objects for interiors, and 32-96 objects for architectural exteriors when useful. Add enough objects for a readable model, but avoid noisy tiny decoration.",
-    "Every object must use a descriptive, stable snake_case id where practical, and labels should stay human-readable for downstream CAD/export tools.",
-    "Do not collapse all geometry into one boolean blob. Keep major editable systems separate: base/site, main masses, roof planes, facade openings, rails, steps, furniture bodies, supports, handles, brackets and repeated modules.",
-    "Prefer explicit thickness over infinitely thin decoration. If a detail is only graphic texture, keep it out of geometry.",
-    "Return valid JSON only, no markdown. Shape:",
-    JSON.stringify({
-      whiteModelScene: {
-        title: "short Chinese model title",
-        sourceType: "object-photo or interior-photo or architecture-photo or floor-plan-reference",
+  const localError = new Error("使用项目内置建模预设");
+  const isSpatial = shouldFallbackToSpatialWhiteModel(enrichedModelingAnalysis, { brief, intent, primaryImage: modelingPrimaryImage });
+  const localScene = isSpatial
+    ? fallbackInteriorWhiteModelSceneFromAnalysis(enrichedModelingAnalysis, { brief, intent, primaryImage: modelingPrimaryImage, cadReferenceMeta, error: localError })
+    : {
+        title: `${brief.projectName || enrichedModelingAnalysis.subject || modelingPrimaryImage.name || "图片主体"} · 本地基础模型`,
+        sourceType: "object-photo",
         units: "meters",
-        summary: "what was modeled and what remains approximate",
-        confidence: 0.72,
-        assumptions: ["depth inferred from single image"],
-        limitations: ["back side is inferred"],
-        spacePlan: {
-          roomType: "detected type",
-          envelope: "overall envelope or subject envelope",
-          keyZones: ["zone"],
-          circulation: "if spatial",
-          scaleAssumptions: ["scale notes"],
-          modelingStrategy: "primitive strategy"
-        },
-        previewCamera: {
-          mode: "interior or orbit",
-          position: [2.2, 1.55, 3.2],
-          target: [0, 1.35, -1.2],
-          note: "interior eye-level preview matching the reference photo when sourceType is interior-photo"
-        },
-        objects: [
-          {
-            id: "floor_plate",
-            type: "floor",
-            shape: "box",
-            label: "floor plate",
-            size: [8, 6, 0.08],
-            position: [0, 0.04, 0],
-            rotation: [0, 0, 0],
-            color: "#b89f7a",
-            layer: "shell",
-            material: "wood or stone",
-            roughness: 0.7,
-            metalness: 0.02,
-            opacity: 1,
-            note: "visible/inferred"
-          }
-        ]
-      }
-    }, null, 2),
-    "",
-    "Allowed object types: floor, wall, ceiling, column, beam, opening, stair, box, counter, table, seat, shelf, fixture, plant, generic.",
-    "Allowed shapes: box, cylinder, sphere, plane.",
-    "Keep colors as hex values. Keep all sizes positive. Object count must be at least 24 for interiors, at least 32 for architectural exteriors, and at least 8 for products.",
-    "Pre-modeling vision analysis, binding scope:",
-    JSON.stringify(enrichedModelingAnalysis, null, 2),
-    cadReferenceMeta ? "CAD reference parameters JSON:" : "",
-    cadReferenceMeta ? JSON.stringify(cadReferenceParameters, null, 2) : "",
-    `Project brief: ${JSON.stringify(brief)}`,
-    `User modeling request: ${intent || "Create a CAD-friendly 3D model from this image."}`
-  ].join("\n");
+        summary: "已使用项目内置通用体块预设生成可编辑基础模型。",
+        confidence: 0.46,
+        assumptions: ["主体深度和背面由通用比例估算", "可在预览中继续调整尺寸、位置和角度"],
+        limitations: ["复杂曲面和细部需要人工校正"],
+        objects: [{
+          id: "main_subject",
+          type: "generic",
+          shape: /round|circle|sphere|球|圆/i.test(`${intent} ${enrichedModelingAnalysis.subject || ""}`) ? "sphere" : "box",
+          label: enrichedModelingAnalysis.subject || "主要主体",
+          size: [1.2, 0.8, 1.0],
+          position: [0, 0.5, 0],
+          rotation: [0, 0, 0],
+          color: "#c7b299",
+          layer: "main-body",
+          material: "reference-derived material",
+          roughness: 0.65,
+          metalness: 0.02,
+          opacity: 1,
+          note: "local editable placeholder"
+        }]
+      };
+  const model = normalizeWhiteModelScene({ whiteModelScene: localScene }, { brief, intent, primaryImage: modelingPrimaryImage, modelingAnalysis: enrichedModelingAnalysis });
+  return attachWhiteModelCadArtifacts({
+    ...model,
+    id: `image-model-${Date.now()}`,
+    mode: "image-modeling",
+    modelingAnalysis: { ...enrichedModelingAnalysis, fallbackModel: true, fallbackReason: localError.message },
+    originalSourceImage: primaryImage ? { name: primaryImage.name || null, type: primaryImage.type || null, sourceType: primaryImage.sourceType || null } : null,
+    whiteBackgroundImage: prepassMeta,
+    cadReferenceImage: cadReferenceMeta,
+    cadReferenceParameters,
+    modelingPrepass: prepassMeta
+      ? { used: true, reused: Boolean(whiteBackgroundPrepass?.reused), image: prepassMeta }
+      : { used: false, error: whiteBackgroundPrepass?.error || "" },
+    modelingCadPrepass: cadReferenceMeta
+      ? { used: true, reused: Boolean(cadReferencePrepass?.reused), image: cadReferenceMeta }
+      : { used: false, error: cadReferencePrepass?.error || "" },
+    summary: `${summaryPrefix}${model.summary || "已使用本地预设生成可编辑基础模型。"}`
+  });
+}
 
-  const modelingInputImages = cadReferenceDrivesModeling
-    ? [
-        { type: "input_image", image_url: cadReferenceMeta.dataUrl },
-        { type: "input_image", image_url: modelingDataUrl }
-      ]
-    : [
-        { type: "input_image", image_url: modelingDataUrl }
-      ];
-  if (primaryImage?.dataUrl && primaryImage.dataUrl !== modelingDataUrl) {
-    modelingInputImages.push({ type: "input_image", image_url: primaryImage.dataUrl });
-  }
-  const payload = {
-    model: config.reasoningModel,
-    input: [
-      {
-        role: "user",
-        content: [
-          { type: "input_text", text: prompt },
-          ...modelingInputImages
-        ]
-      }
-    ],
-    max_output_tokens: 5200
-  };
-
-  try {
-    const text = await openaiResponsesTextStream(payload, { timeoutMs: 420000, provider: "reasoning" });
-    const parsed = await parseModelJsonWithRepair(text, "image-to-CAD model scene");
-    const parsedScene = parsed?.whiteModelScene || parsed?.scene || parsed || {};
-    const scopedParsed = {
-      whiteModelScene: {
-        ...parsedScene,
-        sourceType: parsedScene.sourceType || parsedScene.source_type || modelingAnalysis.sourceType
-      }
-    };
-    const model = normalizeWhiteModelScene(scopedParsed, { brief, intent, primaryImage: modelingPrimaryImage, modelingAnalysis: enrichedModelingAnalysis });
-    return attachWhiteModelCadArtifacts({
-      ...model,
-      id: `image-model-${Date.now()}`,
-      mode: "image-modeling",
-      modelingAnalysis: enrichedModelingAnalysis,
-      originalSourceImage: primaryImage ? {
-        name: primaryImage.name || null,
-        type: primaryImage.type || null,
-        sourceType: primaryImage.sourceType || null
-      } : null,
-      whiteBackgroundImage: prepassMeta,
-      cadReferenceImage: cadReferenceMeta,
-      cadReferenceParameters,
-      modelingPrepass: prepassMeta
-        ? { used: true, reused: Boolean(whiteBackgroundPrepass?.reused), image: prepassMeta }
-        : { used: false, error: whiteBackgroundPrepass?.error || "" },
-      modelingCadPrepass: cadReferenceMeta
-        ? { used: true, reused: Boolean(cadReferencePrepass?.reused), image: cadReferenceMeta }
-        : { used: false, error: cadReferencePrepass?.error || "" },
-      summary: `${summaryPrefix}${model.summary || "已根据图片生成可旋转预览的参数化 3D 模型。"}`
-    });
-  } catch (error) {
-    const fallbackObjectAnalysis = knownObjectTemplateAnalysis(enrichedModelingAnalysis, { intent, primaryImage: modelingPrimaryImage });
-    if (isReasoningFallbackError(error) && fallbackObjectAnalysis) {
-      console.warn(`[image-modeling] final known-object fallback: ${reasoningFallbackReason(error)}`);
-      const fallbackScene = commonObjectTemplateSceneFromAnalysis(fallbackObjectAnalysis, { intent, primaryImage: modelingPrimaryImage });
-      if (fallbackScene) {
-        const model = normalizeWhiteModelScene({ whiteModelScene: fallbackScene }, { brief, intent, primaryImage: modelingPrimaryImage, modelingAnalysis: fallbackObjectAnalysis });
-        return attachWhiteModelCadArtifacts({
-          ...model,
-          id: `image-model-${Date.now()}`,
-          mode: "image-modeling",
-          modelingAnalysis: {
-            ...fallbackObjectAnalysis,
-            fallbackModel: true,
-            fallbackReason: reasoningFallbackReason(error)
-          },
-          originalSourceImage: primaryImage ? {
-            name: primaryImage.name || null,
-            type: primaryImage.type || null,
-            sourceType: primaryImage.sourceType || null
-          } : null,
-          whiteBackgroundImage: prepassMeta,
-          cadReferenceImage: cadReferenceMeta,
-          cadReferenceParameters,
-          modelingPrepass: prepassMeta
-            ? { used: true, reused: Boolean(whiteBackgroundPrepass?.reused), image: prepassMeta }
-            : { used: false, error: whiteBackgroundPrepass?.error || "" },
-          modelingCadPrepass: cadReferenceMeta
-            ? { used: true, reused: Boolean(cadReferencePrepass?.reused), image: cadReferenceMeta }
-            : { used: false, error: cadReferencePrepass?.error || "" },
-          summary: `${summaryPrefix}${model.summary || "端点未返回建模规划，已按已知物体模板生成可编辑基础模型。"}`
-        });
-      }
-    }
-    if (!isReasoningFallbackError(error) || !shouldFallbackToSpatialWhiteModel(enrichedModelingAnalysis, { brief, intent, primaryImage: modelingPrimaryImage })) throw error;
-    console.warn(`[image-modeling] final model reasoning fallback: ${reasoningFallbackReason(error)}`);
-    const fallbackScene = fallbackInteriorWhiteModelSceneFromAnalysis(enrichedModelingAnalysis, {
-      brief,
-      intent,
-      primaryImage: modelingPrimaryImage,
-      cadReferenceMeta,
-      error
-    });
-    const model = normalizeWhiteModelScene({ whiteModelScene: fallbackScene }, { brief, intent, primaryImage: modelingPrimaryImage, modelingAnalysis: enrichedModelingAnalysis });
-    return attachWhiteModelCadArtifacts({
-      ...model,
-      id: `image-model-${Date.now()}`,
-      mode: "image-modeling",
-      modelingAnalysis: {
-        ...enrichedModelingAnalysis,
-        fallbackModel: true,
-        fallbackReason: reasoningFallbackReason(error)
-      },
-      originalSourceImage: primaryImage ? {
-        name: primaryImage.name || null,
-        type: primaryImage.type || null,
-        sourceType: primaryImage.sourceType || null
-      } : null,
-      whiteBackgroundImage: prepassMeta,
-      cadReferenceImage: cadReferenceMeta,
-      cadReferenceParameters,
-      modelingPrepass: prepassMeta
-        ? { used: true, reused: Boolean(whiteBackgroundPrepass?.reused), image: prepassMeta }
-        : { used: false, error: whiteBackgroundPrepass?.error || "" },
-      modelingCadPrepass: cadReferenceMeta
-        ? { used: true, reused: Boolean(cadReferencePrepass?.reused), image: cadReferenceMeta }
-        : { used: false, error: cadReferencePrepass?.error || "" },
-      summary: `${summaryPrefix}${model.summary || "端点超时，已先生成可编辑基础室内模型。"}`
-    });
-  }
+function promptOptimizationRequested(body = {}) {
+  return body.promptOptimizationEnabled === true || body.thinkingEnabled === true;
 }
 
 async function generateImage(body) {
@@ -7655,8 +7109,8 @@ async function generateImage(body) {
     throw error;
   }
 
-  const useReasoning = body.thinkingEnabled === true;
-  const prompt = useReasoning
+  const promptOptimizationEnabled = promptOptimizationRequested(body);
+  const prompt = promptOptimizationEnabled
     ? [
         gptImage2PromptFusionGuide({ mode: "plan-render", referenceCount: 0, references: [] }),
         "",
@@ -7686,14 +7140,14 @@ async function generateImage(body) {
     quality: body.quality || "low",
     title: direction.name || brief.projectName || "space concept",
     mode: "plan-render",
-    useReasoning
+    promptOptimizationEnabled
   });
 
   return saveGeneratedImage({
     buffer: generated.buffer,
     slug: slugify(direction.name || brief.projectName || "space-concept"),
     meta: {
-        reasoning_model: generated.reasoningModel || config.reasoningModel,
+        reasoning_model: generated.reasoningModel || config.imageToolRunnerModel,
         image_model: config.imageModel,
         prompt_library_version: promptLibraryVersion,
         source_prompt: prompt,
@@ -7758,7 +7212,7 @@ async function renderFromUploadedImages(body) {
 
   const requestedSize = body.size || "1024x1536";
   const requestedQuality = body.quality || "low";
-  const useReasoning = body.thinkingEnabled === true;
+  const promptOptimizationEnabled = promptOptimizationRequested(body);
   const useColoredPlanPipeline = false;
   const planInputColorKind = mode === "plan-axonometric"
     ? (isColoredPlanInput(primary, body) ? "colored-floor-plan" : "black-white-line-plan")
@@ -7820,7 +7274,7 @@ async function renderFromUploadedImages(body) {
         viewAngleReferenceFinalPromptFooter(viewAngleReference, mode),
         PLAN_WORKFLOW_RECOMMENDATION
       ].filter(Boolean).join("\n"),
-      useReasoning
+      promptOptimizationEnabled
     });
     const colorRecord = await saveGeneratedImage({
       buffer: coloredGenerated.buffer,
@@ -7922,7 +7376,7 @@ async function renderFromUploadedImages(body) {
       ];
   const inputCount = renderInputImages.filter((image) => image?.dataUrl).length + references.filter((reference) => reference?.dataUrl).length;
 
-  const prompt = useReasoning
+  const prompt = promptOptimizationEnabled
     ? buildRenderPrompt({
         mode,
         brief,
@@ -7973,7 +7427,7 @@ async function renderFromUploadedImages(body) {
         "The final image should behave like the colored plan has been re-expressed as an axonometric model from the dragged camera angle."
       ].join("\n") : ""
     ].filter(Boolean).join("\n\n"),
-    useReasoning
+    promptOptimizationEnabled
   });
 
   const pipeline = coloredPlanRecord ? {
@@ -8021,7 +7475,7 @@ async function renderFromUploadedImages(body) {
     buffer: generated.buffer,
     slug: `${mode}-${slugify(brief.projectName || "render")}`,
     meta: {
-      reasoning_model: generated.reasoningModel || config.reasoningModel,
+      reasoning_model: generated.reasoningModel || config.imageToolRunnerModel,
       image_model: config.imageModel,
       prompt_library_version: promptLibraryVersion,
       mode,
@@ -8104,12 +7558,12 @@ function firstInputLabel(mode) {
   return labels[mode] || "primary input image";
 }
 
-function reasoningFallbackReason(error) {
+function localFallbackReason(error) {
   const status = error?.status ? `${error.status} ` : "";
-  return truncateLogText(`${status}${error?.message || "reasoning request failed"}`.trim(), 240);
+  return truncateLogText(`${status}${error?.message || "local preset fallback"}`.trim(), 240);
 }
 
-function isReasoningFallbackError(error) {
+function isLocalFallbackError(error) {
   const status = Number(error?.status || 0);
   const details = error?.details ? JSON.stringify(error.details).slice(0, 1000) : "";
   const message = `${error?.message || ""} ${details}`.toLowerCase();
@@ -8341,7 +7795,7 @@ function designSeriesPresetAnalysis(body = {}, references = [], { fallbackReason
   ].filter(Boolean).join("; ");
   const fallbackPrefix = fallbackReason
     ? "FHL 参考图分析暂时不可用，已自动使用内置设计系列预设继续。"
-    : "已关闭思考模式，使用内置设计系列预设直接生成。";
+    : "已使用项目内置设计系列预设整理本次生成。";
 
   return normalizeDesignSeriesAnalysis({
     title: fallbackReason ? "预设设计系列（分析降级）" : "预设设计系列",
@@ -8365,7 +7819,7 @@ function designSeriesPresetAnalysis(body = {}, references = [], { fallbackReason
     project_type_source: "preset-context",
     project_type_confidence: projectType.score ? Math.min(0.92, 0.58 + projectType.score * 0.08) : 0.45,
     project_type_evidence: [
-      "思考模式关闭或分析降级时无法单独读取图像语义，按当前文字上下文和内置项目类型词表锁定。",
+      "使用项目内置预设和项目类型词表，参考图会在生图阶段直接交给生图 AI。",
       "生成阶段仍会把参考图作为视觉证据交给 Image Gen，并使用项目类型禁区防止办公/酒店串类。"
     ],
     context_conflicts: [],
@@ -8494,137 +7948,9 @@ async function analyzeDesignSeriesReferences(body) {
     error.status = 400;
     throw error;
   }
-
-  const content = [
-    {
-      type: "input_text",
-      text: [
-        "You are gpt-5.5 acting as a senior architecture and interior creative director.",
-        `Selected UI workflow button: ${renderModeKnowledge("designseries").label}.`,
-        `Button meaning: ${renderModeKnowledge("designseries").purpose}`,
-        "Analyze the uploaded reference images for a spatial designer.",
-        "Do not assign fixed roles such as material, furniture, lighting, color or atmosphere to the reference images.",
-        "Treat every reference image as a complete open reference. Read spatial language, mood, composition, materials, lighting, object systems and design intent only when they are actually visible and useful.",
-        "Then propose a coherent design series that can be generated from these references.",
-        "Core goal: stand at project-planning level. From one or more references, infer the likely whole project, then allocate the user-requested number of images to the most useful spaces in that project.",
-        "Important: this function is deep one-to-many spatial design generation. It is NOT one camera angle with multiple styles, NOT one hero composition repeated with small variations, and NOT four isolated beautiful images.",
-        "Definition of deep design series: one unified design system expanded into multiple fields, multiple camera angles, multiple viewpoints and multiple functional zones.",
-        "Unified style means same project DNA, material system, lighting philosophy, furniture era, palette, render quality and design team language. It does not mean same room, same camera, same circular lobby, same sofa scene or same facade repeated.",
-        "The output set must read like a connected project walkthrough or professional design package: different spaces/functions/views that belong to the same project.",
-        "Reference extraction must be precise: extract visible brand elements, color elements, material system, spatial organization, lighting atmosphere, composition rhythm, furniture/workstation/object language, ceiling/wall/floor logic and crafted details.",
-        "Thinking-mode emphasis: when reasoning is enabled, keep more of the original reference visual DNA in the project bible and scene briefs, but still extrapolate new connected spaces instead of copying one angle.",
-        "Generation settings rule: do not hardcode horizontal, 4:3, 4K, 8 images or any fixed output setting in the analysis or image prompts. Output count, aspect ratio, size/resolution and quality must follow the current UI/API generation settings.",
-        "Project-type classification is mandatory and has two stages.",
-        "Stage 1 IMAGE-ONLY CLASSIFICATION: set project_type_visual by looking only at the uploaded reference images. Ignore previous templates, hidden prompts, brief text and user context for this field.",
-        "Stage 2 CONTEXT MERGE: set project_type after comparing project_type_visual with the brief/user context. If they conflict, visual evidence wins unless the user explicitly writes a different project type in the latest user prompt.",
-        "If references show office/workplace cues such as desk rows, workstations, task chairs, conference tables, glass partitions, corporate reception, meeting rooms, collaboration areas or company pantry, project_type_visual must be office/workplace/corporate, not hospitality.",
-        "If references show hotel/homestay/hospitality cues such as guestrooms, beds, bedside lighting, suite layout, guest lobby, resort lounge, courtyard arrival, bath/spa/soaking tub, breakfast/tea/bar amenity or leisure hospitality staging, project_type_visual must be hospitality/homestay/hotel, not office, even if a writing desk or reading/work corner is visible.",
-        "If project_type_visual conflicts with stale UI templates or old brief text, list that conflict in context_conflicts and keep scene_briefs aligned to project_type_visual.",
-        designSeriesSceneAllocationText(body.seriesCount || body.count || 4, {
-          brief: body.brief || {},
-          intent: body.intent || "",
-          userPrompt: body.userPrompt || ""
-        }),
-        "Scene allocation rule: use the detected project type and requested output count to choose the strongest set of rooms/functions. Do not leave scene_briefs as generic labels when the project type implies specific spaces.",
-        "Unique-scene rule: each scene_brief must represent a different room/function and each scheduled role may appear once only. If image 1 is reception/front desk, no later image may be another reception/front desk. If image 2 is open workspace, no later image may be another open workspace.",
-        "Office count schedule rule: for 4 office images use exactly one each from reception, open workspace/collaboration, meeting/focus, pantry/corridor/detail. For 6 office images use exactly one each from reception, open workspace, collaboration/project discussion, meeting, private/focus room, pantry/corridor/detail. For 8 office images use reception, open workspace, collaboration, meeting, private office, focus room, pantry/lounge, corridor/detail.",
-        "Occupancy rule: every scene must be unoccupied. Do not include people, staff, guests, clients, workers, silhouettes, body parts, faces, hands, crowds, animals, pets or lifestyle photography staging.",
-        "Office hard rule: when project_type is office/workplace/corporate, scene_briefs must not include bedroom, master bedroom, guestroom, suite, hotel room, bath, spa, soaking tub, resort, homestay or residential private rooms. Use reception, open workspace, collaboration, meeting, private office/focus, pantry/lounge, corridor/support and detail instead.",
-        "For hotel/homestay/hospitality, a 4-image set should normally cover lobby/arrival, public living/lounge, master guestroom/suite, and a work/tea/dining/detail support scene. A 6-image set should add exterior/arrival and bath/spa/support. An 8-image set should also cover tea/dining/bar and work/reading/activity as separate scenes.",
-        "Build a project bible before any image prompt: project DNA, spatial sequence, field/zone list, functional zoning, adjacency between spaces, recurring signatures, material system, lighting philosophy, palette, camera rhythm and render finish.",
-        "The scene_briefs must assign truly different spaces/functions/viewpoints to each image and describe how each output connects to the previous/next image, for example exterior/arrival -> entry -> public lounge -> dining/office/retail zone -> suite/quiet room -> bath/corridor -> material detail.",
-        "Every scene_brief must have a unique field or functional role. Do not create four versions of the same circular lobby, same sofa area, same bedroom, same facade or same camera position.",
-        "If the references show only one room or one angle, extrapolate a full project around that same design DNA: arrival threshold, main shared zone, secondary function, quiet/private/support zone, circulation and detail.",
-        designerAgentThinkingModel({
-          mode: "designseries",
-          brief: body.brief || {},
-          intent: body.intent || "",
-          referenceCount: references.length,
-          references
-        }),
-        referenceImageReadingProtocol({ references, referenceCount: references.length }),
-        promptEngineV2CompactReference("designseries"),
-        "Return valid JSON only. No markdown. Write concise professional Chinese.",
-        "",
-        JSON.stringify({
-          brief: body.brief || {},
-          user_intent: body.intent || "",
-          required_schema: {
-            title: "string",
-            summary: "string",
-            reference_read: [
-              {
-                index: "number starting at 1",
-                observation: "string",
-                usable_design_language: "string"
-              }
-            ],
-            series_strategy: "string",
-            suggested_outputs: ["4 to 8 strings"],
-            project_type: "string, detected project category such as hospitality/residential/office/retail/foodbeverage/generic",
-            project_type_key: "one of office/hospitality/residential/retail/foodbeverage/generic",
-            project_type_visual: "string, image-only project category based only on uploaded references",
-            project_type_source: "string, visual-evidence/context/user-explicit/fallback",
-            project_type_confidence: "number from 0 to 1",
-            project_type_evidence: ["3 to 6 visible cues from the references that justify project_type_visual"],
-            context_conflicts: ["stale template or brief clues that conflict with the image-only classification, empty if none"],
-            scene_allocation_strategy: "string, count-aware room/function schedule for the requested output count",
-            project_dna: "string describing the shared project identity across every output",
-            spatial_sequence: "string describing how spaces connect from exterior/entry/public/private/detail",
-            continuity_rules: ["4 to 8 strings for spatial/material/lighting continuity between images"],
-            recurring_signatures: ["4 to 8 strings for repeated motifs, materials, forms, objects or lighting gestures"],
-            scene_briefs: [
-              {
-                index: "number starting at 1",
-                title: "string",
-                field_type: "arrival/public/secondary/private/support/transition/detail or another unique field category",
-                spatial_role: "string",
-                connects_from: "string",
-                connects_to: "string",
-                camera: "string",
-                must_repeat: ["shared details to repeat from the series DNA"],
-                must_vary: "what is different in this image",
-                forbidden_repetition: "what this image must not repeat from other scene briefs"
-              }
-            ],
-            palette: ["4 to 6 strings"],
-            materials: ["4 to 8 strings"],
-            composition_rules: ["3 to 5 strings"],
-            image_prompt: "English global project-DNA prompt foundation only; it must not lock the series to one scene, one angle or one function"
-          }
-        }, null, 2)
-      ].join("\n")
-    },
-    ...references.map((reference) => ({
-      type: "input_image",
-      image_url: reference.dataUrl
-    }))
-  ];
-
-  const payload = {
-    model: config.reasoningModel,
-    input: [{ role: "user", content }],
-    max_output_tokens: 3200
-  };
-
-  try {
-    const text = await openaiResponsesTextStream(payload, { timeoutMs: 240000 });
-    const analysis = enforceDesignSeriesProjectType(normalizeDesignSeriesAnalysis(parseModelJson(text), references), {
-      brief: body.brief || {},
-      intent: body.intent || "",
-      userPrompt: body.userPrompt || "",
-      seriesCount: body.seriesCount || body.count || 4
-    });
-    return {
-      ...analysis,
-      analysis_backend: analysis.analysis_backend || "gpt-5.5"
-    };
-  } catch (error) {
-    if (!isReasoningFallbackError(error)) throw error;
-    const reason = reasoningFallbackReason(error);
-    console.warn(`[design-series] reference analysis fallback: ${reason}`);
-    return designSeriesPresetAnalysis(body, references, { fallbackReason: reason });
-  }
+  return designSeriesPresetAnalysis(body, references, {
+    summary: "已使用项目内置设计系列预设整理项目类型、场景顺序和统一设计语言，参考图会在生图阶段直接交给生图 AI。"
+  });
 }
 
 function normalizeDesignSeriesAnalysis(value, references = []) {
@@ -8962,8 +8288,8 @@ async function generateDesignSeries(body) {
     throw error;
   }
 
-  const useReasoning = body.thinkingEnabled === true;
-  const promptFusionEnabled = body.promptFusionEnabled !== false;
+  const promptOptimizationEnabled = promptOptimizationRequested(body);
+  const shouldOptimizePrompt = promptOptimizationEnabled && body.promptFusionEnabled !== false;
   const hasProvidedAnalysis = body.analysis && (
     body.analysis.image_prompt
     || body.analysis.project_dna
@@ -8977,11 +8303,11 @@ async function generateDesignSeries(body) {
         userPrompt: body.userPrompt || "",
         seriesCount: body.seriesCount || body.count || 4
       })
-    : useReasoning
-      ? await analyzeDesignSeriesReferences(body)
-      : designSeriesPresetAnalysis(body, references, {
-          summary: "已关闭思考模式，使用内置设计系列预设直接生成。"
-        });
+    : designSeriesPresetAnalysis(body, references, {
+        summary: promptOptimizationEnabled
+          ? "已使用项目内置设计系列预设整理项目类型、场景顺序和统一设计语言。"
+          : "极速模式已使用精简设计系列预设直接生成。"
+      });
   const brief = body.brief || {};
   const seriesCount = Math.max(1, Math.min(8, Number(body.seriesCount || body.count || 1) || 1));
   const seriesIndex = Math.max(1, Math.min(seriesCount, Number(body.seriesIndex || 1) || 1));
@@ -9070,14 +8396,14 @@ async function generateDesignSeries(body) {
       designSeriesProjectTypeGuard(detectedProjectType),
       designSeriesFinalPromptLock({ index: seriesIndex, count: seriesCount, sceneBrief })
     ].join("\n\n"),
-    useReasoning: useReasoning && promptFusionEnabled
+    promptOptimizationEnabled: shouldOptimizePrompt
   });
 
   const render = await saveGeneratedImage({
     buffer: generated.buffer,
     slug: `design-series-${slugify(analysis.title || "reference")}`,
     meta: {
-      reasoning_model: generated.reasoningModel || config.reasoningModel,
+      reasoning_model: generated.reasoningModel || config.imageToolRunnerModel,
       image_model: config.imageModel,
       prompt_library_version: promptLibraryVersion,
       mode: "designseries",
@@ -9112,7 +8438,7 @@ async function generateDesignSeries(body) {
   return { analysis, render };
 }
 
-async function thinkThenGenerateImage({ prompt, inputImages, size, quality, title, mode = "plan-render", preferReferenceEdit = true, finalPromptFooter = "", useReasoning = true }) {
+async function thinkThenGenerateImage({ prompt, inputImages, size, quality, title, mode = "plan-render", preferReferenceEdit = true, finalPromptFooter = "", promptOptimizationEnabled = true }) {
   const requestedSize = normalizeImageSize(size);
   const normalizedMode = normalizeRenderMode(mode);
   const promptGuard = buildFinalPromptGuard({
@@ -9126,18 +8452,8 @@ async function thinkThenGenerateImage({ prompt, inputImages, size, quality, titl
     prompt
   });
 
-  const generateWithPresetPrompt = async ({ fallbackReason = "", directFast = false } = {}) => {
-    const presetPrompt = directFast
-      ? [prompt, String(finalPromptFooter || "").trim()].filter(Boolean).join("\n\n")
-      : [
-          hardenFinalPromptForMode({
-            mode: normalizedMode,
-            finalPrompt: prompt,
-            promptGuard,
-            audit: directPromptAudit
-          }),
-          String(finalPromptFooter || "").trim()
-        ].filter(Boolean).join("\n\n");
+  const generateWithFastPrompt = async () => {
+    const presetPrompt = [prompt, String(finalPromptFooter || "").trim()].filter(Boolean).join("\n\n");
     const imagePrompt = compactFastImagePrompt({
       mode: normalizedMode,
       prompt: presetPrompt,
@@ -9158,90 +8474,34 @@ async function thinkThenGenerateImage({ prompt, inputImages, size, quality, titl
     return {
       ...generated,
       prompt: imagePrompt,
-      reasoningModel: "preset-only",
+      reasoningModel: "preset-fast",
       thinking: [
-        fallbackReason
-          ? `思考融合暂时不可用，已自动使用快速预设提示词继续生图。原因：${fallbackReason}`
-          : "已关闭思考模式：本次未做单独的 gpt-5.5 提示词融合，使用快速预设提示词和用户描述直接交给 Image Gen。",
-        directFast
-          ? "Image-Studio 快速直连：主动关闭思考时不注入长工作流守卫，只发送短预设提示词和输入图片。"
-          : "快速兜底：思考融合失败后保留必要工作流守卫并压缩提示词。",
+        "极速模式：未启用提示词优化，只发送当前功能的精简预设、用户描述和必要图片给生图 AI。",
+        "Image-Studio 快速直连：不注入完整项目提示词库，使用低强度快速生成。",
         presetPrompt.length > imagePrompt.length
           ? `快速生图压缩：最终提示词已从 ${presetPrompt.length} 字符压缩到 ${imagePrompt.length} 字符。`
           : `快速生图压缩：最终提示词 ${imagePrompt.length} 字符，未超过快速模式上限。`,
         directPromptAudit.length
-          ? `预设提示词加固：已补回 ${directPromptAudit.length} 项关键约束：${directPromptAudit.join("；")}`
-          : "预设提示词加固：最终提示词已覆盖当前功能的关键输出边界。"
+          ? `精简提示词保留当前功能边界，省略 ${directPromptAudit.length} 项完整优化层。`
+          : "精简提示词已覆盖当前功能的关键输出边界。"
       ].join("\n")
     };
   };
 
-  if (!useReasoning) {
-    return generateWithPresetPrompt({ directFast: true });
+  if (!promptOptimizationEnabled) {
+    return generateWithFastPrompt();
   }
 
-  const content = [
-    {
-      type: "input_text",
-      text: [
-        "You are gpt-5.5 acting as an architecture and spatial-design creative director.",
-        "First inspect the input image(s), open reference images, selected UI button meaning, spatial constraints, camera, material logic, lighting, and generation risks.",
-        "Then synthesize those decisions into a strong gpt-image-2 prompt.",
-        "For architecture/interior work, split spatial layout, camera, materials, lighting, palette, styling details, invariants, and avoid-lines into separate controls.",
-        "Use Prompt Engine v2: put canvas/aspect and artifact type first, then the operation boundary, then concrete scene grammar, then quality controls and targeted avoid-lines.",
-        inputImageOrderGuide(inputImages),
-        "Different UI buttons mean different creative operations; never ignore the selected workflow semantics.",
-        "Run a concise designer aesthetic review before finalizing: spatial order, proportion, material authenticity, lighting hierarchy, focal point, negative space, contextual fit, feasibility and image-generation risk.",
-        "Before returning JSON, run FINAL_PROMPT_PREFLIGHT against your own final_prompt. If it misses the selected workflow output boundary, non-negotiable invariants, camera/view grammar or failure guard, rewrite final_prompt once before returning it.",
-        "Do not call tools. Return valid JSON only with keys summary, aesthetic_review and final_prompt.",
-        `Target image model capability: ${config.imageModel}.`,
-        `Target image size: ${requestedSize}. Target quality: ${quality}.`,
-        finalOutputRuleForMode(normalizedMode),
-        `Request title: ${title}`,
-        "",
-        designerAgentAestheticRubric(),
-        "",
-        prompt
-      ].join("\n")
-    },
-    ...inputImages.map((image) => ({
-      type: "input_image",
-      image_url: image.dataUrl
-    }))
-  ];
-
-  const reasoningPayload = {
-    model: config.reasoningModel,
-    input: [{ role: "user", content }],
-    max_output_tokens: 2600
-  };
-
-  let reasoning;
-  try {
-    const reasoningText = await openaiResponsesTextStream(reasoningPayload, {
-      timeoutMs: 240000,
-      provider: "reasoning"
-    });
-    reasoning = parsePromptFusion(reasoningText);
-  } catch (error) {
-    if (!isReasoningFallbackError(error)) throw error;
-    const reason = reasoningFallbackReason(error);
-    console.warn(`[image] prompt fusion fallback: ${reason}`);
-    return generateWithPresetPrompt({ fallbackReason: reason });
-  }
-  const promptAudit = auditFinalPromptForMode({
-    mode: normalizedMode,
-    prompt: reasoning.final_prompt || prompt
-  });
-  const imagePrompt = [
+  const fullOptimizedPrompt = [
     hardenFinalPromptForMode({
       mode: normalizedMode,
-      finalPrompt: reasoning.final_prompt || prompt,
+      finalPrompt: prompt,
       promptGuard,
-      audit: promptAudit
+      audit: directPromptAudit
     }),
     String(finalPromptFooter || "").trim()
   ].filter(Boolean).join("\n\n");
+  const imagePrompt = compactOptimizedImagePrompt(fullOptimizedPrompt);
   const generated = await generateImageWithImageProvider({
     prompt: imagePrompt,
     inputImages,
@@ -9254,33 +8514,18 @@ async function thinkThenGenerateImage({ prompt, inputImages, size, quality, titl
   return {
     ...generated,
     prompt: imagePrompt,
+    reasoningModel: "preset-optimizer",
     thinking: [
-      reasoning.summary || "已完成参考图、功能按钮、空间约束、审美自检和生成参数的提示词融合。",
-      promptAudit.length
-        ? `提示词加固：已补回 ${promptAudit.length} 项关键约束：${promptAudit.join("；")}`
+      `提示词优化完成：已使用项目内置预设提示词库 ${promptLibraryVersion} 整理当前功能、输入图、参考图、用户描述和输出约束。`,
+      "已使用项目内置预设完成提示词优化，并直接交给生图 AI。",
+      fullOptimizedPrompt.length > imagePrompt.length
+        ? `提示词长度控制：已从 ${fullOptimizedPrompt.length} 字符压缩到 ${imagePrompt.length} 字符，并保留开头预设规则与末尾当前任务锁定。`
+        : `提示词长度：${imagePrompt.length} 字符。`,
+      directPromptAudit.length
+        ? `提示词加固：已补回 ${directPromptAudit.length} 项关键约束：${directPromptAudit.join("；")}`
         : "提示词加固：最终提示词已覆盖当前功能的关键输出边界。"
     ].join("\n")
   };
-}
-
-function parsePromptFusion(text) {
-  if (!text.trim()) return { summary: "", final_prompt: "" };
-  try {
-    const value = parseModelJson(text);
-    const summary = [
-      String(value.summary || value.reasoning_summary || value.design_decisions || "").trim(),
-      value.aesthetic_review ? `审美自检：${String(value.aesthetic_review).trim()}` : ""
-    ].filter(Boolean).join("\n");
-    return {
-      summary,
-      final_prompt: String(value.final_prompt || value.prompt || value.image_prompt || "").trim()
-    };
-  } catch {
-    return {
-      summary: "已完成提示词融合。",
-      final_prompt: text.trim()
-    };
-  }
 }
 
 function normalizeCutoutCoordinate(value, axisSize = 0) {
@@ -9381,8 +8626,8 @@ function normalizeAiCutoutAnalysis(value = {}, body = {}) {
     bounds,
     polygons,
     holes,
-    source: "gpt-5.5-vision",
-    model: config.reasoningModel
+    source: String(value.source || "local-preset"),
+    model: String(value.model || "local-preset")
   };
 }
 
@@ -9395,50 +8640,18 @@ async function analyzeCutoutSubject(body = {}) {
     throw error;
   }
 
-  const prompt = [
-    "You are a vision segmentation assistant for a design image editor.",
-    "Inspect the uploaded image and identify the single main visual subject that should be cut out from the background.",
-    "Return a coarse but useful subject silhouette, not a full-scene caption.",
-    "Coordinate rules:",
-    "- Use normalized coordinates from 0 to 1 relative to the full image.",
-    "- x grows left to right, y grows top to bottom.",
-    "- Provide one to six polygons. Each polygon should have 12 to 40 points when possible.",
-    "- Trace around the visible outer silhouette of the subject. Include protrusions, balconies, arms, furniture legs, plants, roof lines, product edges or other visible subject details.",
-    "- Do not include background sky, walls, floor, checkerboard transparency, empty canvas, UI, shadows, or large blank areas unless they are physically part of the subject.",
-    "- If the subject has holes, return them in holes as polygons.",
-    "Selection rule:",
-    "- Choose the dominant foreground object/product/person/building/furniture/space element a designer would naturally want as a transparent cutout.",
-    "- If the image is an interior or architecture scene, choose the main foreground built subject or object mass, not the whole rectangular image.",
-    "Return valid JSON only, no markdown, in this exact shape:",
-    JSON.stringify({
-      subject: "short Chinese subject label",
-      summary: "one sentence why this subject was selected",
-      confidence: 0.0,
-      bounds: { x: 0, y: 0, width: 1, height: 1 },
-      polygons: [
-        { label: "主体", points: [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]] }
-      ],
-      holes: []
-    })
-  ].join("\n");
-
-  const payload = {
-    model: config.reasoningModel,
-    input: [
-      {
-        role: "user",
-        content: [
-          { type: "input_text", text: prompt },
-          { type: "input_image", image_url: dataUrl }
-        ]
-      }
-    ],
-    max_output_tokens: 2200
-  };
-
-  const text = await openaiResponsesTextStream(payload, { timeoutMs: 180000, provider: "reasoning" });
-  const parsed = parseModelJson(text);
-  return normalizeAiCutoutAnalysis(parsed, body);
+  const bounds = normalizeCutoutBounds(body.bounds || body.selection || {}, body.imageWidth || 0, body.imageHeight || 0)
+    || { x: 0.1, y: 0.08, width: 0.8, height: 0.84 };
+  return normalizeAiCutoutAnalysis({
+    subject: String(body.subject || primaryImage.name || "主要主体"),
+    summary: "已使用项目内置预设生成矩形候选范围，可在抠图面板继续选择和调整。",
+    confidence: 0.5,
+    bounds,
+    polygons: [{ label: "本地主体候选", points: polygonFromCutoutBounds(bounds) }],
+    holes: [],
+    source: "local-preset",
+    model: "local-preset"
+  }, body);
 }
 
 function buildFinalPromptGuard({ mode, requestedSize, quality, title }) {
@@ -9568,12 +8781,23 @@ function compactFastImagePrompt({ mode, prompt, requestedSize, quality, title })
     finalOutputRuleForMode(normalizedMode)
   ].join("\n");
   const footer = [
-    "Fast-mode compression: long hidden workflow templates were intentionally omitted because thinking mode is off.",
+    "Fast-mode compression: full preset prompt-optimization rules were intentionally omitted because prompt optimization is off.",
     "Use the uploaded input image as the primary visual evidence and follow the selected workflow boundary.",
     "Avoid: no watermark, no logo, no UI overlay, no random readable text, no distorted geometry, no unrelated collage."
   ].join("\n");
   const budget = Math.max(800, maxChars - header.length - footer.length - 4);
   return [header, truncateLogText(text, budget), footer].join("\n");
+}
+
+function compactOptimizedImagePrompt(prompt) {
+  const text = String(prompt || "").replace(/\n{3,}/g, "\n\n").trim();
+  const maxChars = config.optimizedImagePromptMaxChars;
+  if (text.length <= maxChars) return text;
+  const marker = "\n\nPRESET_OPTIMIZATION_COMPACTED: repeated middle guidance was shortened; keep the opening prompt-library rules and the final current-task locks.\n\n";
+  const available = Math.max(1000, maxChars - marker.length);
+  const headLength = Math.floor(available * 0.68);
+  const tailLength = available - headLength;
+  return `${text.slice(0, headLength)}${marker}${text.slice(-tailLength)}`;
 }
 
 async function generateImageWithImageProvider({ prompt, inputImages, size, quality, preferReferenceEdit = true, mode = "", fastMode = false }) {
@@ -9603,6 +8827,19 @@ async function generateImageWithImageProvider({ prompt, inputImages, size, quali
         fastMode
       })
     });
+    if (standardSize !== imageStudioCliSize(size)) {
+      attempts.push({
+        name: `Image Studio CLI compatible fallback ${standardSize}`,
+        endpoint: engineStatus.available ? `image-studio-cli:${path.basename(engineStatus.cliPath)}` : "image-studio-cli:missing",
+        run: () => runImageStudioEngine({
+          prompt,
+          inputImages,
+          size: standardSize,
+          quality,
+          fastMode
+        })
+      });
+    }
   }
   if (useNativeAdapter && nativeApiMode !== "responses") {
     attempts.push({
@@ -9753,6 +8990,7 @@ async function generateImageWithImageProvider({ prompt, inputImages, size, quali
       event.durationMs = Date.now() - started;
       return {
         ...result,
+        actualParams: actualImageParamsFromBuffer(result.buffer, result.actualParams, size),
         endpoint: result.endpoint || attempt.endpoint || config.imageProvider.baseUrl,
         attempt: attempt.name,
         attempts: attemptEvents
@@ -10481,7 +9719,7 @@ function referenceImageReadingProtocol({ references = [], referenceCount = 0 } =
 
 function inputImageOrderGuide(inputImages = []) {
   if (!inputImages.length) {
-    return "Input image order: no uploaded image is attached to this reasoning request.";
+    return "Input image order: no uploaded image is attached to this image generation request.";
   }
   return [
     "Input image order:",
@@ -10956,7 +10194,7 @@ async function saveGeneratedImage({ buffer, slug, meta, extra = {} }) {
     file: filePath,
     bytes: buffer.length,
     model: config.imageModel,
-    reasoningModel: config.reasoningModel,
+    reasoningModel: extra.reasoningModel || meta?.reasoning_model || config.imageToolRunnerModel,
     endpoint: extra.endpoint || config.imageProvider.baseUrl,
     ...extra
   };
@@ -12101,36 +11339,14 @@ async function writeCanvasState(body = {}, clientId = "local") {
 }
 
 function normalizeRuntimeImageEndpoint(endpoint = {}, existing = null) {
-  const baseUrl = normalizeBaseUrl(endpoint.baseUrl || existing?.baseUrl || "");
-  if (!baseUrl || !/^https?:\/\//i.test(baseUrl)) {
-    const error = new Error("请输入有效的生图 API Base URL，例如 https://api.example.com 或 https://api.example.com/v1");
-    error.status = 400;
-    throw error;
-  }
-
-  const apiKey = String(endpoint.apiKey || endpoint.key || "").trim() || existing?.apiKey || "";
-  if (!apiKey) {
-    const error = new Error("请输入这个生图 API 的 Key。");
-    error.status = 400;
-    throw error;
-  }
-
-  const responsesPath = String(endpoint.responsesPath || endpoint.path || existing?.responsesPath || "/v1/responses").trim();
-  const imageGenerationPath = String(endpoint.imageGenerationPath || endpoint.generationPath || existing?.imageGenerationPath || "/v1/images/generations").trim();
-  const imageEditPath = String(endpoint.imageEditPath || endpoint.editPath || existing?.imageEditPath || "/v1/images/edits").trim();
-  const providerManifest = providerManifestFromInput(endpoint, existing);
+  const provider = normalizeRuntimeProvider(endpoint, existing, { kind: "image" });
   return {
     id: String(existing?.id || endpoint.id || randomUUID()),
-    label: String(endpoint.label || endpoint.name || existing?.label || shortRuntimeEndpointLabel(baseUrl)),
-    baseUrl,
-    apiKey,
-    responsesPath: normalizeProviderApiPath(responsesPath, "/v1/responses"),
-    imageGenerationPath: normalizeProviderApiPath(providerManifest?.submit?.path || imageGenerationPath, "/v1/images/generations"),
-    imageEditPath: normalizeProviderApiPath(providerManifest?.editSubmit?.path || imageEditPath, "/v1/images/edits"),
-    providerManifest,
+    label: String(endpoint.label || endpoint.name || existing?.label || shortRuntimeEndpointLabel(provider.baseUrl)).trim(),
+    ...provider,
     enabled: parseBooleanEnv(endpoint.enabled, existing?.enabled ?? true),
     createdAt: existing?.createdAt || new Date().toISOString(),
-    updatedAt: new Date().toISOString()
+    updatedAt: provider.updatedAt || new Date().toISOString()
   };
 }
 
@@ -12142,7 +11358,22 @@ function shortRuntimeEndpointLabel(baseUrl) {
   }
 }
 
-function normalizeRuntimeProvider(provider = {}, existing = null, { kind = "reasoning" } = {}) {
+function activeRuntimeImageEndpoint() {
+  return runtimeSettings.imageEndpoints.find((endpoint) => endpoint?.enabled === true) || null;
+}
+
+function ensureSingleActiveImageEndpoint(preferredId = "") {
+  if (!runtimeSettings.imageEndpoints.length) return null;
+  const preferred = runtimeSettings.imageEndpoints.find((endpoint) => endpoint.id === preferredId)
+    || activeRuntimeImageEndpoint()
+    || runtimeSettings.imageEndpoints[0];
+  runtimeSettings.imageEndpoints.forEach((endpoint) => {
+    endpoint.enabled = endpoint.id === preferred.id;
+  });
+  return preferred;
+}
+
+function normalizeRuntimeProvider(provider = {}, existing = null, { kind = "image" } = {}) {
   const baseUrl = normalizeBaseUrl(provider.baseUrl || existing?.baseUrl || "");
   if (!baseUrl || !/^https?:\/\//i.test(baseUrl)) {
     const error = new Error("请输入有效的 API Base URL，例如 https://api.example.com 或 https://api.example.com/v1");
@@ -12157,8 +11388,8 @@ function normalizeRuntimeProvider(provider = {}, existing = null, { kind = "reas
     throw error;
   }
 
-  const fallbackModel = kind === "image" ? config.imageModel : config.reasoningModel;
-  const fallbackResponsesPath = kind === "image" ? defaultResponsesPathForBaseUrl(baseUrl) : "/v1/responses";
+  const fallbackModel = config.imageModel;
+  const fallbackResponsesPath = defaultResponsesPathForBaseUrl(baseUrl);
   const responsesPath = String(provider.responsesPath || provider.path || existing?.responsesPath || fallbackResponsesPath).trim();
   const normalized = {
     baseUrl,
@@ -12215,52 +11446,38 @@ function effectivePublicProvider(kind) {
   if (runtimeProvider?.apiKey && runtimeProvider.baseUrl) {
     return publicRuntimeProvider(runtimeProvider, { source: "runtime" });
   }
-  if (kind === "image") {
-    const source = activeImageProviderSource();
-    return publicRuntimeProvider({
-      ...source,
-      model: source?.model || config.imageModel,
-      apiMode: source?.apiMode || config.imageApiMode,
-      responsesTransport: source?.responsesTransport || config.imageStudioEngine.responsesTransport,
-      requestPolicy: source?.requestPolicy || config.imageStudioEngine.requestPolicy,
-      imagesNewApiCompat: parseBooleanEnv(source?.imagesNewApiCompat, config.imageStudioEngine.imagesNewApiCompat),
-      reasoningEffort: source?.reasoningEffort || config.imageStudioEngine.reasoningEffort,
-      responsesPath: source ? providerResponsesPath(source) : "",
-      imageGenerationPath: source ? providerImageApiPath(source, "generation") : "",
-      imageEditPath: source ? providerImageApiPath(source, "edit") : ""
-    }, { source: source?.keySource || "env" });
-  }
+  const source = activeImageProviderSource();
   return publicRuntimeProvider({
-    ...config.reasoningProvider,
-    model: config.reasoningModel,
-    responsesPath: providerResponsesPath(config.reasoningProvider)
-  }, { source: "env" });
+    ...source,
+    model: source?.model || config.imageModel,
+    apiMode: source?.apiMode || config.imageApiMode,
+    responsesTransport: source?.responsesTransport || config.imageStudioEngine.responsesTransport,
+    requestPolicy: source?.requestPolicy || config.imageStudioEngine.requestPolicy,
+    imagesNewApiCompat: parseBooleanEnv(source?.imagesNewApiCompat, config.imageStudioEngine.imagesNewApiCompat),
+    reasoningEffort: source?.reasoningEffort || config.imageStudioEngine.reasoningEffort,
+    responsesPath: source ? providerResponsesPath(source) : "",
+    imageGenerationPath: source ? providerImageApiPath(source, "generation") : "",
+    imageEditPath: source ? providerImageApiPath(source, "edit") : ""
+  }, { source: source?.keySource || "env" });
 }
 
 function applyRuntimeProviders() {
-  const reasoning = runtimeSettings.providers.reasoning;
-  if (reasoning?.apiKey && reasoning.baseUrl) {
-    config.reasoningProvider.baseUrl = reasoning.baseUrl;
-    config.reasoningProvider.apiKey = reasoning.apiKey;
-    config.reasoningProvider.responsesPath = reasoning.responsesPath || config.reasoningProvider.responsesPath;
-    config.reasoningModel = reasoning.model || config.reasoningModel;
-  }
-
-  const image = runtimeSettings.providers.image;
+  restoreEnvImageRuntimeBaseline();
+  const image = activeRuntimeImageEndpoint();
   if (image?.apiKey && image.baseUrl) {
     config.imageProvider.baseUrl = image.baseUrl;
     config.imageProvider.apiKey = image.apiKey;
-    config.imageProvider.responsesPath = image.responsesPath || config.imageProvider.responsesPath;
-    config.imageProvider.imageGenerationPath = image.imageGenerationPath || config.imageProvider.imageGenerationPath;
-    config.imageProvider.imageEditPath = image.imageEditPath || config.imageProvider.imageEditPath;
-    config.imageProvider.providerManifest = image.providerManifest || config.imageProvider.providerManifest;
+    config.imageProvider.responsesPath = image.responsesPath || envImageRuntimeBaseline.imageProvider.responsesPath;
+    config.imageProvider.imageGenerationPath = image.imageGenerationPath || envImageRuntimeBaseline.imageProvider.imageGenerationPath;
+    config.imageProvider.imageEditPath = image.imageEditPath || envImageRuntimeBaseline.imageProvider.imageEditPath;
+    config.imageProvider.providerManifest = image.providerManifest || null;
     config.imageModel = image.model || config.imageModel;
     config.imageApiMode = normalizeImageApiMode(image.apiMode || config.imageApiMode);
     config.imageStudioEngine.responsesTransport = normalizeResponsesTransport(image.responsesTransport || config.imageStudioEngine.responsesTransport);
     config.imageStudioEngine.requestPolicy = normalizeImageStudioRequestPolicy(image.requestPolicy || config.imageStudioEngine.requestPolicy);
     config.imageStudioEngine.imagesNewApiCompat = parseBooleanEnv(image.imagesNewApiCompat, config.imageStudioEngine.imagesNewApiCompat);
     config.imageStudioEngine.reasoningEffort = normalizeImageStudioReasoningEffort(image.reasoningEffort || config.imageStudioEngine.reasoningEffort);
-    config.imageProvider.baseUrls = uniqueBaseUrls([image.baseUrl, ...config.imageProvider.baseUrls]);
+    config.imageProvider.baseUrls = [image.baseUrl];
   }
 }
 
@@ -12269,6 +11486,7 @@ function publicRuntimeImageEndpoint(endpoint) {
     id: endpoint.id,
     label: endpoint.label,
     baseUrl: endpoint.baseUrl,
+    model: endpoint.model || "",
     responsesPath: endpoint.responsesPath,
     apiMode: endpoint.apiMode || "",
     responsesTransport: endpoint.responsesTransport || "",
@@ -12280,6 +11498,7 @@ function publicRuntimeImageEndpoint(endpoint) {
     providerManifest: endpoint.providerManifest || null,
     providerManifestName: endpoint.providerManifest?.name || "",
     enabled: endpoint.enabled,
+    active: endpoint.enabled === true,
     keyConfigured: Boolean(endpoint.apiKey),
     createdAt: endpoint.createdAt,
     updatedAt: endpoint.updatedAt
@@ -12319,31 +11538,69 @@ async function loadRuntimeSettings() {
     const raw = await fs.readFile(runtimeSettingsPath, "utf8");
     const parsed = JSON.parse(raw);
     const providers = parsed.providers && typeof parsed.providers === "object" ? parsed.providers : {};
-    runtimeSettings.providers = { reasoning: null, image: null };
-    for (const kind of ["reasoning", "image"]) {
-      if (!providers[kind]) continue;
+    const rawEndpoints = Array.isArray(parsed.imageEndpoints) ? parsed.imageEndpoints : [];
+    const rawProfiles = Array.isArray(parsed.providerProfiles) ? parsed.providerProfiles : [];
+    const originalEnabledCount = rawEndpoints.filter((endpoint) => endpoint?.enabled === true || endpoint?.active === true).length;
+    const endpoints = [];
+    const endpointsByBaseUrl = new Map();
+    let preferredId = "";
+    let preferredRank = -1;
+
+    const addMigratedEndpoint = (input, { label = "", activeRank = 0 } = {}) => {
+      if (!input || typeof input !== "object") return;
       try {
-        runtimeSettings.providers[kind] = normalizeRuntimeProvider(providers[kind], providers[kind], { kind });
-      } catch {
-        runtimeSettings.providers[kind] = null;
-      }
+        const endpoint = normalizeRuntimeImageEndpoint({
+          ...input,
+          label: input.label || input.name || label,
+          enabled: false
+        }, input);
+        const key = normalizeBaseUrl(endpoint.baseUrl).toLowerCase();
+        let stored = endpointsByBaseUrl.get(key);
+        if (!stored) {
+          stored = endpoint;
+          endpointsByBaseUrl.set(key, stored);
+          endpoints.push(stored);
+        }
+        if (activeRank > preferredRank) {
+          preferredRank = activeRank;
+          preferredId = stored.id;
+        }
+      } catch {}
+    };
+
+    if (providers.image) {
+      addMigratedEndpoint(providers.image, { label: "原来的 API", activeRank: 30 });
     }
-    const hadLegacyProviderProfiles = Array.isArray(parsed.providerProfiles) && parsed.providerProfiles.length > 0;
-    const hadLegacyImageEndpoints = Array.isArray(parsed.imageEndpoints) && parsed.imageEndpoints.length > 0;
-    runtimeSettings.imageEndpoints = [];
+    rawEndpoints.forEach((endpoint) => {
+      const selected = endpoint?.enabled === true || endpoint?.active === true;
+      addMigratedEndpoint(endpoint, { activeRank: selected ? 10 : 0 });
+    });
+    rawProfiles.forEach((profile) => {
+      addMigratedEndpoint(profile?.image, {
+        label: profile?.label || profile?.name || "旧版生图 API",
+        activeRank: profile?.active === true ? 20 : 0
+      });
+    });
+
+    runtimeSettings.providers = { image: null };
+    runtimeSettings.imageEndpoints = endpoints;
+    ensureSingleActiveImageEndpoint(preferredId);
     runtimeSettings.storage = normalizeStorageSettings(parsed.storage || {}, parsed.storage || null);
     applyRuntimeProviders();
-    if (hadLegacyImageEndpoints || hadLegacyProviderProfiles) await saveRuntimeSettings();
+    const needsMigration = Boolean(providers.image || providers.reasoning || rawProfiles.length)
+      || endpoints.length !== rawEndpoints.length
+      || (endpoints.length > 0 && originalEnabledCount !== 1);
+    if (needsMigration) await saveRuntimeSettings();
   } catch (error) {
     if (error.code !== "ENOENT") console.warn(`[settings] load failed: ${error.message || error}`);
-    runtimeSettings.providers = { reasoning: null, image: null };
+    runtimeSettings.providers = { image: null };
     runtimeSettings.imageEndpoints = [];
     runtimeSettings.storage = normalizeStorageSettings();
+    restoreEnvImageRuntimeBaseline();
   }
 }
 
 async function saveRuntimeSettings() {
-  runtimeSettings.imageEndpoints = [];
   await fs.mkdir(logsDir, { recursive: true });
   const tmpPath = `${runtimeSettingsPath}.${process.pid}.tmp`;
   await fs.writeFile(tmpPath, `${JSON.stringify(runtimeSettings, null, 2)}\n`);
@@ -12359,11 +11616,10 @@ function runtimeSettingsBody(req = null) {
       externalDataDir: externalDataDirEnabled,
       storage: publicStorageSettings(),
       providers: {
-        reasoning: effectivePublicProvider("reasoning"),
         image: effectivePublicProvider("image")
       },
+      imageEndpoints: runtimeSettings.imageEndpoints.map(publicRuntimeImageEndpoint),
       providerProbes: {
-        reasoning: publicProviderProbe("reasoning"),
         image: publicProviderProbe("image")
       },
       activeImageBaseUrl: config.imageProvider.baseUrl,
@@ -12379,13 +11635,21 @@ function runtimeSettingsBody(req = null) {
 }
 
 async function updateRuntimeProvider(kind, body = {}) {
-  if (!["reasoning", "image"].includes(kind)) {
-    const error = new Error("未知 API 类型");
+  if (kind !== "image") {
+    const error = new Error("只支持保存生图 API");
     error.status = 400;
     throw error;
   }
-  const provider = normalizeRuntimeProvider(body, runtimeSettings.providers[kind], { kind });
-  runtimeSettings.providers[kind] = provider;
+  const existing = activeRuntimeImageEndpoint();
+  const provider = normalizeRuntimeImageEndpoint({ ...body, enabled: true }, existing);
+  if (existing) {
+    const index = runtimeSettings.imageEndpoints.findIndex((endpoint) => endpoint.id === existing.id);
+    runtimeSettings.imageEndpoints[index] = provider;
+  } else {
+    runtimeSettings.imageEndpoints.unshift(provider);
+  }
+  runtimeSettings.providers.image = null;
+  ensureSingleActiveImageEndpoint(provider.id);
   applyRuntimeProviders();
   await saveRuntimeSettings();
   return provider;
@@ -12393,18 +11657,24 @@ async function updateRuntimeProvider(kind, body = {}) {
 
 async function providerProbeBody(body = {}) {
   const kind = String(body.kind || "").trim();
-  if (!["reasoning", "image"].includes(kind)) {
-    const error = new Error("未知 API 类型");
+  if (kind !== "image") {
+    const error = new Error("只支持检测生图 API");
     error.status = 400;
     throw error;
   }
-  const timeoutMs = kind === "image"
-    ? clampNumber(Number(body.timeoutMs || 120000), 10000, 240000)
-    : clampNumber(Number(body.timeoutMs || 30000), 5000, 60000);
-  const existing = runtimeSettings.providers[kind] || null;
+  const timeoutMs = clampNumber(Number(body.timeoutMs || 120000), 10000, 240000);
+  const profileId = String(body.profileId || body.endpointId || body.id || "").trim();
+  const existing = profileId
+    ? runtimeSettings.imageEndpoints.find((endpoint) => endpoint.id === profileId)
+    : null;
+  if (profileId && !existing) {
+    const error = new Error("未找到这个生图 API 配置。");
+    error.status = 404;
+    throw error;
+  }
   const provider = normalizeRuntimeProvider(body, existing, { kind });
   const probe = await probeProviderConnection(kind, provider, { timeoutMs });
-  const imageEndpointHealthValue = kind === "image" ? imageEndpointHealth() : undefined;
+  const imageEndpointHealthValue = imageEndpointHealth();
   return {
     ok: probe.ok,
     probe,
@@ -12643,7 +11913,7 @@ async function runStorageMaintenance(body = {}) {
 }
 
 async function imageEndpointProbeBody(body = {}) {
-  const endpointId = String(body.endpointId || body.id || "").trim();
+  const endpointId = String(body.profileId || body.endpointId || body.id || "").trim();
   const baseUrl = normalizeBaseUrl(body.baseUrl || "");
   const apiKey = String(body.apiKey || body.key || "").trim();
   const hasTarget = Boolean(endpointId || baseUrl);
@@ -12652,7 +11922,7 @@ async function imageEndpointProbeBody(body = {}) {
   const autoActivate = hasTarget
     ? parseBooleanEnv(body.autoActivate, false)
     : parseBooleanEnv(body.autoActivate, true);
-  if (baseUrl && apiKey) {
+  if (!endpointId && baseUrl && apiKey) {
     if (!/^https?:\/\//i.test(baseUrl)) {
       const error = new Error("请输入有效的生图 API Base URL，例如 https://api.example.com 或 https://api.example.com/v1");
       error.status = 400;
@@ -12705,16 +11975,22 @@ async function imageEndpointProbeBody(body = {}) {
 }
 
 async function addRuntimeImageEndpoint(body = {}) {
-  const endpoint = normalizeRuntimeImageEndpoint(body);
-  const existingIndex = runtimeSettings.imageEndpoints.findIndex((item) => item.baseUrl === endpoint.baseUrl);
+  const requestedBaseUrl = normalizeBaseUrl(body.baseUrl || "");
+  const existingIndex = runtimeSettings.imageEndpoints.findIndex((item) => normalizeBaseUrl(item.baseUrl) === requestedBaseUrl);
+  const existing = existingIndex >= 0 ? runtimeSettings.imageEndpoints[existingIndex] : null;
+  const enabled = body.enabled === undefined
+    ? (existing?.enabled ?? runtimeSettings.imageEndpoints.length === 0)
+    : parseBooleanEnv(body.enabled, false);
+  const endpoint = normalizeRuntimeImageEndpoint({ ...body, enabled }, existing);
   if (existingIndex >= 0) {
-    endpoint.id = runtimeSettings.imageEndpoints[existingIndex].id;
-    endpoint.createdAt = runtimeSettings.imageEndpoints[existingIndex].createdAt;
     runtimeSettings.imageEndpoints[existingIndex] = endpoint;
   } else {
     runtimeSettings.imageEndpoints.unshift(endpoint);
   }
-  if (endpoint.enabled) config.imageProvider.baseUrl = endpoint.baseUrl;
+  const active = activeRuntimeImageEndpoint();
+  ensureSingleActiveImageEndpoint(endpoint.enabled ? endpoint.id : active?.id || endpoint.id);
+  runtimeSettings.providers.image = null;
+  applyRuntimeProviders();
   await saveRuntimeSettings();
   return endpoint;
 }
@@ -12728,12 +12004,16 @@ async function updateRuntimeImageEndpoint(id, body = {}) {
   }
   const endpoint = normalizeRuntimeImageEndpoint({ ...body, id }, runtimeSettings.imageEndpoints[index]);
   runtimeSettings.imageEndpoints[index] = endpoint;
-  if (endpoint.enabled) config.imageProvider.baseUrl = endpoint.baseUrl;
+  const active = activeRuntimeImageEndpoint();
+  ensureSingleActiveImageEndpoint(endpoint.enabled ? endpoint.id : active?.id || endpoint.id);
+  runtimeSettings.providers.image = null;
+  applyRuntimeProviders();
   await saveRuntimeSettings();
   return endpoint;
 }
 
 async function deleteRuntimeImageEndpoint(id) {
+  const wasActive = runtimeSettings.imageEndpoints.some((endpoint) => endpoint.id === id && endpoint.enabled === true);
   const before = runtimeSettings.imageEndpoints.length;
   runtimeSettings.imageEndpoints = runtimeSettings.imageEndpoints.filter((endpoint) => endpoint.id !== id);
   if (runtimeSettings.imageEndpoints.length === before) {
@@ -12741,8 +12021,9 @@ async function deleteRuntimeImageEndpoint(id) {
     error.status = 404;
     throw error;
   }
-  const active = activeImageProviderSource();
-  if (active?.baseUrl) config.imageProvider.baseUrl = active.baseUrl;
+  if (wasActive || !activeRuntimeImageEndpoint()) ensureSingleActiveImageEndpoint(runtimeSettings.imageEndpoints[0]?.id || "");
+  runtimeSettings.providers.image = null;
+  applyRuntimeProviders();
   await saveRuntimeSettings();
 }
 
@@ -12753,38 +12034,70 @@ async function activateRuntimeImageEndpoint(id) {
     error.status = 404;
     throw error;
   }
-  endpoint.enabled = true;
+  ensureSingleActiveImageEndpoint(endpoint.id);
   endpoint.updatedAt = new Date().toISOString();
-  config.imageProvider.baseUrl = endpoint.baseUrl;
+  runtimeSettings.providers.image = null;
+  applyRuntimeProviders();
   await saveRuntimeSettings();
   return endpoint;
 }
 
+async function handleRuntimeImageEndpointSettingsRoute(req, res, routePath) {
+  if (req.method === "POST" && routePath === "/settings/image-endpoints") {
+    if (!requireOwnerWriteRequest(req, res)) return true;
+    const body = await readJson(req);
+    const endpoint = await addRuntimeImageEndpoint(body);
+    sendJson(res, 200, { ok: true, endpoint: publicRuntimeImageEndpoint(endpoint), settings: runtimeSettingsBody(req).settings });
+    return true;
+  }
+
+  const match = routePath.match(/^\/settings\/image-endpoints\/([^/]+)(?:\/(activate))?$/);
+  if (!match) return false;
+  const id = decodeURIComponent(match[1]);
+  const action = match[2] || "";
+  if (req.method === "POST" && action === "activate") {
+    if (!requireOwnerWriteRequest(req, res)) return true;
+    const endpoint = await activateRuntimeImageEndpoint(id);
+    sendJson(res, 200, { ok: true, endpoint: publicRuntimeImageEndpoint(endpoint), settings: runtimeSettingsBody(req).settings });
+    return true;
+  }
+  if (req.method === "PATCH" && !action) {
+    if (!requireOwnerWriteRequest(req, res)) return true;
+    const body = await readJson(req);
+    const endpoint = await updateRuntimeImageEndpoint(id, body);
+    sendJson(res, 200, { ok: true, endpoint: publicRuntimeImageEndpoint(endpoint), settings: runtimeSettingsBody(req).settings });
+    return true;
+  }
+  if (req.method === "DELETE" && !action) {
+    if (!requireOwnerWriteRequest(req, res)) return true;
+    await deleteRuntimeImageEndpoint(id);
+    sendJson(res, 200, { ok: true, settings: runtimeSettingsBody(req).settings });
+    return true;
+  }
+  return false;
+}
+
 function healthBody() {
-  const reasoningConfigured = Boolean(config.reasoningProvider.baseUrl && config.reasoningProvider.apiKey);
   const fhlSkillStatus = imageStudioFhlSkillStatus();
   const engineStatus = imageStudioEngineStatus();
   const imageConfigured = imageProviderSources().some((source) => source.baseUrl && source.apiKey)
     && (engineStatus.available || !engineStatus.required);
   return {
     ok: true,
-    keyConfigured: reasoningConfigured && imageConfigured,
-    reasoningConfigured,
+    keyConfigured: imageConfigured,
     imageConfigured,
-    reasoningBaseUrl: config.reasoningProvider.baseUrl,
     imageBaseUrl: config.imageProvider.baseUrl,
     imageBaseUrls: config.imageProvider.baseUrls,
     imageStudioEngine: engineStatus,
     imageStudioFhlSkill: fhlSkillStatus,
     imageQueue: imageGenerationQueueState(),
-    reasoningModel: config.reasoningModel,
+    imageToolRunnerModel: config.imageToolRunnerModel,
     imageModel: config.imageModel,
     imageBackend: "image-studio-cli-engine",
     dataDir: appDataDir,
     externalDataDir: externalDataDirEnabled,
     storage: publicStorageSettings(),
     runtimeProviders: {
-      reasoning: effectivePublicProvider("reasoning"),
       image: effectivePublicProvider("image")
     },
     publicApi: {
@@ -13096,12 +12409,32 @@ function publicApiRoutes() {
     {
       method: "POST",
       path: "/api/v1/settings/providers",
-      description: "保存当前思考或生图 API 配置。"
+      description: "保存当前生图 API 配置。"
     },
     {
       method: "POST",
       path: "/api/v1/settings/providers/probe",
-      description: "检测当前思考或生图 API 连接。"
+      description: "检测当前生图 API 连接。"
+    },
+    {
+      method: "POST",
+      path: "/api/v1/settings/image-endpoints",
+      description: "添加一套生图 API 配置。"
+    },
+    {
+      method: "PATCH",
+      path: "/api/v1/settings/image-endpoints/{id}",
+      description: "编辑一套生图 API 配置。"
+    },
+    {
+      method: "DELETE",
+      path: "/api/v1/settings/image-endpoints/{id}",
+      description: "删除一套生图 API 配置。"
+    },
+    {
+      method: "POST",
+      path: "/api/v1/settings/image-endpoints/{id}/activate",
+      description: "选用一套生图 API 配置。"
     },
     {
       method: "GET",
@@ -13284,7 +12617,7 @@ function createOpenApiDocument(req) {
       },
       "/settings/providers": {
         post: {
-          summary: "保存模型 API 配置",
+          summary: "保存生图 API 配置",
           security: auth,
           requestBody: { required: true, content: jsonContent(jsonSchemaRef("RuntimeProviderRequest")) },
           responses: { 200: okJson(jsonSchemaRef("RuntimeSettingsResponse")), 400: errorResponse, 401: errorResponse }
@@ -13292,10 +12625,41 @@ function createOpenApiDocument(req) {
       },
       "/settings/providers/probe": {
         post: {
-          summary: "检测模型 API 配置",
+          summary: "检测生图 API 配置",
           security: auth,
           requestBody: { required: true, content: jsonContent(jsonSchemaRef("RuntimeProviderRequest")) },
           responses: { 200: okJson({ type: "object", additionalProperties: true }), 400: errorResponse, 401: errorResponse }
+        }
+      },
+      "/settings/image-endpoints": {
+        post: {
+          summary: "添加生图 API 配置",
+          security: auth,
+          requestBody: { required: true, content: jsonContent(jsonSchemaRef("ImageEndpointRequest")) },
+          responses: { 200: okJson(jsonSchemaRef("RuntimeImageEndpointResponse")), 400: errorResponse, 401: errorResponse }
+        }
+      },
+      "/settings/image-endpoints/{id}": {
+        patch: {
+          summary: "编辑生图 API 配置",
+          security: auth,
+          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+          requestBody: { required: true, content: jsonContent(jsonSchemaRef("ImageEndpointRequest")) },
+          responses: { 200: okJson(jsonSchemaRef("RuntimeImageEndpointResponse")), 400: errorResponse, 401: errorResponse, 404: errorResponse }
+        },
+        delete: {
+          summary: "删除生图 API 配置",
+          security: auth,
+          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+          responses: { 200: okJson(jsonSchemaRef("RuntimeSettingsResponse")), 401: errorResponse, 404: errorResponse }
+        }
+      },
+      "/settings/image-endpoints/{id}/activate": {
+        post: {
+          summary: "选用生图 API 配置",
+          security: auth,
+          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+          responses: { 200: okJson(jsonSchemaRef("RuntimeImageEndpointResponse")), 401: errorResponse, 404: errorResponse }
         }
       },
     },
@@ -13363,7 +12727,8 @@ function createOpenApiDocument(req) {
             userPrompt: { type: "string" },
             size: { type: "string", default: "1024x1536" },
             quality: { type: "string", enum: ["low", "medium", "high", "auto"], default: "low" },
-            thinkingEnabled: { type: "boolean", default: false }
+            promptOptimizationEnabled: { type: "boolean", default: false, description: "开启时使用项目内置预设提示词库优化。" },
+            thinkingEnabled: { type: "boolean", default: false, description: "旧版兼容字段，等同于 promptOptimizationEnabled。" }
           },
           additionalProperties: true
         },
@@ -13386,7 +12751,8 @@ function createOpenApiDocument(req) {
             selection: { type: "object", additionalProperties: true },
             size: { type: "string", default: "1024x1536" },
             quality: { type: "string", enum: ["low", "medium", "high", "auto"], default: "low" },
-            thinkingEnabled: { type: "boolean", default: false }
+            promptOptimizationEnabled: { type: "boolean", default: false, description: "开启时使用项目内置预设提示词库优化。" },
+            thinkingEnabled: { type: "boolean", default: false, description: "旧版兼容字段，等同于 promptOptimizationEnabled。" }
           },
           additionalProperties: true
         },
@@ -13426,7 +12792,8 @@ function createOpenApiDocument(req) {
             seriesCount: { type: "integer", minimum: 1, maximum: 8 },
             size: { type: "string", default: "1024x1536" },
             quality: { type: "string", enum: ["low", "medium", "high", "auto"], default: "low" },
-            thinkingEnabled: { type: "boolean", default: false }
+            promptOptimizationEnabled: { type: "boolean", default: false, description: "开启时使用项目内置预设提示词库优化。" },
+            thinkingEnabled: { type: "boolean", default: false, description: "旧版兼容字段，等同于 promptOptimizationEnabled。" }
           },
           additionalProperties: true
         },
@@ -13506,6 +12873,12 @@ function createOpenApiDocument(req) {
             label: { type: "string" },
             baseUrl: { type: "string", description: "可包含端口，例如 http://127.0.0.1:8080 或 https://api.example.com/v1" },
             apiKey: { type: "string" },
+            model: { type: "string" },
+            apiMode: { type: "string", enum: ["responses", "images", "auto"] },
+            responsesTransport: { type: "string" },
+            requestPolicy: { type: "string" },
+            imagesNewApiCompat: { type: "boolean" },
+            reasoningEffort: { type: "string" },
             responsesPath: { type: "string", default: "/v1/responses" },
             imageGenerationPath: { type: "string", default: "/v1/images/generations" },
             imageEditPath: { type: "string", default: "/v1/images/edits" },
@@ -13519,18 +12892,26 @@ function createOpenApiDocument(req) {
             id: { type: "string" },
             label: { type: "string" },
             baseUrl: { type: "string" },
+            model: { type: "string" },
+            apiMode: { type: "string" },
+            responsesTransport: { type: "string" },
+            requestPolicy: { type: "string" },
+            imagesNewApiCompat: { type: "boolean" },
+            reasoningEffort: { type: "string" },
             responsesPath: { type: "string" },
             imageGenerationPath: { type: "string" },
             imageEditPath: { type: "string" },
             providerManifestName: { type: "string" },
             enabled: { type: "boolean" },
+            active: { type: "boolean" },
             keyConfigured: { type: "boolean" }
           }
         },
         RuntimeProviderRequest: {
           type: "object",
           properties: {
-            kind: { type: "string", enum: ["reasoning", "image"] },
+            kind: { type: "string", enum: ["image"] },
+            profileId: { type: "string", description: "检测编辑中的配置时，用于在未填写新 Key 时复用这一套配置自己的 Key。" },
             baseUrl: { type: "string" },
             model: { type: "string" },
             apiKey: { type: "string" },
@@ -13574,6 +12955,7 @@ function createOpenApiDocument(req) {
           type: "object",
           properties: {
             endpointId: { type: "string", description: "只检测某个已保存自定义端点。留空时检测所有可用端点。" },
+            profileId: { type: "string", description: "endpointId 的同义字段。" },
             baseUrl: { type: "string", description: "只检测某个 Base URL，可包含端口。" },
             apiKey: { type: "string", description: "临时检测未保存端点时使用，不会写入本机设置。" },
             label: { type: "string", description: "临时检测端点的显示名。" },
@@ -13958,7 +13340,7 @@ async function handleExternalApi(req, res, routePath) {
   }
 
   if (routePath.startsWith("/settings/provider-profiles")) {
-    sendJson(res, 410, { ok: false, error: "旧版 API 组合管理已移除，请分别保存思考模型 API 和生图模型 API。" });
+    sendJson(res, 410, { ok: false, error: "旧版 API 组合管理已移除，请只保存生图 API。" });
     return;
   }
 
@@ -13982,10 +13364,7 @@ async function handleExternalApi(req, res, routePath) {
     return;
   }
 
-  if (routePath === "/image-endpoints/probe" || routePath.startsWith("/settings/image-endpoints")) {
-    sendJson(res, 410, { ok: false, error: "备用 Image Gen API 已移除，请在 API 设置中保存生图模型 API。" });
-    return;
-  }
+  if (await handleRuntimeImageEndpointSettingsRoute(req, res, routePath)) return;
 
   if (req.method === "POST" && routePath === "/plan") {
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -14285,7 +13664,7 @@ async function handleApi(req, res) {
     }
 
     if (url.pathname.startsWith("/api/settings/provider-profiles")) {
-      sendJson(res, 410, { ok: false, error: "旧版 API 组合管理已移除，请分别保存思考模型 API 和生图模型 API。" });
+      sendJson(res, 410, { ok: false, error: "旧版 API 组合管理已移除，请只保存生图 API。" });
       return;
     }
 
@@ -14309,10 +13688,7 @@ async function handleApi(req, res) {
       return;
     }
 
-    if (url.pathname === "/api/image-endpoints/probe" || url.pathname.startsWith("/api/settings/image-endpoints")) {
-      sendJson(res, 410, { ok: false, error: "备用 Image Gen API 已移除，请在 API 设置中保存生图模型 API。" });
-      return;
-    }
+    if (await handleRuntimeImageEndpointSettingsRoute(req, res, url.pathname.slice(4))) return;
 
     if (req.method === "POST" && url.pathname === "/api/task-log-event") {
       const clientId = await clientIdFromRequest(req, url);
@@ -14567,9 +13943,8 @@ server.listen(config.port, config.host, async () => {
   }
   hydrateImageEndpointStatsFromTaskLogs();
   console.log(`老鬼AI running at http://${config.host}:${config.port}`);
-  console.log(`Reasoning model: ${config.reasoningModel} via ${config.reasoningProvider.baseUrl}`);
+  console.log(`Image tool runner model: ${config.imageToolRunnerModel}`);
   console.log(`Image model: ${config.imageModel} via ${config.imageProvider.baseUrls.join(", ")}`);
-  console.log(`Reasoning key configured: ${config.reasoningProvider.apiKey ? "yes" : "no"}`);
   console.log(`Image key configured: ${imageProviderSources().some((source) => source.apiKey) ? "yes" : "no"}`);
   if (runtimeCount) console.log(`Runtime Image Gen endpoints configured: ${runtimeCount}`);
   setTimeout(() => {

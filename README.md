@@ -6,10 +6,22 @@
 
 请到 [GitHub Releases](https://github.com/wuf77278/laogui-ai/releases/latest) 下载最新版安装包：
 
-- Windows 10 / 11：下载 `LaoguiAI-v2.0.0-windows-x64-setup.exe`
+- Windows 10 / 11：下载名称中带 `windows-x64-setup.exe` 的最新版安装包
 - macOS：当前可先按下面的“网页使用”或 “Desktop App” 开发方式运行，安装包会在后续 release 补齐。
 
-首次打开后，在右上角“设置”里填入你自己的文本/思考 API 和生图 API。软件会把 API Key 保存在本机运行环境里，不会暴露给浏览器页面。
+首次打开后，在右上角“设置”里添加自己的生图 API。可以保存多套配置，并随时选择当前使用哪一套。软件会把 API Key 保存在本机用户数据目录，关闭软件和自动更新都不会丢失，也不会暴露给浏览器页面。“提示词优化”、方案整理、参考图整理和建模分析都使用项目内置预设，不需要再配置思考 API。
+
+## 自动更新
+
+从 `2.0.2` 开始，Windows 安装版会在启动后自动检查 GitHub 上的新版本。也可以打开“设置 / 软件更新”，点击“检查更新”。新版本会在后台下载，下载完成后点击“立即重启并更新”即可覆盖升级，不需要先卸载，原来的本机设置和项目记录会保留。
+
+发布新版本时：
+
+1. 把 `package.json` 中的版本号改大，例如从 `2.0.4` 改为 `2.1.0`。
+2. 提交代码，并创建同名标签，例如 `v2.1.0`，然后推送到 GitHub。
+3. GitHub 会自动执行 `.github/workflows/release-windows.yml`，生成并发布 Windows 安装包、差分文件和 `latest.yml`。
+
+朋友当前的 `2.0.1` 没有自动更新功能，需要最后手动安装一次 `2.0.2` 或更高版本。之后发布新版本时，就可以直接在软件内更新。
 
 ## 网页使用
 
@@ -19,7 +31,7 @@
 
 ```bash
 cp .env.example .env
-# 编辑 .env，填写 REASONING_API_KEY 和 YYBB_API_KEY
+# 编辑 .env，只需填写 IMAGE_API_KEY
 npm install
 npm start
 ```
@@ -117,16 +129,13 @@ files to `archive/generated`, clean test outputs, and prune task logs.
 npm run check
 ```
 
-## API Roles
+## API 说明
 
-- `gpt-5.5`: creates spatial design directions, material logic, client proposal structure, and image prompts.
-- `Image Studio engine`: generates final visuals through the bundled `gptcodex-image` core. The default contract matches Image Studio: Responses API + HTTP SSE + OpenAI-standard fields.
+软件只会把生图请求发送给当前选中的一套配置，但可以在本机保存多套生图 API：
 
-The app uses separate providers:
-
-- `REASONING_BASE_URL` / `REASONING_API_KEY`: text and vision reasoning.
-- `IMAGE_BASE_URL` / `IMAGE_API_KEY`: image-generation compatible calls for final visuals.
-- There is no bundled default API endpoint. Leave these env vars empty and configure both providers from Settings, or fill them explicitly for local development.
+- `IMAGE_BASE_URL` / `IMAGE_API_KEY`：用于所有实际生图请求。
+- “提示词优化”和其他文字整理功能由项目内置预设完成，不会请求另一套思考 API。
+- 软件没有内置公共 API 地址，需要在“设置”中添加自己的生图 API。可以添加、编辑、检测、删除并选择当前使用的配置。
 - `IMAGE_API_MODE=responses`: 默认完全按 Image-Studio 的 Responses API 路由请求；如确实要走标准 Images API，才改成 `images`。
 - `IMAGE_STUDIO_RESPONSES_TRANSPORT=sse` / `IMAGE_STUDIO_REQUEST_POLICY=openai`: 对齐 Image-Studio 的 “HTTP SSE + OpenAI 标准” 配置。
 - `IMAGE_STUDIO_IMAGES_NEW_API_COMPAT=1`: Images API 默认使用普通返回，不发送流式参数；只有上游明确支持 Images 流式事件时才改成 `0`。
@@ -162,9 +171,12 @@ The app exposes stable external endpoints under `/api/v1`. The older `/api/*` ro
 - Task logs: `GET http://localhost:4177/api/v1/task-logs?limit=20`
 - Canvas state: `GET/POST http://localhost:4177/api/v1/canvas-state`
 - Runtime settings: `GET http://localhost:4177/api/v1/settings`
-- Save API provider: `POST http://localhost:4177/api/v1/settings/providers`
+- Add API profile: `POST http://localhost:4177/api/v1/settings/image-endpoints`
+- Update API profile: `PATCH http://localhost:4177/api/v1/settings/image-endpoints/:id`
+- Select API profile: `POST http://localhost:4177/api/v1/settings/image-endpoints/:id/activate`
+- Delete API profile: `DELETE http://localhost:4177/api/v1/settings/image-endpoints/:id`
 
-API provider settings added from the web settings panel are saved locally in `logs/runtime-settings.json`. Reasoning and image providers are stored separately. Image providers can define Responses / Images API paths plus an optional Provider Manifest; you can also paste a `gpt_image_playground` `customProviders` export and let the server extract the manifest automatically.
+在设置页面保存的多套生图 API 会写入本机 `logs/runtime-settings.json`。关闭软件、重新打开或自动更新后都仍会保留。接口读取时只返回“Key 已保存”，不会把 Key 发给网页。生图服务可以设置 Responses / Images 路径和可选的 Provider Manifest。
 
 ### Optional 3D/CAD Engines
 
@@ -234,7 +246,7 @@ curl http://localhost:4177/api/v1/plan \
 
 ## Image Generation
 
-The normal `生成图片` workflow is the integration point: the server builds the spatial-design prompt, optionally lets `gpt-5.5` refine it, then sends the final text-to-image or image-to-image task into the Image Studio engine and saves the result through the same local `public/generated` pipeline.
+“提示词优化”关闭时，软件使用当前功能的精简预设和用户描述进入极速生图；开启时，软件使用 `prompt-library.mjs` 中的项目内置预设整理完整提示词，再直接交给生图 AI。两种模式都只会请求生图 API。
 
 For the software build, Image Studio's `go-cli` is the image-generation core. Laogui AI keeps the design workflow, canvas, task queue, prompt assembly and local history, while `gptcodex-image` handles the upstream image protocol, raw response capture, retry behavior and Responses/Images compatibility.
 
@@ -244,6 +256,7 @@ IMAGE_STUDIO_CLI_PATH=
 IMAGE_STUDIO_RESPONSES_TRANSPORT=sse
 IMAGE_STUDIO_FAST_REASONING_EFFORT=low
 FAST_IMAGE_PROMPT_MAX_CHARS=1200
+OPTIMIZED_IMAGE_PROMPT_MAX_CHARS=24000
 IMAGE_STUDIO_ALLOW_NATIVE_FALLBACK=0
 ```
 
@@ -263,10 +276,12 @@ The preferred distribution layout is platform-aware:
 
 `npm run engine:image-studio` builds the current machine's platform folder and updates the legacy flat binary path for backward compatibility. Run `npm run doctor` before sharing a build; the `已打包内核平台` line tells you which friend machines are covered.
 
-The upstream image API settings use Image Studio-compatible fields: `apiMode` (`responses` or `images`), `responsesTransport` (`sse` or `websocket`), `requestPolicy` (`openai` or `compat`), `imagesNewApiCompat` (ordinary JSON Images response without streaming fields), `baseURL`, `imageModelID`, and `reasoningEffort`. Reasoning API settings are saved separately with their own Base URL, Key, and model. The bundled `gptcodex-image` engine receives the saved image settings as CLI flags. When UI thinking mode is off, Laogui AI now uses a fast path: it caps the final prompt with `FAST_IMAGE_PROMPT_MAX_CHARS` and sends `IMAGE_STUDIO_FAST_REASONING_EFFORT` to the engine instead of the normal high-reasoning setting.
+生图 API 支持 Image Studio 兼容参数，包括 Responses / Images 模式、接口地址、图片模型和生成强度。`reasoningEffort` 只是同一次生图请求里的生成强度参数，不代表另一套思考 API。关闭“提示词优化”时，软件会限制最终提示词长度，并使用较低生成强度以便更快出图。
+
+从 `2.1.1` 开始，1K / 2K / 4K 会按界面显示的实际像素传给生图接口，不再把 2K 横图固定缩成 `1536x1024`。任务记录会同时保存请求尺寸和最终图片真实尺寸；如果上游接口自行缩小，界面会显示“请求尺寸 → 实际尺寸”。
 
 The local Codex skill `image-studio-fhl` remains as a development fallback on this machine, but the distributed software does not depend on Codex skills or the user's Codex directory.
 
-For `生成设计系列`, the reference-analysis step also has a production fallback: if the configured reasoning endpoint times out or returns a gateway error, the server returns a local preset series analysis and continues generation instead of failing the whole workflow. The UI marks this as an analysis fallback, while final image generation still prioritizes the active Image Gen endpoint.
+“生成设计系列”的参考图整理也使用项目内置预设，并把参考图直接交给生图模型，不需要额外 API。
 
 Quality tiers are `1K / 2K / 4K`, and the server normalizes sizes to 16px steps within the model limits.

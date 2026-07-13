@@ -455,7 +455,7 @@
         </section>
         <section class="home-system-section" aria-labelledby="homeSystemTitle" hidden>
           <div class="home-section-copy">
-            <p class="eyebrow">Spatial System Thinking</p>
+            <p class="eyebrow">设计系统工作台</p>
             <h2 id="homeSystemTitle">不是单张图灵感，而是一套可延展的空间系统</h2>
             <p>把 Lovart 的“系统思维”收窄到空间设计：同一项目里，材料、灯光、动线、镜头和细节母题要能跨大堂、客房、走廊、庭院或办公场景连续成立。</p>
           </div>
@@ -697,7 +697,7 @@
                 </select>
               </div>
               <div class="canvas-floating-actions">
-                <button id="floatingThinkingModeButton" class="secondary-button icon-only thinking-mode-button" type="button" title="思考模式已关闭" aria-label="思考模式已关闭" aria-pressed="false">
+                <button id="floatingThinkingModeButton" class="secondary-button icon-only thinking-mode-button" type="button" title="提示词优化已关闭" aria-label="提示词优化已关闭" aria-pressed="false">
                   <svg><use href="#icon-think"></use></svg>
                 </button>
                 <button id="floatingGenerateButton" class="primary-button icon-only" type="button" title="生成图片" aria-label="生成图片">
@@ -965,8 +965,8 @@
                 </div>
               </div>
               <div class="canvas-command-actions">
-                <button id="thinkingModeButton" class="secondary-button thinking-mode-button" type="button" title="思考模式已关闭" aria-label="思考模式：关，已关闭" aria-pressed="false">
-                  思考模式：关
+                <button id="thinkingModeButton" class="secondary-button thinking-mode-button" type="button" title="提示词优化已关闭" aria-label="提示词优化：关，已关闭" aria-pressed="false">
+                  提示词优化：关
                 </button>
                 <button id="canvasGenerateButton" class="primary-button" type="button" title="生成图片" aria-label="生成图片">
                   生成图片
@@ -1040,6 +1040,17 @@
           </button>
         </header>
         <div class="app-settings-body">
+          <section class="app-settings-block" aria-labelledby="updateSettingsTitle">
+            <div class="settings-title-row">
+              <span id="updateSettingsTitle" class="agent-skill-title">软件更新</span>
+              <span id="updateStatus" class="api-endpoint-status unknown">准备检查</span>
+            </div>
+            <p id="currentVersionText" class="settings-hint">正在读取当前版本。</p>
+            <div class="settings-actions">
+              <button id="checkForUpdatesButton" class="secondary-button" type="button">检查更新</button>
+            </div>
+            <p id="updateStatusText" class="settings-hint" aria-live="polite">安装版软件启动后会自动检查 GitHub 上的新版本。</p>
+          </section>
           <section class="app-settings-block theme-settings-block" aria-labelledby="themeSettingsTitle">
             <div class="settings-title-row">
               <span id="themeSettingsTitle" class="agent-skill-title">界面质感</span>
@@ -1175,37 +1186,23 @@
                 <svg><use href="#icon-refresh"></use></svg>
               </button>
             </div>
-            <p class="settings-hint">思考模型 API 和生图模型 API 分开配置、分开保存。Key 只保存在本机用户数据目录，不会写入网页文件或发给浏览器之外的设备。</p>
+            <p class="settings-hint">API 配置会保存在本机用户数据目录，关闭软件和自动更新都不会丢失。Key 不会写入网页文件，也不会显示给远程设备。</p>
             <div id="localApiConnectionStatus" class="api-probe-feedback" aria-live="polite"></div>
             <div class="api-profile-layout">
+              <aside class="api-profile-sidebar" aria-labelledby="imageApiProfilesTitle">
+                <div class="api-profile-sidebar-head">
+                  <span id="imageApiProfilesTitle">已保存配置</span>
+                  <button id="addImageApiProfileButton" class="text-button" type="button">添加配置</button>
+                </div>
+                <div id="imageApiProfileList" class="api-profile-list" aria-live="polite">
+                  <p class="muted">等待读取配置。</p>
+                </div>
+              </aside>
               <div class="api-profile-editor">
-                <section class="api-config-panel" aria-labelledby="reasoningApiPanelTitle">
-                  <div class="api-config-panel-head">
-                    <div>
-                      <span id="reasoningApiPanelTitle">思考模型 API</span>
-                      <small>只负责理解、分析、提示词和方案推理。</small>
-                    </div>
-                    <span class="api-kind-badge">Reasoning</span>
-                  </div>
-                  <div class="api-settings-grid">
-                    <label>
-                      思考 Base URL
-                      <input id="reasoningApiBaseUrl" type="url" placeholder="https://api.example.com" autocomplete="off" />
-                    </label>
-                    <label>
-                      思考模型
-                      <input id="reasoningApiModel" type="text" placeholder="gpt-5.5" autocomplete="off" />
-                    </label>
-                    <label class="api-settings-wide">
-                      思考 API Key
-                      <input id="reasoningApiKey" type="password" placeholder="sk-..." autocomplete="off" />
-                    </label>
-                  </div>
-                  <div class="settings-actions api-kind-actions">
-                    <button id="saveReasoningApiSettingsButton" class="secondary-button" type="button">保存思考 API</button>
-                    <button id="probeReasoningApiButton" class="text-button" type="button">检测思考 API</button>
-                  </div>
-                </section>
+                <label class="api-profile-name-field">
+                  配置名称
+                  <input id="imageApiProfileName" type="text" placeholder="例如：我的生图接口" autocomplete="off" />
+                </label>
                 <section class="api-config-panel" aria-labelledby="imageApiPanelTitle">
                   <div class="api-config-panel-head">
                     <div>
@@ -1252,7 +1249,7 @@
                       </select>
                     </label>
                     <label>
-                      推理强度
+                      生成强度
                       <select id="primaryImageReasoningEffort">
                         <option value="xhigh">xhigh</option>
                         <option value="high">high</option>
@@ -1282,8 +1279,9 @@
                     </label>
                   </div>
                   <div class="settings-actions api-kind-actions">
-                    <button id="saveImageApiSettingsButton" class="secondary-button" type="button">保存生图 API</button>
-                    <button id="probePrimaryImageApiButton" class="text-button" type="button">检测生图 API</button>
+                    <button id="saveImageApiSettingsButton" class="secondary-button" type="button">保存配置</button>
+                    <button id="probePrimaryImageApiButton" class="text-button" type="button">检测当前填写</button>
+                    <button id="activateImageApiProfileButton" class="text-button" type="button">设为当前使用</button>
                   </div>
                 </section>
               </div>

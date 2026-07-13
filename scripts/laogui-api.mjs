@@ -139,7 +139,8 @@ Common options:
   --mode plan-render             Render mode. Also supports custom, photo, etc.
   --size 1024x1536               Image size.
   --quality low|medium|high|auto Image quality.
-  --no-thinking                  Skip reasoning prompt fusion when supported.
+  --prompt-optimize true|false  Use the project's local preset prompt optimization.
+  --no-prompt-optimize          Use concise fast image-generation prompts.
   --task-id ID                   Idempotent task id for recoverable generation.
   --image-out image.png          Copy or download the generated image there.
   --out-dir dir                  Batch series image output directory.
@@ -523,8 +524,9 @@ function applyGenerationOptions(body, opts) {
   if (opts["parent-image-id"]) body.parentImageId = String(opts["parent-image-id"]);
   if (opts["step-mode"]) body.stepMode = String(opts["step-mode"]);
   if (opts["input-image-type"]) body.inputImageType = String(opts["input-image-type"]);
-  if (opts["no-thinking"]) body.thinkingEnabled = false;
-  if (opts.thinking !== undefined) body.thinkingEnabled = parseBoolean(opts.thinking);
+  if (opts["no-prompt-optimize"] || opts["no-thinking"]) body.promptOptimizationEnabled = false;
+  if (opts["prompt-optimize"] !== undefined) body.promptOptimizationEnabled = parseBoolean(opts["prompt-optimize"]);
+  if (opts.thinking !== undefined) body.promptOptimizationEnabled = parseBoolean(opts.thinking);
 }
 
 async function promptFromOptions(opts) {

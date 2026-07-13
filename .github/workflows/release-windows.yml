@@ -1,0 +1,44 @@
+name: 发布 Windows 新版本
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    runs-on: windows-latest
+    steps:
+      - name: 读取项目
+        uses: actions/checkout@v4
+
+      - name: 准备 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 准备 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.3"
+          cache-dependency-path: engines/image-studio/source/go-cli/go.sum
+
+      - name: 安装项目依赖
+        run: npm ci
+
+      - name: 检查项目
+        run: npm run check
+
+      - name: 构建 Windows 生图内核
+        run: npm run engine:image-studio:win
+
+      - name: 生成并发布 Windows 安装包
+        run: npx electron-builder --win --x64 --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"

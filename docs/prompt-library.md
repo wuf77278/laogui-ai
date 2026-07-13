@@ -20,11 +20,11 @@
 
 - `communityPromptKernel(mode)`：通用社区提示词方法，强调分段、约束前置、细节层级和编辑保留项。
 - `communityPromptExpansionLines(mode)`：补充开放社区常见输出类型小模式，包括产品图、UI/mockup、海报文字、信息图、角色/系列一致性和多图合成。
-- `communityPromptControlVocabulary(mode)`：统一相机、灯光、材质、色彩、文字和质量控制词，方便 gpt-5.5 把用户口语转成生图可执行约束。
+- `communityPromptControlVocabulary(mode)`：统一相机、灯光、材质、色彩、文字和质量控制词，把用户口语整理成生图可执行约束。
 - `communityModeControlLines(mode)`：按按钮输出专项规则，比如平面图转彩平、彩平转轴测图、轴测图转效果图、设计系列、材料板和编辑工具。
 - `communityPromptBlueprintLines(mode)`：为每个按钮声明输出边界、不可变项、允许变化和失败防护。
 - `communityPromptPreflightLines(mode)`：最终提示词提交给生图模型前的自检规则，防止模式跑偏。
-- `communityPromptLibraryBlock(options)`：组合完整提示词库块，自动插入到 gpt-5.5 的提示词融合流程。
+- `communityPromptLibraryBlock(options)`：组合完整提示词库块，自动插入到项目内置提示词优化流程。
 
 ## 推荐最终提示词顺序
 
@@ -67,5 +67,5 @@ AVOID
 - 有输入图时，`Non-negotiable invariants` 的优先级高于风格词和参考图。
 - 参考图只提供可观察证据和质量方向，不能覆盖平面/CAD/现场图的硬几何。
 - 最终提示词必须通过 `FINAL_PROMPT_PREFLIGHT`，检查输出物、保留项、允许变化、镜头语言和失败防护是否一致。
-- 后端在 `thinkThenGenerateImage` 里还有最终兜底：如果 gpt-5.5 返回的 `final_prompt` 缺少当前模块关键约束，会自动追加 `MANDATORY_GPT_IMAGE_2_MODE_GUARD` 后再交给 gpt-image-2。
+- 后端在生成前还有最终兜底：如果完整提示词缺少当前模块关键约束，会自动追加 `MANDATORY_GPT_IMAGE_2_MODE_GUARD` 后再交给生图模型。
 - 新增模块时，应同时补 `modulePresetRules`、`modulePromptBlueprints`、前端按钮说明和后端 `promptContractControlLines`。
