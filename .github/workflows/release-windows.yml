@@ -1,4 +1,4 @@
-name: 发布 Windows 新版本
+name: 发布 Windows 和 Mac 新版本
 
 on:
   push:
@@ -39,6 +39,39 @@ jobs:
 
       - name: 生成并发布 Windows 安装包
         run: npx electron-builder --win --x64 --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+  build-and-publish-mac:
+    runs-on: macos-14
+    steps:
+      - name: 读取项目
+        uses: actions/checkout@v4
+
+      - name: 准备 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 准备 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.3"
+          cache-dependency-path: engines/image-studio/source/go-cli/go.sum
+
+      - name: 安装项目依赖
+        run: npm ci
+
+      - name: 检查项目
+        run: npm run check
+
+      - name: 构建 Mac 生图内核
+        run: npm run engine:image-studio:mac
+
+      - name: 生成并发布 Mac 安装包
+        run: npx electron-builder --mac --arm64 --x64 --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
