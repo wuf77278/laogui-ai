@@ -19,7 +19,7 @@ jobs:
       - name: 准备 Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: 准备 Go
@@ -44,6 +44,7 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
   build-and-publish-mac:
+    needs: build-and-publish
     runs-on: macos-14
     steps:
       - name: 读取项目
@@ -52,7 +53,7 @@ jobs:
       - name: 准备 Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: 准备 Go
