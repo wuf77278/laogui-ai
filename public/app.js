@@ -132,6 +132,7 @@ const state = {
   imageStudioFhlSkill: null,
   providerProbes: { image: null },
   providerProbeBusy: { image: false },
+  imageApiProfileProbeBusy: {},
   imageApiProbeFeedback: null,
   canManageApiSettings: false,
   storagePromptShown: false,
@@ -638,9 +639,18 @@ const els = {
   imageStudioKernelSummary: $("imageStudioKernelSummary"),
   imageStudioKernelHint: $("imageStudioKernelHint"),
   refreshApiSettingsButton: $("refreshApiSettingsButton"),
+  apiImportText: $("apiImportText"),
+  importApiTextButton: $("importApiTextButton"),
+  chooseApiFilesButton: $("chooseApiFilesButton"),
+  chooseApiFolderButton: $("chooseApiFolderButton"),
+  exportApiFileButton: $("exportApiFileButton"),
+  copyApiTextButton: $("copyApiTextButton"),
+  apiImportFileInput: $("apiImportFileInput"),
+  apiImportFolderInput: $("apiImportFolderInput"),
   imageApiProfileName: $("imageApiProfileName"),
   imageApiProfileList: $("imageApiProfileList"),
   addImageApiProfileButton: $("addImageApiProfileButton"),
+  probeAllImageApiProfilesButton: $("probeAllImageApiProfilesButton"),
   activateImageApiProfileButton: $("activateImageApiProfileButton"),
   imageApiPanelTitle: $("imageApiPanelTitle"),
   primaryImageApiBaseUrl: $("primaryImageApiBaseUrl"),
@@ -1009,15 +1019,20 @@ async function compactImageForApi(image, role = "reference", index = 0) {
 
 async function prepareApiPayload(payload = {}) {
   const next = cloneValue(payload, {}) || {};
-  if (next.primaryImage?.dataUrl) {
-    next.primaryImage = await compactImageForApi(next.primaryImage, "primary");
-  }
-  if (next.viewAngleReference?.dataUrl) {
-    next.viewAngleReference = await compactImageForApi(next.viewAngleReference, "view-angle");
-  }
-  if (Array.isArray(next.referenceImages)) {
-    next.referenceImages = await Promise.all(next.referenceImages.map((image, index) => compactImageForApi(image, "reference", index)));
-  }
+  const [primaryImage, viewAngleReference, referenceImages] = await Promise.all([
+    next.primaryImage?.dataUrl
+      ? compactImageForApi(next.primaryImage, "primary")
+      : Promise.resolve(next.primaryImage),
+    next.viewAngleReference?.dataUrl
+      ? compactImageForApi(next.viewAngleReference, "view-angle")
+      : Promise.resolve(next.viewAngleReference),
+    Array.isArray(next.referenceImages)
+      ? Promise.all(next.referenceImages.map((image, index) => compactImageForApi(image, "reference", index)))
+      : Promise.resolve(next.referenceImages)
+  ]);
+  next.primaryImage = primaryImage;
+  next.viewAngleReference = viewAngleReference;
+  next.referenceImages = referenceImages;
   return next;
 }
 
@@ -3839,6 +3854,13 @@ function renderApiSettingsAccess() {
   [
     els.imageApiProfileName,
     els.addImageApiProfileButton,
+    els.probeAllImageApiProfilesButton,
+    els.apiImportText,
+    els.importApiTextButton,
+    els.chooseApiFilesButton,
+    els.chooseApiFolderButton,
+    els.exportApiFileButton,
+    els.copyApiTextButton,
     els.activateImageApiProfileButton,
     els.primaryImageApiBaseUrl,
     els.primaryImageApiModel,
@@ -3991,26 +4013,23 @@ function renderImageStudioKernel() {
 
 function renderLocalApiConnectionStatus() {
   if (!els.localApiConnectionStatus) return;
-  const providers = state.runtimeProviders || {};
-  els.localApiConnectionStatus.innerHTML = ["image"].map((kind) => {
-    const provider = providers[kind] || {};
-    const probe = state.providerProbes?.[kind] || null;
-    const configured = Boolean(provider.configured);
-    const statusInfo = probe
-      ? apiProbeStatusInfo(probe, false)
-      : configured
-        ? { label: "已保存，未检测", className: "warning" }
-        : { label: "未配置", className: "unknown" };
-    return `
-      <div class="api-probe-card ${escapeAttr(statusInfo.className)}">
-        <div>
-          <strong>${escapeHtml(apiProviderLabel(kind))} API</strong>
-          <small>${escapeHtml(runtimeProviderConnectionDetail(kind, provider, probe))}</small>
-        </div>
-        <span class="api-endpoint-status ${escapeAttr(statusInfo.className)}">${escapeHtml(statusInfo.label)}</span>
+  const activeProfile = state.imageApiProfiles.find((profile) => isActiveImageApiProfile(profile)) || null;
+  const connection = activeProfile
+    ? imageApiProfileConnectionInfo(activeProfile)
+    : { label: "未配置", className: "unknown", detail: "请先添加或导入 API 配置" };
+  const provider = imageApiProfileProvider(activeProfile);
+  const detail = activeProfile
+    ? [activeProfile.label || "未命名配置", shortEndpoint(provider.baseUrl || ""), provider.model || "", connection.detail].filter(Boolean).join(" · ")
+    : connection.detail;
+  els.localApiConnectionStatus.innerHTML = `
+    <div class="api-probe-card ${escapeAttr(connection.className)}">
+      <div>
+        <strong>当前使用的生图 API</strong>
+        <small>${escapeHtml(detail)}</small>
       </div>
-    `;
-  }).join("");
+      <span class="api-endpoint-status ${escapeAttr(connection.className)}">${escapeHtml(connection.label)}</span>
+    </div>
+  `;
 }
 
 function renderLocalApiProbeFeedback() {
@@ -4104,6 +4123,25 @@ function syncImageApiProfiles(settings = {}) {
   state.activeImageApiProfileId = explicitActiveId || activeProfile?.id || "";
 }
 
+function imageApiProfileConnectionInfo(profile = null) {
+  const busy = Boolean(profile?.id && state.imageApiProfileProbeBusy?.[profile.id]);
+  if (busy) return { label: "检测中", className: "warning", detail: "正在测试连接" };
+  const latency = Number(profile?.latencyMs);
+  const latencyText = Number.isFinite(latency) && latency >= 0 ? `延迟 ${Math.round(latency)}ms` : "延迟 --";
+  const checkedText = profile?.lastCheckedAt ? formatEndpointCheckedAt(profile.lastCheckedAt) : "未检测";
+  if (profile?.connectionStatus === "available") {
+    return { label: "连接正常", className: "available", detail: `${latencyText} · ${checkedText}` };
+  }
+  if (profile?.connectionStatus === "error") {
+    return {
+      label: "连接失败",
+      className: "error",
+      detail: `${latencyText} · ${checkedText}${profile.connectionMessage ? ` · ${compactApiProbeMessage(profile.connectionMessage, 42)}` : ""}`
+    };
+  }
+  return { label: "未检测", className: "unknown", detail: latencyText };
+}
+
 function renderImageApiProfileList() {
   if (!els.imageApiProfileList) return;
   const profiles = Array.isArray(state.imageApiProfiles) ? state.imageApiProfiles : [];
@@ -4116,18 +4154,22 @@ function renderImageApiProfileList() {
     const provider = imageApiProfileProvider(profile);
     const active = isActiveImageApiProfile(profile);
     const editing = profile.id === state.editingImageApiProfileId;
+    const connection = imageApiProfileConnectionInfo(profile);
+    const probing = Boolean(state.imageApiProfileProbeBusy?.[profile.id]);
     const savedKeyText = imageApiProfileHasSavedKey(profile) ? "Key 已保存" : "未保存 Key";
     const endpointText = [provider.model || "gpt-image-2", shortEndpoint(provider.baseUrl || "")].filter(Boolean).join(" · ");
     return `
-      <div class="api-profile-item ${active ? "active" : ""}">
+      <div class="api-profile-item ${active ? "active" : ""} status-${escapeAttr(connection.className)}">
         <button class="api-profile-main" type="button" data-image-api-profile-action="edit" data-profile-id="${escapeAttr(profile.id)}" ${readOnly ? "disabled" : ""} aria-label="编辑 ${escapeAttr(profile.label || "未命名配置")}">
           <span class="api-profile-dot"></span>
           <strong>${escapeHtml(profile.label || "未命名配置")}</strong>
           <small>${escapeHtml(endpointText || "未填写接口地址")}</small>
           <small>${escapeHtml(active ? `当前使用 · ${savedKeyText}` : `${editing ? "正在编辑 · " : ""}${savedKeyText}`)}</small>
+          <small class="api-profile-connection ${escapeAttr(connection.className)}">${escapeHtml(`${connection.label} · ${connection.detail}`)}</small>
         </button>
         <div class="api-profile-role-actions">
           <button class="text-button" type="button" data-image-api-profile-action="edit" data-profile-id="${escapeAttr(profile.id)}" ${readOnly ? "disabled" : ""}>编辑</button>
+          <button class="text-button" type="button" data-image-api-profile-action="probe" data-profile-id="${escapeAttr(profile.id)}" ${readOnly || probing ? "disabled" : ""}>${probing ? "检测中" : "检测"}</button>
           <button class="text-button" type="button" data-image-api-profile-action="activate" data-profile-id="${escapeAttr(profile.id)}" ${readOnly || active ? "disabled" : ""}>${active ? "当前使用" : "设为当前"}</button>
           <button class="text-button icon-only" type="button" data-image-api-profile-action="delete" data-profile-id="${escapeAttr(profile.id)}" title="删除配置" aria-label="删除 ${escapeAttr(profile.label || "配置")}" ${readOnly ? "disabled" : ""}>
             <svg><use href="#icon-trash"></use></svg>
@@ -4145,7 +4187,7 @@ function fillImageApiProfileEditor(profile = null) {
   if (els.primaryImageApiBaseUrl) els.primaryImageApiBaseUrl.value = baseUrl;
   if (els.primaryImageApiModel) els.primaryImageApiModel.value = provider.model || "gpt-image-2";
   if (els.primaryImageApiMode) els.primaryImageApiMode.value = provider.apiMode || "responses";
-  if (els.primaryImageImagesNewApiCompat) els.primaryImageImagesNewApiCompat.value = provider.imagesNewApiCompat === false ? "false" : "true";
+  if (els.primaryImageImagesNewApiCompat) els.primaryImageImagesNewApiCompat.value = provider.imagesNewApiCompat === true ? "true" : "false";
   if (els.primaryImageResponsesTransport) els.primaryImageResponsesTransport.value = provider.responsesTransport || "sse";
   if (els.primaryImageRequestPolicy) els.primaryImageRequestPolicy.value = provider.requestPolicy || "openai";
   if (els.primaryImageReasoningEffort) els.primaryImageReasoningEffort.value = provider.reasoningEffort || "xhigh";
@@ -4240,7 +4282,7 @@ function runtimeProviderProbePayload(kind) {
     baseUrl: els.primaryImageApiBaseUrl?.value.trim() || saved.baseUrl || "",
     model: els.primaryImageApiModel?.value.trim() || saved.model || "gpt-image-2",
     apiMode: els.primaryImageApiMode?.value || saved.apiMode || "responses",
-    imagesNewApiCompat: els.primaryImageImagesNewApiCompat?.value !== "false",
+    imagesNewApiCompat: els.primaryImageImagesNewApiCompat?.value === "true",
     responsesTransport: els.primaryImageResponsesTransport?.value || saved.responsesTransport || "sse",
     requestPolicy: els.primaryImageRequestPolicy?.value || saved.requestPolicy || "openai",
     reasoningEffort: els.primaryImageReasoningEffort?.value || saved.reasoningEffort || "xhigh",
@@ -4258,7 +4300,7 @@ function currentImageApiPayload() {
     baseUrl: els.primaryImageApiBaseUrl?.value.trim() || "",
     model: els.primaryImageApiModel?.value.trim() || "gpt-image-2",
     apiMode: els.primaryImageApiMode?.value || "responses",
-    imagesNewApiCompat: els.primaryImageImagesNewApiCompat?.value !== "false",
+    imagesNewApiCompat: els.primaryImageImagesNewApiCompat?.value === "true",
     responsesTransport: els.primaryImageResponsesTransport?.value || "sse",
     requestPolicy: els.primaryImageRequestPolicy?.value || "openai",
     reasoningEffort: els.primaryImageReasoningEffort?.value || "xhigh",
@@ -4379,6 +4421,169 @@ async function probeRuntimeProvider(kind) {
     renderLocalApiProbeFeedback();
     setBusy(button, false);
     renderApiSettingsAccess();
+  }
+}
+
+async function probeSavedImageApiProfile(id, { silent = false } = {}) {
+  if (!ensureCanManageApiSettings()) return false;
+  const profile = state.imageApiProfiles.find((item) => item.id === id);
+  if (!profile) {
+    if (!silent) toast("没有找到这个配置");
+    return false;
+  }
+  state.imageApiProfileProbeBusy = { ...state.imageApiProfileProbeBusy, [id]: true };
+  renderImageApiProfileList();
+  renderLocalApiConnectionStatus();
+  if (!silent) toast(`正在检测：${profile.label || "未命名配置"}`);
+  try {
+    const data = await postRuntimeProviderProbe({ kind: "image", profileId: id });
+    applyProbeSettings(data);
+    if (data.settings) renderLocalApiSettings(data.settings);
+    const probe = data.probe || null;
+    if (!silent) toast(apiProviderProbeToast("image", probe));
+    return Boolean(probe?.ok);
+  } catch (error) {
+    const elapsedProfile = state.imageApiProfiles.find((item) => item.id === id);
+    if (elapsedProfile) {
+      elapsedProfile.connectionStatus = "error";
+      elapsedProfile.connectionMessage = error.message || "检测失败";
+      elapsedProfile.lastCheckedAt = new Date().toISOString();
+    }
+    if (!silent) toast(`检测失败：${error.message || "请求失败"}`);
+    return false;
+  } finally {
+    state.imageApiProfileProbeBusy = { ...state.imageApiProfileProbeBusy, [id]: false };
+    renderImageApiProfileList();
+    renderLocalApiConnectionStatus();
+  }
+}
+
+async function probeAllImageApiProfiles() {
+  if (!ensureCanManageApiSettings()) return;
+  const profiles = [...state.imageApiProfiles];
+  if (!profiles.length) {
+    toast("还没有可检测的 API 配置");
+    return;
+  }
+  if (!window.confirm(`将逐个检测 ${profiles.length} 套 API。检测会真实生成测试图，可能产生 API 费用。继续吗？`)) return;
+  setBusy(els.probeAllImageApiProfilesButton, true, "检测中");
+  let successCount = 0;
+  try {
+    for (const profile of profiles) {
+      if (await probeSavedImageApiProfile(profile.id, { silent: true })) successCount += 1;
+    }
+    await refreshApiSettings({ silent: true });
+    toast(`检测完成：${successCount} 个正常，${profiles.length - successCount} 个失败`);
+  } finally {
+    setBusy(els.probeAllImageApiProfilesButton, false);
+    renderApiSettingsAccess();
+  }
+}
+
+async function importApiDocuments(documents = []) {
+  if (!ensureCanManageApiSettings()) return false;
+  if (!documents.length) {
+    toast("没有选中可读取的文件");
+    return false;
+  }
+  setBusy(els.importApiTextButton, true, "导入中");
+  try {
+    const data = await requestJson("/api/settings/image-endpoints/import", {
+      method: "POST",
+      body: JSON.stringify({ documents })
+    });
+    state.imageApiEditorMode = "auto";
+    state.imageApiProfileFormDirty = false;
+    await refreshApiSettings({ silent: true });
+    await refreshHealth();
+    const result = data.result || {};
+    toast(`导入完成：新增 ${result.added || 0} 个，更新 ${result.updated || 0} 个${result.failed ? `，失败 ${result.failed} 个` : ""}`);
+    return true;
+  } catch (error) {
+    toast(error.message || "导入失败");
+    return false;
+  } finally {
+    setBusy(els.importApiTextButton, false);
+    renderApiSettingsAccess();
+  }
+}
+
+async function importApiText() {
+  const text = els.apiImportText?.value.trim() || "";
+  if (!text) {
+    toast("请先粘贴 API 配置文本");
+    focusElement(els.apiImportText);
+    return;
+  }
+  if (await importApiDocuments([{ name: "粘贴文本.txt", text }]) && els.apiImportText) els.apiImportText.value = "";
+}
+
+async function readApiImportFiles(fileList) {
+  const supported = Array.from(fileList || [])
+    .filter((file) => /\.(json|txt|env|config|ya?ml)$/i.test(file.name))
+    .slice(0, 200);
+  const documents = [];
+  for (const file of supported) {
+    if (file.size > 2 * 1024 * 1024) continue;
+    documents.push({ name: file.webkitRelativePath || file.name, text: await file.text() });
+  }
+  return documents;
+}
+
+async function handleApiImportFiles(input) {
+  try {
+    const documents = await readApiImportFiles(input?.files);
+    await importApiDocuments(documents);
+  } catch (error) {
+    toast(error.message || "读取文件失败");
+  } finally {
+    if (input) input.value = "";
+  }
+}
+
+async function getApiShareConfig() {
+  if (!ensureCanManageApiSettings()) return null;
+  if (!state.imageApiProfiles.length) {
+    toast("还没有可导出的 API 配置");
+    return null;
+  }
+  if (!window.confirm("导出内容包含完整 API Key，只能发给可信任的同事。继续吗？")) return null;
+  const data = await requestJson("/api/settings/image-endpoints/export", { method: "POST", body: "{}" });
+  return data.config || null;
+}
+
+async function exportApiShareFile() {
+  try {
+    const config = await getApiShareConfig();
+    if (!config) return;
+    const date = new Date().toISOString().slice(0, 10);
+    downloadBlob(new Blob([`${JSON.stringify(config, null, 2)}\n`], { type: "application/json;charset=utf-8" }), `老鬼AI-API配置-${date}.json`);
+    toast("分享文件已导出");
+  } catch (error) {
+    toast(error.message || "导出失败");
+  }
+}
+
+async function copyApiShareText() {
+  try {
+    const config = await getApiShareConfig();
+    if (!config) return;
+    const text = JSON.stringify(config, null, 2);
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      textarea.remove();
+    }
+    toast("分享文本已复制");
+  } catch (error) {
+    toast(error.message || "复制失败");
   }
 }
 
@@ -20962,6 +21167,14 @@ els.cleanupTestGeneratedButton?.addEventListener("click", () => runStorageMainte
 els.archiveGeneratedButton?.addEventListener("click", () => runStorageMaintenance("archive-generated", { olderThanDays: 30 }, els.archiveGeneratedButton));
 els.pruneLogsButton?.addEventListener("click", () => runStorageMaintenance("prune-task-logs", { keepDays: 30 }, els.pruneLogsButton));
 els.addImageApiProfileButton?.addEventListener("click", startNewImageApiProfile);
+els.probeAllImageApiProfilesButton?.addEventListener("click", probeAllImageApiProfiles);
+els.importApiTextButton?.addEventListener("click", importApiText);
+els.chooseApiFilesButton?.addEventListener("click", () => els.apiImportFileInput?.click());
+els.chooseApiFolderButton?.addEventListener("click", () => els.apiImportFolderInput?.click());
+els.apiImportFileInput?.addEventListener("change", () => handleApiImportFiles(els.apiImportFileInput));
+els.apiImportFolderInput?.addEventListener("change", () => handleApiImportFiles(els.apiImportFolderInput));
+els.exportApiFileButton?.addEventListener("click", exportApiShareFile);
+els.copyApiTextButton?.addEventListener("click", copyApiShareText);
 els.saveImageApiSettingsButton?.addEventListener("click", saveImageApiSettings);
 els.probePrimaryImageApiButton?.addEventListener("click", () => probeRuntimeProvider("image"));
 els.activateImageApiProfileButton?.addEventListener("click", () => activateImageApiProfile());
@@ -20971,6 +21184,7 @@ els.imageApiProfileList?.addEventListener("click", (event) => {
   const id = button.dataset.profileId || "";
   const action = button.dataset.imageApiProfileAction || "";
   if (action === "edit") editImageApiProfile(id);
+  if (action === "probe") probeSavedImageApiProfile(id);
   if (action === "activate") activateImageApiProfile(id);
   if (action === "delete") deleteImageApiProfile(id);
 });

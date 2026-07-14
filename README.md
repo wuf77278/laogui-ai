@@ -136,9 +136,11 @@ npm run check
 - `IMAGE_BASE_URL` / `IMAGE_API_KEY`：用于所有实际生图请求。
 - “提示词优化”和其他文字整理功能由项目内置预设完成，不会请求另一套思考 API。
 - 软件没有内置公共 API 地址，需要在“设置”中添加自己的生图 API。可以添加、编辑、检测、删除并选择当前使用的配置。
+- 每套配置会独立显示连接状态、检测时间和延迟；“检测全部”会真实生成测试图，可能产生 API 费用。
+- 支持粘贴文本、JSON、`.env`、文件和文件夹导入，也支持导出文件或复制分享文本。导出内容包含完整 API Key，只能发给可信任的人。
 - `IMAGE_API_MODE=responses`: 默认完全按 Image-Studio 的 Responses API 路由请求；如确实要走标准 Images API，才改成 `images`。
 - `IMAGE_STUDIO_RESPONSES_TRANSPORT=sse` / `IMAGE_STUDIO_REQUEST_POLICY=openai`: 对齐 Image-Studio 的 “HTTP SSE + OpenAI 标准” 配置。
-- `IMAGE_STUDIO_IMAGES_NEW_API_COMPAT=1`: Images API 默认使用普通返回，不发送流式参数；只有上游明确支持 Images 流式事件时才改成 `0`。
+- `IMAGE_STUDIO_IMAGES_NEW_API_COMPAT=0`: Images API 默认使用流式返回；只有旧中转明确不支持流式事件时才改成 `1`。
 - `IMAGE_GENERATIONS_PATH=/v1/images/generations` / `IMAGE_EDITS_PATH=/v1/images/edits`: 仅在切换到 Images API 时使用。
 - `IMAGE_PROVIDER_MANIFEST='{"submit":{"path":"/v1/images/generations","result":{"b64JsonPaths":["data.*.b64_json"],"imageUrlPaths":["data.*.url"]}}}'`: 可选，自定义 OpenAI-compatible 或异步 HTTP 生图服务的提交、轮询和结果字段映射。
 - `IMAGE_RESPONSES_PATH=/v1/responses`: FHL/OpenAI-compatible 服务的 Responses 路径；yybb 才使用 `/responses`。
@@ -175,6 +177,8 @@ The app exposes stable external endpoints under `/api/v1`. The older `/api/*` ro
 - Update API profile: `PATCH http://localhost:4177/api/v1/settings/image-endpoints/:id`
 - Select API profile: `POST http://localhost:4177/api/v1/settings/image-endpoints/:id/activate`
 - Delete API profile: `DELETE http://localhost:4177/api/v1/settings/image-endpoints/:id`
+- Import API profiles: `POST http://localhost:4177/api/v1/settings/image-endpoints/import`
+- Export API profiles: `POST http://localhost:4177/api/v1/settings/image-endpoints/export` (localhost only; contains complete API keys)
 
 在设置页面保存的多套生图 API 会写入本机 `logs/runtime-settings.json`。关闭软件、重新打开或自动更新后都仍会保留。接口读取时只返回“Key 已保存”，不会把 Key 发给网页。生图服务可以设置 Responses / Images 路径和可选的 Provider Manifest。
 

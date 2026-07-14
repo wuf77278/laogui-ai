@@ -322,7 +322,7 @@ const config = {
     providerManifest: null
   },
   imageStudioFhlSkill: {
-    enabled: process.env.IMAGE_STUDIO_FHL_ENABLED || process.env.FHL_IMAGE_STUDIO_ENABLED || "disabled",
+    enabled: process.env.IMAGE_STUDIO_FHL_ENABLED || process.env.FHL_IMAGE_STUDIO_ENABLED || "auto",
     script: process.env.IMAGE_STUDIO_FHL_SCRIPT || "/Users/Apple_501/.codex/skills/image-studio-fhl/scripts/yingfang_image.py",
     provider: process.env.IMAGE_STUDIO_FHL_PROVIDER || "auto",
     outputDir: process.env.IMAGE_STUDIO_FHL_OUTPUT_DIR || path.join(logsDir, "image-studio-fhl"),
@@ -335,11 +335,13 @@ const config = {
     timeoutSeconds: boundedIntegerEnv(["IMAGE_STUDIO_TIMEOUT_SECONDS", "IMAGE_STUDIO_ENGINE_TIMEOUT_SECONDS"], 360, 30, 1200),
     responsesTransport: process.env.IMAGE_STUDIO_RESPONSES_TRANSPORT || "sse",
     requestPolicy: process.env.IMAGE_STUDIO_REQUEST_POLICY || "openai",
-    imagesNewApiCompat: parseBooleanEnv(process.env.IMAGE_STUDIO_IMAGES_NEW_API_COMPAT, true),
+    // FHL Images API 支持流式响应；兼容模式会关闭 stream，必须等完整 JSON 返回。
+    imagesNewApiCompat: parseBooleanEnv(process.env.IMAGE_STUDIO_IMAGES_NEW_API_COMPAT, false),
     reasoningEffort: process.env.IMAGE_STUDIO_REASONING_EFFORT || "xhigh",
     fastReasoningEffort: process.env.IMAGE_STUDIO_FAST_REASONING_EFFORT || "low",
     partialImages: boundedIntegerEnv("IMAGE_STUDIO_PARTIAL_IMAGES", 0, 0, 3),
-    autoRetryCount: boundedIntegerEnv("IMAGE_STUDIO_AUTO_RETRY_COUNT", 1, 0, 8),
+    // 默认只请求一次，避免 CLI 自动重试把几十秒的接口等待放大到几分钟。
+    autoRetryCount: boundedIntegerEnv("IMAGE_STUDIO_AUTO_RETRY_COUNT", 0, 0, 8),
     allowNativeFallback: parseBooleanEnv(process.env.IMAGE_STUDIO_ALLOW_NATIVE_FALLBACK, false)
   },
   fastImagePromptMaxChars: boundedIntegerEnv("FAST_IMAGE_PROMPT_MAX_CHARS", 1200, 600, 8000),
@@ -1524,7 +1526,7 @@ function markImageEndpointSuccess(source, ms, { activate = true, probe = false }
   if (activate) config.imageProvider.baseUrl = source.baseUrl;
 }
 
-function markImageEndpointFailure(source, error, { probe = false } = {}) {
+function markImageEndpointFailure(source, error, { probe = false, ms = null } = {}) {
   const stat = imageEndpointStat(source.baseUrl);
   const now = Date.now();
   stat.failures += 1;
@@ -1533,6 +1535,7 @@ function markImageEndpointFailure(source, error, { probe = false } = {}) {
   if (probe) {
     stat.lastProbeAt = now;
     stat.lastProbeError = message;
+    if (Number.isFinite(ms) && ms >= 0) stat.probeMs = Math.round(ms);
   }
   stat.lastError = message;
   if (isImageCapabilityError(error)) {
@@ -1996,7 +1999,7 @@ async function probeProviderConnection(kind, provider, { timeoutMs = 12000 } = {
         keySource: "runtime",
         label: shortRuntimeEndpointLabel(source.baseUrl)
       };
-      markImageEndpointFailure(imageSource, error, { probe: true });
+      markImageEndpointFailure(imageSource, error, { probe: true, ms: result.ms });
     }
     return result;
   }
@@ -5137,11 +5140,11 @@ function imageStudioEngineStatus() {
     timeoutSeconds: config.imageStudioEngine.timeoutSeconds,
     responsesTransport: normalizeResponsesTransport(config.imageStudioEngine.responsesTransport || desktop.responsesTransport || "sse"),
     requestPolicy: normalizeImageStudioRequestPolicy(config.imageStudioEngine.requestPolicy || desktop.requestPolicy || "openai"),
-    imagesNewApiCompat: parseBooleanEnv(config.imageStudioEngine.imagesNewApiCompat, true),
+    imagesNewApiCompat: parseBooleanEnv(config.imageStudioEngine.imagesNewApiCompat, false),
     reasoningEffort: normalizeImageStudioReasoningEffort(config.imageStudioEngine.reasoningEffort || desktop.reasoningEffort || "xhigh"),
     fastReasoningEffort: normalizeImageStudioReasoningEffort(config.imageStudioEngine.fastReasoningEffort || "low"),
     partialImages: clampNumber(Number(config.imageStudioEngine.partialImages ?? desktop.partialImages ?? 0), 0, 3),
-    autoRetryCount: clampNumber(Number(config.imageStudioEngine.autoRetryCount ?? desktop.autoRetryCount ?? 1), 0, 8),
+    autoRetryCount: clampNumber(Number(config.imageStudioEngine.autoRetryCount ?? desktop.autoRetryCount ?? 0), 0, 8),
     allowNativeFallback: Boolean(config.imageStudioEngine.allowNativeFallback),
     desktop: publicImageStudioDesktopState(desktop)
   };
@@ -5346,17 +5349,14 @@ function imageStudioCliDiagnostics(output, rawPath = "") {
 }
 
 async function writeImageStudioFhlReferences(inputImages = [], outputDir) {
-  const files = [];
   const validImages = inputImages.filter((image) => image?.dataUrl);
-  for (let index = 0; index < validImages.length; index += 1) {
-    const image = validImages[index];
+  return Promise.all(validImages.map(async (image, index) => {
     const blob = imageDataUrlToBlob(image.dataUrl);
     const ext = imageExtensionFromMime(blob.type || image.type || "image/png");
     const filePath = path.join(outputDir, `reference-${index + 1}.${ext}`);
     await fs.writeFile(filePath, Buffer.from(await blob.arrayBuffer()));
-    files.push(filePath);
-  }
-  return files;
+    return filePath;
+  }));
 }
 
 async function runImageStudioEngine({ prompt, inputImages = [], size = "auto", quality = "medium", sourceOverride = null, imageModelOverride = "", textModelOverride = "", fastMode = false } = {}) {
@@ -5407,6 +5407,7 @@ async function runImageStudioEngine({ prompt, inputImages = [], size = "auto", q
     "--out-dir", outputDir,
     "--disable-preview"
   ];
+  if (status.autoRetryCount <= 0) args.push("--no-auto-retry");
   if (apiMode === "images" && imagesNewApiCompat) args.push("--images-new-api-compat");
   for (const filePath of references) args.push("--reference-image", filePath);
 
@@ -5463,6 +5464,8 @@ async function runImageStudioEngine({ prompt, inputImages = [], size = "auto", q
       request_policy: requestPolicy,
       images_new_api_compat: apiMode === "images" && imagesNewApiCompat,
       reasoning_effort: reasoningEffort,
+      auto_retry_count: status.autoRetryCount,
+      no_auto_retry: status.autoRetryCount <= 0,
       fast_mode: Boolean(fastMode)
     },
     diagnostics: {
@@ -5512,6 +5515,7 @@ async function runImageStudioFhlSkill({ prompt, inputImages = [], size = "auto",
     normalizeImageToolQuality(quality),
     "--output-format",
     "png",
+    "--no-auto-retry",
     "--provider-timeout-seconds",
     String(status.timeoutSeconds)
   ];
@@ -5563,7 +5567,9 @@ async function runImageStudioFhlSkill({ prompt, inputImages = [], size = "auto",
     actualParams: {
       size: String(size || "auto"),
       quality: normalizeImageToolQuality(quality),
-      output_format: "png"
+      output_format: "png",
+      provider: "auto",
+      no_auto_retry: true
     },
     diagnostics: {
       rawResponses,
@@ -8815,7 +8821,24 @@ async function generateImageWithImageProvider({ prompt, inputImages, size, quali
     return nativeEndpointRefreshPromise;
   };
   const engineStatus = imageStudioEngineStatus();
-  if (engineStatus.enabled && !useNativeAdapter) {
+  const fhlSkillStatus = imageStudioFhlSkillStatus();
+  const preferFhlSkill = isFhlBaseUrl(source?.baseUrl)
+    && fhlSkillStatus.enabled
+    && fhlSkillStatus.available
+    && fhlSkillStatus.cliAvailable;
+  if (preferFhlSkill) {
+    attempts.push({
+      name: `FHL 生图 CLI ${size}`,
+      endpoint: imageStudioFhlEndpointLabel(fhlSkillStatus),
+      run: () => runImageStudioFhlSkill({
+        prompt,
+        inputImages,
+        size,
+        quality
+      })
+    });
+  }
+  if (engineStatus.enabled && !useNativeAdapter && !preferFhlSkill) {
     attempts.push({
       name: `Image Studio CLI engine ${size}`,
       endpoint: engineStatus.available ? `image-studio-cli:${path.basename(engineStatus.cliPath)}` : "image-studio-cli:missing",
@@ -8827,19 +8850,8 @@ async function generateImageWithImageProvider({ prompt, inputImages, size, quali
         fastMode
       })
     });
-    if (standardSize !== imageStudioCliSize(size)) {
-      attempts.push({
-        name: `Image Studio CLI compatible fallback ${standardSize}`,
-        endpoint: engineStatus.available ? `image-studio-cli:${path.basename(engineStatus.cliPath)}` : "image-studio-cli:missing",
-        run: () => runImageStudioEngine({
-          prompt,
-          inputImages,
-          size: standardSize,
-          quality,
-          fastMode
-        })
-      });
-    }
+    // 不再因任意错误盲目换尺寸再生一次。
+    // CLI 只会在上游明确返回“尺寸非法”时修复尺寸，避免隐藏的重复请求。
   }
   if (useNativeAdapter && nativeApiMode !== "responses") {
     attempts.push({
@@ -8867,8 +8879,7 @@ async function generateImageWithImageProvider({ prompt, inputImages, size, quali
       })
     });
   }
-  const fhlSkillStatus = imageStudioFhlSkillStatus();
-  if (fhlSkillStatus.enabled && (!engineStatus.required || !engineStatus.available)) {
+  if (!preferFhlSkill && fhlSkillStatus.enabled && (!engineStatus.required || !engineStatus.available)) {
     attempts.push({
       name: `Image Studio FHL skill ${size}`,
       endpoint: imageStudioFhlEndpointLabel(fhlSkillStatus),
@@ -11405,7 +11416,7 @@ function normalizeRuntimeProvider(provider = {}, existing = null, { kind = "imag
     normalized.requestPolicy = normalizeImageStudioRequestPolicy(provider.requestPolicy || existing?.requestPolicy || config.imageStudioEngine.requestPolicy || "openai");
     normalized.imagesNewApiCompat = parseBooleanEnv(
       provider.imagesNewApiCompat,
-      existing?.imagesNewApiCompat ?? config.imageStudioEngine.imagesNewApiCompat ?? true
+      existing?.imagesNewApiCompat ?? config.imageStudioEngine.imagesNewApiCompat ?? false
     );
     normalized.reasoningEffort = normalizeImageStudioReasoningEffort(provider.reasoningEffort || existing?.reasoningEffort || config.imageStudioEngine.reasoningEffort || "xhigh");
     normalized.imageGenerationPath = normalizeProviderApiPath(
@@ -11430,7 +11441,7 @@ function publicRuntimeProvider(provider, { source = "" } = {}) {
     apiMode: provider?.apiMode || "",
     responsesTransport: provider?.responsesTransport || "",
     requestPolicy: provider?.requestPolicy || "",
-    imagesNewApiCompat: provider?.imagesNewApiCompat ?? true,
+    imagesNewApiCompat: provider?.imagesNewApiCompat ?? false,
     reasoningEffort: provider?.reasoningEffort || "",
     responsesPath: provider?.responsesPath || "",
     imageGenerationPath: provider?.imageGenerationPath || "",
@@ -11482,6 +11493,13 @@ function applyRuntimeProviders() {
 }
 
 function publicRuntimeImageEndpoint(endpoint) {
+  const stat = imageEndpointStat(endpoint.baseUrl);
+  const lastCheckedAt = stat.lastProbeAt || stat.lastSuccessAt || null;
+  const connectionStatus = stat.lastProbeAt
+    ? (stat.lastProbeError ? "error" : "available")
+    : stat.lastSuccessAt
+      ? "available"
+      : "unknown";
   return {
     id: endpoint.id,
     label: endpoint.label,
@@ -11491,7 +11509,7 @@ function publicRuntimeImageEndpoint(endpoint) {
     apiMode: endpoint.apiMode || "",
     responsesTransport: endpoint.responsesTransport || "",
     requestPolicy: endpoint.requestPolicy || "",
-    imagesNewApiCompat: endpoint.imagesNewApiCompat ?? true,
+    imagesNewApiCompat: endpoint.imagesNewApiCompat ?? false,
     reasoningEffort: endpoint.reasoningEffort || "",
     imageGenerationPath: endpoint.imageGenerationPath,
     imageEditPath: endpoint.imageEditPath,
@@ -11500,6 +11518,10 @@ function publicRuntimeImageEndpoint(endpoint) {
     enabled: endpoint.enabled,
     active: endpoint.enabled === true,
     keyConfigured: Boolean(endpoint.apiKey),
+    connectionStatus,
+    latencyMs: stat.probeMs ?? stat.avgMs ?? null,
+    lastCheckedAt,
+    connectionMessage: stat.lastProbeError || stat.lastError || "",
     createdAt: endpoint.createdAt,
     updatedAt: endpoint.updatedAt
   };
@@ -11607,8 +11629,214 @@ async function saveRuntimeSettings() {
   await fs.rename(tmpPath, runtimeSettingsPath);
 }
 
+function unquoteApiImportValue(value = "") {
+  return String(value || "").trim().replace(/^(["'])(.*)\1$/, "$2").trim();
+}
+
+function firstApiImportValue(record = {}, keys = []) {
+  for (const key of keys) {
+    const value = record?.[key];
+    if (value !== undefined && value !== null && String(value).trim()) return value;
+  }
+  return "";
+}
+
+function apiImportCandidate(record = {}, fallbackLabel = "") {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return null;
+  const nested = record.image && typeof record.image === "object" && !Array.isArray(record.image)
+    ? { ...record, ...record.image, label: record.label || record.name || record.image.label || record.image.name }
+    : record;
+  const baseUrl = unquoteApiImportValue(firstApiImportValue(nested, [
+    "baseUrl", "baseURL", "base_url", "apiBaseUrl", "api_base_url", "endpoint", "url"
+  ]));
+  const apiKey = unquoteApiImportValue(firstApiImportValue(nested, [
+    "apiKey", "api_key", "apikey", "key", "token", "secret", "apiToken", "api_token"
+  ]));
+  if (!baseUrl && !apiKey) return null;
+  const providerManifest = nested.providerManifest
+    || nested.manifest
+    || (nested.submit && typeof nested.submit === "object" ? nested : undefined);
+  return {
+    label: unquoteApiImportValue(firstApiImportValue(nested, ["label", "name", "title"])) || fallbackLabel,
+    baseUrl,
+    apiKey,
+    model: unquoteApiImportValue(firstApiImportValue(nested, ["model", "modelName", "imageModel", "image_model"])),
+    apiMode: unquoteApiImportValue(firstApiImportValue(nested, ["apiMode", "imageApiMode", "api_mode"])),
+    responsesTransport: unquoteApiImportValue(firstApiImportValue(nested, ["responsesTransport", "responses_transport"])),
+    requestPolicy: unquoteApiImportValue(firstApiImportValue(nested, ["requestPolicy", "request_policy"])),
+    reasoningEffort: unquoteApiImportValue(firstApiImportValue(nested, ["reasoningEffort", "reasoning_effort"])),
+    responsesPath: unquoteApiImportValue(firstApiImportValue(nested, ["responsesPath", "responses_path"])),
+    imageGenerationPath: unquoteApiImportValue(firstApiImportValue(nested, ["imageGenerationPath", "generationPath", "image_generation_path"])),
+    imageEditPath: unquoteApiImportValue(firstApiImportValue(nested, ["imageEditPath", "editPath", "image_edit_path"])),
+    imagesNewApiCompat: firstApiImportValue(nested, ["imagesNewApiCompat", "images_new_api_compat"]),
+    providerManifest,
+    active: nested.active === true || nested.enabled === true
+  };
+}
+
+function collectApiImportRecords(parsed) {
+  if (Array.isArray(parsed)) return parsed;
+  if (!parsed || typeof parsed !== "object") return [];
+  const records = [];
+  const addArray = (value) => {
+    if (Array.isArray(value)) records.push(...value);
+  };
+  addArray(parsed.imageEndpoints);
+  addArray(parsed.endpoints);
+  addArray(parsed.apiConfigs);
+  addArray(parsed.configs);
+  addArray(parsed.customProviders);
+  addArray(parsed.providers);
+  addArray(parsed.settings?.imageEndpoints);
+  if (Array.isArray(parsed.profiles)) {
+    records.push(...parsed.profiles.map((profile) => profile?.image || profile));
+  }
+  if (parsed.image && typeof parsed.image === "object") records.push(parsed.image);
+  if (parsed.provider && typeof parsed.provider === "object") records.push(parsed.provider);
+  if (parsed.providers?.image && typeof parsed.providers.image === "object") records.push(parsed.providers.image);
+  if (apiImportCandidate(parsed)) records.push(parsed);
+  return records;
+}
+
+function parseApiImportTextBlock(text = "", fallbackLabel = "") {
+  const aliases = {
+    label: new Set(["name", "label", "title", "名称", "配置名称"]),
+    baseUrl: new Set(["image_base_url", "openai_base_url", "api_base_url", "base_url", "baseurl", "url", "endpoint", "接口地址", "地址"]),
+    apiKey: new Set(["image_api_key", "openai_api_key", "fhl_api_key", "yybb_api_key", "api_key", "apikey", "key", "token", "密钥"]),
+    model: new Set(["image_model", "openai_image_model", "model", "模型"]),
+    apiMode: new Set(["image_api_mode", "api_mode"]),
+    responsesPath: new Set(["image_responses_path", "responses_path"]),
+    imageGenerationPath: new Set(["image_generations_path", "image_generation_path", "generation_path"]),
+    imageEditPath: new Set(["image_edits_path", "image_edit_path", "edit_path"])
+  };
+  const values = {};
+  const looseLines = [];
+  for (const rawLine of String(text || "").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#") || line.startsWith("//")) continue;
+    const match = line.match(/^(?:export\s+)?([^:=]{1,48})\s*[:=]\s*(.+)$/i);
+    if (!match) {
+      looseLines.push(unquoteApiImportValue(line));
+      continue;
+    }
+    const key = match[1].trim().toLowerCase().replace(/[\s-]+/g, "_");
+    const target = Object.entries(aliases).find(([, names]) => names.has(key))?.[0];
+    if (target) values[target] = unquoteApiImportValue(match[2]);
+  }
+  if (!values.baseUrl) values.baseUrl = looseLines.find((line) => /^https?:\/\//i.test(line)) || "";
+  if (!values.apiKey) {
+    values.apiKey = looseLines.find((line) => !/^https?:\/\//i.test(line) && line.length >= 12 && !/\s/.test(line)) || "";
+  }
+  if (!values.label) values.label = fallbackLabel;
+  return values.baseUrl || values.apiKey ? values : null;
+}
+
+function parseApiImportDocument(document = {}) {
+  const name = String(document.name || "粘贴文本").trim();
+  const fallbackLabel = path.basename(name, path.extname(name)) || "导入的 API";
+  const text = String(document.text || document.content || "").replace(/^\uFEFF/, "").trim();
+  if (!text) return [];
+  try {
+    const parsed = JSON.parse(text);
+    return collectApiImportRecords(parsed)
+      .map((record) => apiImportCandidate(record, fallbackLabel))
+      .filter(Boolean);
+  } catch {}
+  return text
+    .split(/\r?\n\s*\r?\n+/)
+    .map((block, index) => parseApiImportTextBlock(block, index ? `${fallbackLabel} ${index + 1}` : fallbackLabel))
+    .filter(Boolean);
+}
+
+async function importRuntimeImageEndpoints(body = {}) {
+  const documents = Array.isArray(body.documents)
+    ? body.documents.slice(0, 200)
+    : [{ name: body.name || "粘贴文本.txt", text: body.text || body.content || "" }];
+  const parsedCandidates = documents.flatMap(parseApiImportDocument);
+  const candidatesByBaseUrl = new Map();
+  for (const candidate of parsedCandidates) {
+    const key = normalizeBaseUrl(candidate.baseUrl || "").toLowerCase() || `missing-${candidatesByBaseUrl.size}`;
+    const previous = candidatesByBaseUrl.get(key);
+    candidatesByBaseUrl.set(key, previous ? { ...previous, ...candidate, active: previous.active || candidate.active } : candidate);
+  }
+  const candidates = [...candidatesByBaseUrl.values()];
+  if (!candidates.length) {
+    const error = new Error("没有读取到 API 配置。请检查文本中是否包含接口地址和 API Key。");
+    error.status = 400;
+    throw error;
+  }
+
+  let added = 0;
+  let updated = 0;
+  let preferredId = activeRuntimeImageEndpoint()?.id || "";
+  const errors = [];
+  for (const candidate of candidates) {
+    try {
+      const requestedBaseUrl = normalizeBaseUrl(candidate.baseUrl || "");
+      const existingIndex = runtimeSettings.imageEndpoints.findIndex((item) => normalizeBaseUrl(item.baseUrl) === requestedBaseUrl);
+      const existing = existingIndex >= 0 ? runtimeSettings.imageEndpoints[existingIndex] : null;
+      const endpoint = normalizeRuntimeImageEndpoint({
+        ...candidate,
+        id: existing?.id || randomUUID(),
+        enabled: false
+      }, existing);
+      if (existing?.apiKey && existing.apiKey !== endpoint.apiKey) imageEndpointStats.delete(endpoint.baseUrl);
+      if (existingIndex >= 0) {
+        runtimeSettings.imageEndpoints[existingIndex] = endpoint;
+        updated += 1;
+      } else {
+        runtimeSettings.imageEndpoints.push(endpoint);
+        added += 1;
+      }
+      if (candidate.active || (!preferredId && runtimeSettings.imageEndpoints.length === 1)) preferredId = endpoint.id;
+    } catch (error) {
+      errors.push({ label: candidate.label || candidate.baseUrl || "未命名配置", message: error.message || "导入失败" });
+    }
+  }
+  if (!added && !updated) {
+    const error = new Error(errors[0]?.message || "没有可导入的 API 配置。");
+    error.status = 400;
+    throw error;
+  }
+  ensureSingleActiveImageEndpoint(preferredId);
+  runtimeSettings.providers.image = null;
+  applyRuntimeProviders();
+  await saveRuntimeSettings();
+  return { added, updated, failed: errors.length, errors };
+}
+
+function exportRuntimeImageEndpoints() {
+  const active = activeRuntimeImageEndpoint();
+  return {
+    format: "laogui-ai-api-config",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    warning: "此文件包含完整 API Key，只能发给可信任的人。",
+    activeEndpointId: active?.id || "",
+    imageEndpoints: runtimeSettings.imageEndpoints.map((endpoint) => ({
+      id: endpoint.id,
+      label: endpoint.label,
+      baseUrl: endpoint.baseUrl,
+      apiKey: endpoint.apiKey,
+      model: endpoint.model,
+      apiMode: endpoint.apiMode,
+      responsesTransport: endpoint.responsesTransport,
+      requestPolicy: endpoint.requestPolicy,
+      imagesNewApiCompat: endpoint.imagesNewApiCompat,
+      reasoningEffort: endpoint.reasoningEffort,
+      responsesPath: endpoint.responsesPath,
+      imageGenerationPath: endpoint.imageGenerationPath,
+      imageEditPath: endpoint.imageEditPath,
+      providerManifest: endpoint.providerManifest || null,
+      active: endpoint.id === active?.id,
+      enabled: endpoint.id === active?.id
+    }))
+  };
+}
+
 function runtimeSettingsBody(req = null) {
   const owner = req ? isOwnerRequest(req) : true;
+  const fhlSkillStatus = imageStudioFhlSkillStatus();
   return {
     ok: true,
     settings: {
@@ -11624,8 +11852,8 @@ function runtimeSettingsBody(req = null) {
       },
       activeImageBaseUrl: config.imageProvider.baseUrl,
       imageStudioEngine: imageStudioEngineStatus(),
-      imageStudioFhlSkill: imageStudioFhlSkillStatus(),
-      imageBackend: "image-studio-cli-engine",
+      imageStudioFhlSkill: fhlSkillStatus,
+      imageBackend: fhlSkillStatus.enabled ? "image-studio-fhl" : "image-studio-cli-engine",
       imageGenContract: "Standard OpenAI-compatible paths use the bundled Image Studio go-cli engine. Providers with custom paths or a Provider Manifest use the native HTTP adapter. Other native fallbacks remain disabled unless IMAGE_STUDIO_ALLOW_NATIVE_FALLBACK=1.",
       canManageSettings: owner,
       publicApiTokenConfigured: Boolean(config.publicApi.token),
@@ -11982,6 +12210,7 @@ async function addRuntimeImageEndpoint(body = {}) {
     ? (existing?.enabled ?? runtimeSettings.imageEndpoints.length === 0)
     : parseBooleanEnv(body.enabled, false);
   const endpoint = normalizeRuntimeImageEndpoint({ ...body, enabled }, existing);
+  if (existing?.apiKey && existing.apiKey !== endpoint.apiKey) imageEndpointStats.delete(endpoint.baseUrl);
   if (existingIndex >= 0) {
     runtimeSettings.imageEndpoints[existingIndex] = endpoint;
   } else {
@@ -12003,6 +12232,7 @@ async function updateRuntimeImageEndpoint(id, body = {}) {
     throw error;
   }
   const endpoint = normalizeRuntimeImageEndpoint({ ...body, id }, runtimeSettings.imageEndpoints[index]);
+  if (runtimeSettings.imageEndpoints[index].apiKey !== endpoint.apiKey) imageEndpointStats.delete(endpoint.baseUrl);
   runtimeSettings.imageEndpoints[index] = endpoint;
   const active = activeRuntimeImageEndpoint();
   ensureSingleActiveImageEndpoint(endpoint.enabled ? endpoint.id : active?.id || endpoint.id);
@@ -12013,6 +12243,7 @@ async function updateRuntimeImageEndpoint(id, body = {}) {
 }
 
 async function deleteRuntimeImageEndpoint(id) {
+  const removed = runtimeSettings.imageEndpoints.find((endpoint) => endpoint.id === id);
   const wasActive = runtimeSettings.imageEndpoints.some((endpoint) => endpoint.id === id && endpoint.enabled === true);
   const before = runtimeSettings.imageEndpoints.length;
   runtimeSettings.imageEndpoints = runtimeSettings.imageEndpoints.filter((endpoint) => endpoint.id !== id);
@@ -12022,6 +12253,9 @@ async function deleteRuntimeImageEndpoint(id) {
     throw error;
   }
   if (wasActive || !activeRuntimeImageEndpoint()) ensureSingleActiveImageEndpoint(runtimeSettings.imageEndpoints[0]?.id || "");
+  if (removed && !runtimeSettings.imageEndpoints.some((endpoint) => endpoint.baseUrl === removed.baseUrl)) {
+    imageEndpointStats.delete(removed.baseUrl);
+  }
   runtimeSettings.providers.image = null;
   applyRuntimeProviders();
   await saveRuntimeSettings();
@@ -12043,6 +12277,21 @@ async function activateRuntimeImageEndpoint(id) {
 }
 
 async function handleRuntimeImageEndpointSettingsRoute(req, res, routePath) {
+  if (req.method === "POST" && routePath === "/settings/image-endpoints/import") {
+    if (!requireOwnerWriteRequest(req, res)) return true;
+    const body = await readJson(req);
+    const result = await importRuntimeImageEndpoints(body);
+    sendJson(res, 200, { ok: true, result, settings: runtimeSettingsBody(req).settings });
+    return true;
+  }
+
+  if (req.method === "POST" && routePath === "/settings/image-endpoints/export") {
+    if (!requireOwnerWriteRequest(req, res)) return true;
+    await readJson(req);
+    sendJson(res, 200, { ok: true, config: exportRuntimeImageEndpoints() });
+    return true;
+  }
+
   if (req.method === "POST" && routePath === "/settings/image-endpoints") {
     if (!requireOwnerWriteRequest(req, res)) return true;
     const body = await readJson(req);
@@ -12093,7 +12342,7 @@ function healthBody() {
     imageQueue: imageGenerationQueueState(),
     imageToolRunnerModel: config.imageToolRunnerModel,
     imageModel: config.imageModel,
-    imageBackend: "image-studio-cli-engine",
+    imageBackend: fhlSkillStatus.enabled ? "image-studio-fhl" : "image-studio-cli-engine",
     dataDir: appDataDir,
     externalDataDir: externalDataDirEnabled,
     storage: publicStorageSettings(),
@@ -12918,7 +13167,7 @@ function createOpenApiDocument(req) {
             apiMode: { type: "string", enum: ["responses", "images", "auto"] },
             responsesTransport: { type: "string" },
             requestPolicy: { type: "string" },
-            imagesNewApiCompat: { type: "boolean", default: true, description: "Images API 使用普通 JSON 返回，不发送流式参数。" },
+            imagesNewApiCompat: { type: "boolean", default: false, description: "关闭时优先使用 Images API 流式返回；仅在旧中转不支持流式时开启。" },
             reasoningEffort: { type: "string" },
             responsesPath: { type: "string" },
             imageGenerationPath: { type: "string" },

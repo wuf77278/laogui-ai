@@ -13165,6 +13165,46 @@ body.settings-open {
   font-weight: 820;
 }
 
+.api-profile-sidebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.api-transfer-panel {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.api-transfer-panel summary {
+  padding: 10px 12px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 820;
+  cursor: pointer;
+}
+
+.api-transfer-body {
+  display: grid;
+  gap: 9px;
+  padding: 0 12px 12px;
+}
+
+.api-transfer-body textarea {
+  width: 100%;
+  min-height: 92px;
+  resize: vertical;
+}
+
+.api-transfer-actions {
+  flex-wrap: wrap;
+}
+
+.api-key-warning {
+  color: #f2d79d;
+}
+
 .api-profile-list {
   display: grid;
   gap: 7px;
@@ -13194,7 +13234,7 @@ body.settings-open {
 
 .api-profile-role-actions {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
   gap: 6px;
   min-width: 0;
 }
@@ -13212,7 +13252,7 @@ body.settings-open {
 }
 
 .api-profile-dot {
-  grid-row: 1 / 4;
+  grid-row: 1 / 5;
   width: 9px;
   height: 9px;
   margin-top: 3px;
@@ -13243,6 +13283,18 @@ body.settings-open {
   color: var(--muted);
   font-size: 10px;
   line-height: 1.2;
+}
+
+.api-profile-main .api-profile-connection.available {
+  color: #9fd7b0;
+}
+
+.api-profile-main .api-profile-connection.warning {
+  color: #e8c881;
+}
+
+.api-profile-main .api-profile-connection.error {
+  color: #ee9d90;
 }
 
 .api-profile-editor {
@@ -21986,7 +22038,7 @@ body[data-theme] #appSettingsOverlay .api-profile-main small {
 
 body[data-theme] #appSettingsOverlay .api-profile-role-actions {
   display: grid !important;
-  grid-template-columns: repeat(2, minmax(0, 1fr)) 36px !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) 36px !important;
   align-items: center !important;
   gap: 7px !important;
 }
