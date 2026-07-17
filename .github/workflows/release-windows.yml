@@ -37,6 +37,17 @@ jobs:
       - name: 构建 Windows 生图内核
         run: npm run engine:image-studio:win
 
+      - name: 准备 GitHub 发布页
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG="v${VERSION}"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "老鬼AI ${VERSION}" --notes "GitHub 自动构建发布。"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: 生成并发布 Windows 安装包
         run: npx electron-builder --win --x64 --publish always
         env:
