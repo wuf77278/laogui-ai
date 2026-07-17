@@ -20352,12 +20352,13 @@ function renderDesktopUpdateState(nextState = desktopUpdateState) {
   const value = nextState || {
     status: "idle",
     currentVersion: null,
-    message: "安装版软件启动后会自动检查 GitHub 上的新版本。"
+    message: "点击“检查更新”后才会手动查询新版本。"
   };
   desktopUpdateState = value;
   const labels = {
     idle: "准备检查",
     checking: "正在检查",
+    available: "发现新版本",
     downloading: "正在下载",
     downloaded: "可以更新",
     installing: "正在安装",
@@ -20366,6 +20367,7 @@ function renderDesktopUpdateState(nextState = desktopUpdateState) {
     unavailable: "安装版可用"
   };
   const statusClasses = {
+    available: "available",
     downloaded: "available",
     "up-to-date": "available",
     checking: "warning",
@@ -20381,13 +20383,14 @@ function renderDesktopUpdateState(nextState = desktopUpdateState) {
   if (els.currentVersionText) {
     els.currentVersionText.textContent = value.currentVersion
       ? `当前版本：v${value.currentVersion}`
-      : "自动更新仅在安装版软件中可用。";
+      : "软件内更新仅在安装版中可用。";
   }
   if (els.updateStatusText) els.updateStatusText.textContent = value.message || "准备检查新版本。";
   if (!els.checkForUpdatesButton) return;
   const progress = Math.max(0, Math.min(100, Number(value.progress) || 0));
   const buttonLabels = {
     checking: "正在检查…",
+    available: "下载并更新",
     downloading: `正在下载 ${Math.round(progress)}%`,
     downloaded: "立即重启并更新",
     installing: "正在安装…",
@@ -20404,7 +20407,7 @@ async function refreshDesktopUpdateState({ silent = true } = {}) {
     renderDesktopUpdateState({
       status: "unavailable",
       currentVersion: null,
-      message: "请打开安装版老鬼AI使用自动更新。"
+      message: "请打开安装版老鬼AI使用软件内更新。"
     });
     return;
   }
@@ -20422,7 +20425,7 @@ async function refreshDesktopUpdateState({ silent = true } = {}) {
 
 async function handleDesktopUpdateButtonClick() {
   if (!window.laoguiDesktop?.checkForUpdates) {
-    toast("自动更新仅在安装版软件中可用");
+    toast("软件内更新仅在安装版中可用");
     return;
   }
   if (desktopUpdateState?.status === "downloaded") {
@@ -20430,6 +20433,24 @@ async function handleDesktopUpdateButtonClick() {
     if (!confirmed) return;
     renderDesktopUpdateState({ ...desktopUpdateState, status: "installing", message: "正在关闭软件并安装更新…" });
     await window.laoguiDesktop.installUpdate();
+    return;
+  }
+  if (desktopUpdateState?.status === "available") {
+    const version = desktopUpdateState.availableVersion ? ` v${desktopUpdateState.availableVersion}` : "";
+    const confirmed = window.confirm(`发现新版本${version}。确定现在下载并安装吗？`);
+    if (!confirmed) return;
+    try {
+      renderDesktopUpdateState({ ...desktopUpdateState, status: "downloading", progress: 0, message: "正在下载新版本… 0%" });
+      const downloadedState = await window.laoguiDesktop.downloadUpdate();
+      renderDesktopUpdateState(downloadedState);
+      if (downloadedState?.status === "downloaded") {
+        renderDesktopUpdateState({ ...downloadedState, status: "installing", message: "下载完成，正在关闭软件并安装更新…" });
+        await window.laoguiDesktop.installUpdate();
+      }
+    } catch (error) {
+      renderDesktopUpdateState({ ...desktopUpdateState, status: "error", progress: null, message: "更新下载失败，请稍后重试。" });
+      toast(error.message || "更新下载失败");
+    }
     return;
   }
   renderDesktopUpdateState({
@@ -20456,6 +20477,9 @@ function initializeDesktopUpdateUi() {
   window.laoguiDesktop?.onUpdateState?.((nextState) => {
     const previousStatus = desktopUpdateState?.status;
     renderDesktopUpdateState(nextState);
+    if (nextState?.status === "available" && previousStatus !== "available") {
+      toast(nextState.availableVersion ? `发现新版本 v${nextState.availableVersion}` : "发现新版本");
+    }
     if (nextState?.status === "downloaded" && previousStatus !== "downloaded") {
       toast("新版本已下载完成，可以在设置中重启更新");
     }

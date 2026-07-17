@@ -24,7 +24,7 @@ let updateState = {
   currentVersion: app.getVersion(),
   availableVersion: null,
   progress: null,
-  message: `当前版本 v${app.getVersion()}`
+  message: "点击“检查更新”后才会手动查询新版本。"
 };
 
 if (process.platform === "win32") {
@@ -203,7 +203,7 @@ async function checkForAppUpdates() {
       message: "开发预览模式不能检查更新，请在安装版软件中使用。"
     });
   }
-  if (["checking", "downloading", "downloaded", "installing"].includes(updateState.status)) {
+  if (["checking", "available", "downloading", "downloaded", "installing"].includes(updateState.status)) {
     return updateState;
   }
   setUpdateState({ status: "checking", progress: null, message: "正在连接 GitHub 检查新版本…" });
@@ -220,11 +220,27 @@ async function checkForAppUpdates() {
   return updateState;
 }
 
+async function downloadAppUpdate() {
+  if (updateState.status !== "available") return updateState;
+  setUpdateState({ status: "downloading", progress: 0, message: "正在下载新版本… 0%" });
+  try {
+    await autoUpdater.downloadUpdate();
+  } catch (error) {
+    console.warn(`[electron] update download failed: ${error.message || error}`);
+    setUpdateState({
+      status: "error",
+      progress: null,
+      message: "更新下载失败，请确认电脑能正常访问更新地址后重试。"
+    });
+  }
+  return updateState;
+}
+
 function configureAutoUpdater() {
   if (autoUpdaterConfigured) return;
   autoUpdaterConfigured = true;
-  autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.allowPrerelease = false;
   autoUpdater.allowDowngrade = false;
   autoUpdater.logger = console;
@@ -235,10 +251,10 @@ function configureAutoUpdater() {
   autoUpdater.on("update-available", (info) => {
     const version = String(info?.version || "").trim();
     setUpdateState({
-      status: "downloading",
+      status: "available",
       availableVersion: version || null,
-      progress: 0,
-      message: version ? `发现新版本 v${version}，正在自动下载…` : "发现新版本，正在自动下载…"
+      progress: null,
+      message: version ? `发现新版本 v${version}，请确认后下载并更新。` : "发现新版本，请确认后下载并更新。"
     });
   });
   autoUpdater.on("update-not-available", () => {
@@ -271,7 +287,7 @@ function configureAutoUpdater() {
     setUpdateState({
       status: "error",
       progress: null,
-      message: "自动更新失败，请稍后重试，或从 GitHub 下载最新版。"
+      message: "更新失败，请稍后重试，或从 GitHub 下载最新版。"
     });
   });
 
@@ -280,9 +296,7 @@ function configureAutoUpdater() {
       status: "unavailable",
       message: "开发预览模式不能检查更新，请在安装版软件中使用。"
     });
-    return;
   }
-  setTimeout(() => checkForAppUpdates(), 8000);
 }
 
 async function shutdownLocalService() {
@@ -346,6 +360,7 @@ ipcMain.handle("laogui:select-directory", async () => {
 
 ipcMain.handle("laogui:get-update-state", () => updateState);
 ipcMain.handle("laogui:check-for-updates", () => checkForAppUpdates());
+ipcMain.handle("laogui:download-update", () => downloadAppUpdate());
 ipcMain.handle("laogui:install-update", () => {
   if (updateState.status !== "downloaded") return updateState;
   setUpdateState({ status: "installing", message: "正在关闭软件并安装更新…" });
