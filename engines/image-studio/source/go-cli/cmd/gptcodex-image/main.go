@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"flag"
 	"fmt"
+	"image/png"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -32,6 +35,7 @@ func run() error {
 	imageModel := flag.String("image-model", "", "image model ID (env GPTCODEX_IMAGE_MODEL also accepted)")
 	mode := flag.String("mode", "", "generate | edit (overrides interactive prompt)")
 	image := flag.String("image", "", "source image path (required for edit mode)")
+	mask := flag.String("mask", "", "PNG mask path for edit mode; transparent pixels are editable")
 	images := multiFlag{}
 	flag.Var(&images, "reference-image", "source/reference image path for edit mode; repeatable")
 	size := flag.String("size", "", "1024x1024 | 1536x1024 | 1024x1536 | 2048x1152")
@@ -99,6 +103,8 @@ func run() error {
 	}
 	var imageDataURLs []string
 	var sourceImagePaths []string
+	var maskB64 string
+	var maskPath string
 	if resolvedMode == client.ModeEdit {
 		if len(imagePaths) == 0 {
 			sourceImagePath, err := p.ImagePath()
@@ -118,6 +124,15 @@ func run() error {
 			}
 			imageDataURLs = append(imageDataURLs, imageDataURL)
 			sourceImagePaths = append(sourceImagePaths, sourceImagePath)
+		}
+	}
+	if strings.TrimSpace(*mask) != "" {
+		if resolvedMode != client.ModeEdit {
+			return fmt.Errorf("--mask 只能用于 edit 模式")
+		}
+		maskB64, maskPath, err = readPNGMask(*mask)
+		if err != nil {
+			return err
 		}
 	}
 
@@ -189,6 +204,10 @@ func run() error {
 		abs, _ := filepath.Abs(sourceImagePath)
 		fmt.Printf("源图片:%s\n", abs)
 	}
+	if maskPath != "" {
+		abs, _ := filepath.Abs(maskPath)
+		fmt.Printf("蒙版图片:%s\n", abs)
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -202,6 +221,7 @@ func run() error {
 		OutputFormat:       *outputFormat,
 		ImageDataURLs:      imageDataURLs,
 		ImagePaths:         sourceImagePaths,
+		MaskB64:            maskB64,
 		APIMode:            resolvedAPIMode,
 		ResponsesTransport: resolvedResponsesTransport,
 		BaseURL:            *baseURL,
@@ -259,6 +279,21 @@ func (m *multiFlag) String() string {
 func (m *multiFlag) Set(value string) error {
 	*m = append(*m, value)
 	return nil
+}
+
+func readPNGMask(rawPath string) (string, string, error) {
+	maskPath, err := client.NormalizePath(rawPath)
+	if err != nil {
+		return "", "", err
+	}
+	raw, err := os.ReadFile(maskPath)
+	if err != nil {
+		return "", "", fmt.Errorf("读取蒙版失败: %w", err)
+	}
+	if _, err := png.DecodeConfig(bytes.NewReader(raw)); err != nil {
+		return "", "", fmt.Errorf("--mask 必须是有效的 PNG 图片: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(raw), maskPath, nil
 }
 
 func fillFromEnv(target *string, key string) {

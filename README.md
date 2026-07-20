@@ -46,8 +46,24 @@ npm start
 - 图片参考理解：上传参考图后分析材质、灯光、空间关系和可复用设计语言。
 - 设计系列出图：围绕同一个项目批量生成统一风格的设计画面。
 - 无限画布工作区：沉淀项目素材、生成结果、提示词和阶段性方案。
+- AI 编辑：支持矩形、椭圆智能范围，自由套索、多边形套索和画笔精准蒙版；两个编号选区可以分别填写提示词。
+- 深度编辑：支持选区、裁切、旋转、翻转、调色、锐化、降噪、图层和透明 PNG 导出。
+- AI 局部生成：支持局部消除、局部替换、材质替换、细节增强和自定义编辑，原图不会被覆盖。
+- API 配置导入：支持粘贴文本、拖入文件或选择文件夹，真实密钥只保存在本机。
 - 本地桌面应用：通过 Electron 在 macOS / Windows 上运行，减少部署门槛。
 - 服务端代理 API：浏览器端不直接接触密钥，适合本机或小团队内网使用。
+
+## 当前开发进度（v2.3.3）
+
+- [x] AI 编辑与深度编辑拆分，旧入口统一到新的编辑工作区。
+- [x] 编号选区、智能范围和精准蒙版编辑。
+- [x] AI 清除后的自然背景重建，避免矩形贴片和蒙版叠加感。
+- [x] 生成前显示实际执行能力、影响范围和选区提醒。
+- [x] 常用提示词模板、提示词优化开关和失败后重新生成。
+- [x] FHL 图片编辑蒙版传递，默认由 FHL 生图 CLI 自动选择正确线路。
+- [x] macOS Apple Silicon / Intel 与 Windows x64 / ARM64 图片内核同步。
+- [x] 前端算法测试、Go 测试和安装包内容检查。
+- [ ] 下一阶段：完善原图对比、结果确认与更清晰的任务进度展示。
 
 ## Desktop App
 
@@ -138,9 +154,9 @@ npm run check
 - 软件没有内置公共 API 地址，需要在“设置”中添加自己的生图 API。可以添加、编辑、检测、删除并选择当前使用的配置。
 - 每套配置会独立显示连接状态、检测时间和延迟；“检测全部”会真实生成测试图，可能产生 API 费用。
 - 支持粘贴文本、JSON、`.env`、文件和文件夹导入，也支持导出文件或复制分享文本。导出内容包含完整 API Key，只能发给可信任的人。
-- `IMAGE_API_MODE=responses`: 默认完全按 Image-Studio 的 Responses API 路由请求；如确实要走标准 Images API，才改成 `images`。
+- `IMAGE_API_MODE=images`: 默认使用 Images API；也可以在每套 API 配置中单独切换。
 - `IMAGE_STUDIO_RESPONSES_TRANSPORT=sse` / `IMAGE_STUDIO_REQUEST_POLICY=openai`: 对齐 Image-Studio 的 “HTTP SSE + OpenAI 标准” 配置。
-- `IMAGE_STUDIO_IMAGES_NEW_API_COMPAT=0`: Images API 默认使用流式返回；只有旧中转明确不支持流式事件时才改成 `1`。
+- `IMAGE_STUDIO_IMAGES_NEW_API_COMPAT=1`: Images API 默认使用普通返回（旧接口兼容）；需要流式返回时改成 `0`。
 - `IMAGE_GENERATIONS_PATH=/v1/images/generations` / `IMAGE_EDITS_PATH=/v1/images/edits`: 仅在切换到 Images API 时使用。
 - `IMAGE_PROVIDER_MANIFEST='{"submit":{"path":"/v1/images/generations","result":{"b64JsonPaths":["data.*.b64_json"],"imageUrlPaths":["data.*.url"]}}}'`: 可选，自定义 OpenAI-compatible 或异步 HTTP 生图服务的提交、轮询和结果字段映射。
 - `IMAGE_RESPONSES_PATH=/v1/responses`: FHL/OpenAI-compatible 服务的 Responses 路径；yybb 才使用 `/responses`。
@@ -284,7 +300,13 @@ The preferred distribution layout is platform-aware:
 
 从 `2.1.1` 开始，1K / 2K / 4K 会按界面显示的实际像素传给生图接口，不再把 2K 横图固定缩成 `1536x1024`。任务记录会同时保存请求尺寸和最终图片真实尺寸；如果上游接口自行缩小，界面会显示“请求尺寸 → 实际尺寸”。
 
-The local Codex skill `image-studio-fhl` remains as a development fallback on this machine, but the distributed software does not depend on Codex skills or the user's Codex directory.
+本机的 FHL 精准蒙版编辑通过 `image-studio-fhl` Skill 调用，并固定使用 `--provider auto`。项目不会复制或固化 FHL 的接口、模型、密钥读取方式；没有安装该 Skill 的电脑仍可使用套索、魔棒、抠图、裁切和调色，但 AI 局部编辑需要先安装对应 Skill。
+
+## 深度编辑
+
+画布图片上的“深度编辑”会打开统一全屏工作区，包含矩形选择、自由套索、多边形套索、魔棒、画笔补选/减选、羽化、扩缩选区、裁切、旋转、翻转、调整尺寸、调色、降噪、锐化和透明抠图。所有结果都会生成原图的子节点，不覆盖原图。
+
+“AI 编辑”使用独立工作区，提供“框选编号 1”和“框选编号 2”两个蒙版。两个编号分别保存自己的操作类型和提示词，并按 1 → 2 的顺序通过 FHL `--provider auto` 精准编辑；选区外像素会在前端重新覆盖，结果仍作为原图子节点保存。
 
 “生成设计系列”的参考图整理也使用项目内置预设，并把参考图直接交给生图模型，不需要额外 API。
 

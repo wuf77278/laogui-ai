@@ -35,7 +35,7 @@ const files = [
 ];
 
 async function readVendorFile(file) {
-  const raw = await fs.readFile(file.source, "utf8");
+  const raw = await fs.readFile(file.source, file.binary ? undefined : "utf8");
   return file.transform ? file.transform(raw) : raw;
 }
 
@@ -45,9 +45,11 @@ async function main() {
 
   for (const file of files) {
     const expected = await readVendorFile(file);
+    await fs.mkdir(path.dirname(file.target), { recursive: true });
     if (checkOnly) {
-      const current = await fs.readFile(file.target, "utf8").catch(() => "");
-      if (current !== expected) mismatches.push(path.relative(rootDir, file.target));
+      const current = await fs.readFile(file.target, file.binary ? undefined : "utf8").catch(() => file.binary ? Buffer.alloc(0) : "");
+      const matches = file.binary ? Buffer.compare(current, expected) === 0 : current === expected;
+      if (!matches) mismatches.push(path.relative(rootDir, file.target));
       continue;
     }
     await fs.writeFile(file.target, expected);

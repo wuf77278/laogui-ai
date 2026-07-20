@@ -1,6 +1,6 @@
 {
   "name": "laogui-ai",
-  "version": "2.2.1",
+  "version": "2.3.3",
   "description": "面向建筑、室内、民宿和商业空间设计师的本地 AI 创意工作台",
   "private": true,
   "license": "MIT",
@@ -9,6 +9,7 @@
   "main": "electron/main.cjs",
   "files": [
     "server.mjs",
+    "NOTICE.md",
     "prompt-library.mjs",
     "electron/",
     "engines/",
@@ -41,11 +42,15 @@
     "pack:win:arm64": "electron-builder --win --arm64",
     "publish:win": "npm run check && npm run engine:image-studio:win && electron-builder --win --x64 --publish always",
     "pack:all": "electron-builder --mac --arm64 --x64 --win --x64",
-    "check": "node --check server.mjs && node --check public/app.js && node --check electron/main.cjs && node --check electron/preload.cjs && node --check scripts/doctor.mjs && node --check scripts/sync-vendor.mjs && npm run check:vendor",
+    "check": "node --check server.mjs && node --check public/app.js && node --check public/ai-edit/editor.js && node --check public/ai-edit/region-engine.js && node --check public/deep-edit/editor.js && node --check public/deep-edit/image-ops.worker.js && node --check public/deep-edit/mask-engine.js && node --check public/deep-edit/layer-engine.js && node --check public/deep-edit/project-store.js && node --check electron/main.cjs && node --check electron/preload.cjs && node --check scripts/doctor.mjs && node --check scripts/sync-vendor.mjs && npm run check:vendor",
+    "test": "node --test test/*.test.mjs",
     "doctor": "node scripts/doctor.mjs"
   },
   "engines": {
     "node": ">=18"
+  },
+  "overrides": {
+    "adm-zip": "0.6.0"
   },
   "devDependencies": {
     "electron": "^39.8.5",
@@ -65,6 +70,7 @@
     "asar": true,
     "files": [
       "server.mjs",
+      "NOTICE.md",
       "prompt-library.mjs",
       "electron/**",
       "public/**",
@@ -88,6 +94,7 @@
     "extraMetadata": {
       "main": "electron/main.cjs"
     },
+    "afterPack": "scripts/after-pack.cjs",
     "mac": {
       "target": [
         "dmg",

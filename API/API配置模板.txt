@@ -1,0 +1,11 @@
+# 老鬼AI API 配置模板
+# 请把“请填写”替换成自己的信息，再复制全部内容到软件“API 设置”的导入输入框。
+
+配置名称: 我的生图 API
+接口地址: https://请填写
+密钥: sk-请填写
+模型: gpt-image-2
+api_mode: images
+request_policy: openai
+image_generation_path: /v1/images/generations
+image_edit_path: /v1/images/edits

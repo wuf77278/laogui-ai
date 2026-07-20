@@ -1,5 +1,7 @@
 import * as THREE from "./vendor/three.module.js";
 import { GLTFExporter } from "./vendor/GLTFExporter.js";
+import { createDeepEditor } from "./deep-edit/editor.js";
+import { createAiEditor } from "./ai-edit/editor.js";
 
 const referenceImageLimit = 8;
 const CANVAS_LAYOUT_VERSION = 16;
@@ -25,56 +27,6 @@ const IMAGE_CACHE_THUMBNAIL_QUALITY = 0.9;
 const PANORAMA_CANVAS_HINT = "拖拽查看全景 / 滚轮缩放";
 const PANORAMA_PREVIEW_HINT = "拖拽查看 / 滚轮缩放";
 const DEFAULT_THINKING_MODE_ENABLED = false;
-const defaultColorGradeAdjustments = Object.freeze({
-  light: 0,
-  exposure: 0,
-  contrast: 0,
-  highlights: 0,
-  shadows: 0,
-  whites: 0,
-  blacks: 0,
-  temperature: 0,
-  tint: 0,
-  vibrance: 0,
-  saturation: 0,
-  clarity: 0
-});
-const colorGradeTabs = [
-  { id: "light", label: "光线", icon: "icon-light" },
-  { id: "color", label: "色彩", icon: "icon-filter" },
-  { id: "detail", label: "质感", icon: "icon-detail" }
-];
-const colorGradeFields = {
-  light: ["light", "exposure", "contrast", "highlights", "shadows", "whites", "blacks"],
-  color: ["temperature", "tint", "vibrance", "saturation"],
-  detail: ["clarity"]
-};
-const colorGradeFieldLabels = {
-  light: "光线",
-  exposure: "曝光",
-  contrast: "对比度",
-  highlights: "高光",
-  shadows: "阴影",
-  whites: "白色",
-  blacks: "黑色",
-  temperature: "色温",
-  tint: "色调",
-  vibrance: "自然饱和度",
-  saturation: "饱和度",
-  clarity: "清晰度"
-};
-
-const cropAspectOptions = [
-  { value: "source", label: "原图" },
-  { value: "1:1", label: "1:1" },
-  { value: "4:5", label: "4:5" },
-  { value: "3:4", label: "3:4" },
-  { value: "2:3", label: "2:3" },
-  { value: "3:2", label: "3:2" },
-  { value: "16:9", label: "16:9" },
-  { value: "9:16", label: "9:16" }
-];
-
 const state = {
   clientId: "",
   anonymousClientId: "",
@@ -211,58 +163,6 @@ const state = {
     panning: null,
     nodeDrag: null,
     panelDropDrag: null
-  },
-  deepEdit: {
-    open: false,
-    tool: "box",
-    selectedImage: null,
-    outputItem: null,
-    image: null,
-    imageBox: null,
-    selection: null,
-    strokes: [],
-    activeStroke: null,
-    dragStart: null,
-    prompt: "",
-    busy: false
-  },
-  crop: {
-    open: false,
-    selectedImage: null,
-    outputItem: null,
-    image: null,
-    imageBox: null,
-    aspect: "source",
-    cropBox: null,
-    dragStart: null,
-    dragOffset: null,
-    busy: false
-  },
-  colorGrade: {
-    open: false,
-    tab: "light",
-    selectedImage: null,
-    outputItem: null,
-    image: null,
-    adjustments: { ...defaultColorGradeAdjustments },
-    previewUrl: "",
-    previewBusy: false,
-    busy: false
-  },
-  cutout: {
-    open: false,
-    selectedImage: null,
-    outputItem: null,
-    image: null,
-    imageBox: null,
-    analysis: null,
-    aiAnalysis: null,
-    analysisMethod: "",
-    analysisError: "",
-    selectedCandidateId: "",
-    hoverCandidateId: "",
-    busy: false,
-    analyzing: false
   }
 };
 
@@ -649,6 +549,10 @@ const els = {
   apiImportFolderInput: $("apiImportFolderInput"),
   imageApiProfileName: $("imageApiProfileName"),
   imageApiProfileList: $("imageApiProfileList"),
+  workspaceApiSwitcher: $("workspaceApiSwitcher"),
+  workspaceApiStatusDot: $("workspaceApiStatusDot"),
+  workspaceApiProfileSelect: $("workspaceApiProfileSelect"),
+  workspaceApiLatency: $("workspaceApiLatency"),
   addImageApiProfileButton: $("addImageApiProfileButton"),
   probeAllImageApiProfilesButton: $("probeAllImageApiProfilesButton"),
   activateImageApiProfileButton: $("activateImageApiProfileButton"),
@@ -1981,11 +1885,7 @@ function syncOverlayOpenClass() {
     isOverlayOpen("imagePreviewOverlay") ||
       isOverlayOpen("imageCompareOverlay") ||
       isOverlayOpen("panoramaPreviewOverlay") ||
-      isOverlayOpen("deepEditOverlay") ||
-      isOverlayOpen("colorGradeOverlay") ||
-      isOverlayOpen("multiAngleOverlay") ||
-      isOverlayOpen("cutoutOverlay") ||
-      isOverlayOpen("cropOverlay")
+      isOverlayOpen("multiAngleOverlay")
   );
 }
 
@@ -4142,7 +4042,50 @@ function imageApiProfileConnectionInfo(profile = null) {
   return { label: "未检测", className: "unknown", detail: latencyText };
 }
 
+function renderWorkspaceApiSwitcher() {
+  if (!els.workspaceApiProfileSelect) return;
+  const profiles = Array.isArray(state.imageApiProfiles) ? state.imageApiProfiles : [];
+  const activeProfile = profiles.find((profile) => isActiveImageApiProfile(profile)) || null;
+  const connection = activeProfile
+    ? imageApiProfileConnectionInfo(activeProfile)
+    : { label: "未配置", className: "unknown", detail: "请先添加 API 配置" };
+  const activeProvider = imageApiProfileProvider(activeProfile);
+
+  els.workspaceApiProfileSelect.innerHTML = profiles.length
+    ? profiles.map((profile) => {
+      const profileConnection = imageApiProfileConnectionInfo(profile);
+      const latency = Number(profile?.latencyMs);
+      const latencyText = Number.isFinite(latency) && latency >= 0 ? `${Math.round(latency)}ms` : profileConnection.label;
+      return `<option value="${escapeAttr(profile.id)}" ${isActiveImageApiProfile(profile) ? "selected" : ""}>${escapeHtml(profile.label || "未命名配置")} · ${escapeHtml(latencyText)}</option>`;
+    }).join("")
+    : `<option value="">未配置 API</option>`;
+  els.workspaceApiProfileSelect.disabled = !profiles.length || !state.canManageApiSettings;
+  els.workspaceApiProfileSelect.value = activeProfile?.id || "";
+  els.workspaceApiProfileSelect.title = activeProfile
+    ? [activeProfile.label || "未命名配置", activeProvider.model || "", connection.label, connection.detail].filter(Boolean).join(" · ")
+    : connection.detail;
+
+  if (els.workspaceApiLatency) {
+    const latency = Number(activeProfile?.latencyMs);
+    const latencyText = Number.isFinite(latency) && latency >= 0 ? `${Math.round(latency)}ms` : "--";
+    const shortStatus = {
+      available: "正常",
+      warning: "检测中",
+      error: "失败",
+      unknown: activeProfile ? "未检测" : "未配置"
+    }[connection.className] || connection.label;
+    els.workspaceApiLatency.textContent = `${shortStatus} · ${latencyText}`;
+  }
+  if (els.workspaceApiStatusDot) {
+    els.workspaceApiStatusDot.className = `workspace-api-status-dot ${connection.className}`;
+  }
+  if (els.workspaceApiSwitcher) {
+    els.workspaceApiSwitcher.className = `workspace-api-switcher status-${connection.className}`;
+  }
+}
+
 function renderImageApiProfileList() {
+  renderWorkspaceApiSwitcher();
   if (!els.imageApiProfileList) return;
   const profiles = Array.isArray(state.imageApiProfiles) ? state.imageApiProfiles : [];
   if (!profiles.length) {
@@ -4186,8 +4129,10 @@ function fillImageApiProfileEditor(profile = null) {
   if (els.imageApiProfileName) els.imageApiProfileName.value = profile?.label || "";
   if (els.primaryImageApiBaseUrl) els.primaryImageApiBaseUrl.value = baseUrl;
   if (els.primaryImageApiModel) els.primaryImageApiModel.value = provider.model || "gpt-image-2";
-  if (els.primaryImageApiMode) els.primaryImageApiMode.value = provider.apiMode || "responses";
-  if (els.primaryImageImagesNewApiCompat) els.primaryImageImagesNewApiCompat.value = provider.imagesNewApiCompat === true ? "true" : "false";
+  if (els.primaryImageApiMode) els.primaryImageApiMode.value = provider.apiMode || "images";
+  if (els.primaryImageImagesNewApiCompat) els.primaryImageImagesNewApiCompat.value = profile
+    ? (provider.imagesNewApiCompat === true ? "true" : "false")
+    : "true";
   if (els.primaryImageResponsesTransport) els.primaryImageResponsesTransport.value = provider.responsesTransport || "sse";
   if (els.primaryImageRequestPolicy) els.primaryImageRequestPolicy.value = provider.requestPolicy || "openai";
   if (els.primaryImageReasoningEffort) els.primaryImageReasoningEffort.value = provider.reasoningEffort || "xhigh";
@@ -4281,7 +4226,7 @@ function runtimeProviderProbePayload(kind) {
     ...(profile?.id ? { profileId: profile.id } : {}),
     baseUrl: els.primaryImageApiBaseUrl?.value.trim() || saved.baseUrl || "",
     model: els.primaryImageApiModel?.value.trim() || saved.model || "gpt-image-2",
-    apiMode: els.primaryImageApiMode?.value || saved.apiMode || "responses",
+    apiMode: els.primaryImageApiMode?.value || saved.apiMode || "images",
     imagesNewApiCompat: els.primaryImageImagesNewApiCompat?.value === "true",
     responsesTransport: els.primaryImageResponsesTransport?.value || saved.responsesTransport || "sse",
     requestPolicy: els.primaryImageRequestPolicy?.value || saved.requestPolicy || "openai",
@@ -4299,7 +4244,7 @@ function currentImageApiPayload() {
     label: els.imageApiProfileName?.value.trim() || "",
     baseUrl: els.primaryImageApiBaseUrl?.value.trim() || "",
     model: els.primaryImageApiModel?.value.trim() || "gpt-image-2",
-    apiMode: els.primaryImageApiMode?.value || "responses",
+    apiMode: els.primaryImageApiMode?.value || "images",
     imagesNewApiCompat: els.primaryImageImagesNewApiCompat?.value === "true",
     responsesTransport: els.primaryImageResponsesTransport?.value || "sse",
     requestPolicy: els.primaryImageRequestPolicy?.value || "openai",
@@ -4520,7 +4465,7 @@ async function importApiText() {
 
 async function readApiImportFiles(fileList) {
   const supported = Array.from(fileList || [])
-    .filter((file) => /\.(json|txt|env|config|ya?ml)$/i.test(file.name))
+    .filter((file) => /\.(json|txt|md|env|config|ya?ml)$/i.test(file.name))
     .slice(0, 200);
   const documents = [];
   for (const file of supported) {
@@ -4528,6 +4473,56 @@ async function readApiImportFiles(fileList) {
     documents.push({ name: file.webkitRelativePath || file.name, text: await file.text() });
   }
   return documents;
+}
+
+async function loadApiImportFilesIntoText(fileList) {
+  const documents = await readApiImportFiles(fileList);
+  if (!documents.length) {
+    toast("请粘贴或拖入 .txt、.md、.json 等配置文件");
+    return false;
+  }
+  const text = documents
+    .map((document) => String(document.text || "").trim())
+    .filter(Boolean)
+    .join("\n\n");
+  if (!text || !els.apiImportText) {
+    toast("文件里没有可读取的文字");
+    return false;
+  }
+  els.apiImportText.value = text;
+  els.apiImportText.dispatchEvent(new Event("input", { bubbles: true }));
+  focusElement(els.apiImportText);
+  toast(`已读取 ${documents.length} 个配置文件，请点击“一键导入粘贴内容”`);
+  return true;
+}
+
+async function handleApiImportTextPaste(event) {
+  const files = Array.from(event.clipboardData?.files || []);
+  if (!files.length) return;
+  const supported = files.filter((file) => /\.(json|txt|md|env|config|ya?ml)$/i.test(file.name));
+  if (!supported.length) return;
+  event.preventDefault();
+  await loadApiImportFilesIntoText(supported);
+}
+
+function handleApiImportTextDragOver(event) {
+  const files = Array.from(event.dataTransfer?.files || []);
+  const supported = files.some((file) => /\.(json|txt|md|env|config|ya?ml)$/i.test(file.name));
+  if (!supported) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "copy";
+  els.apiImportText?.classList.add("api-file-drop-active");
+}
+
+function handleApiImportTextDragLeave(event) {
+  if (event.relatedTarget && els.apiImportText?.contains(event.relatedTarget)) return;
+  els.apiImportText?.classList.remove("api-file-drop-active");
+}
+
+async function handleApiImportTextDrop(event) {
+  event.preventDefault();
+  els.apiImportText?.classList.remove("api-file-drop-active");
+  await loadApiImportFilesIntoText(event.dataTransfer?.files || []);
 }
 
 async function handleApiImportFiles(input) {
@@ -4649,6 +4644,7 @@ async function activateImageApiProfile(id = state.editingImageApiProfileId) {
   }
   if (isActiveImageApiProfile(profile)) return;
   setBusy(els.activateImageApiProfileButton, true, "切换中");
+  if (els.workspaceApiProfileSelect) els.workspaceApiProfileSelect.disabled = true;
   try {
     await requestJson(`/api/settings/image-endpoints/${encodeURIComponent(profile.id)}/activate`, {
       method: "POST",
@@ -7642,11 +7638,19 @@ async function runPrimaryAction(options = {}) {
     return;
   }
   if (mode === "colorgrade") {
-    await openPrimaryImageColorGrade();
+    if (!state.primaryImage?.dataUrl) {
+      toast(modeConfig(state.mode).missing);
+      return;
+    }
+    await openDeepEdit({ id: "source", url: state.primaryImage.dataUrl, title: state.primaryImage.name || "原图", kind: "Primary" }, { initialTab: "adjust" });
     return;
   }
   if (mode === "cutout") {
-    await openPrimaryImageCutout();
+    if (!state.primaryImage?.dataUrl) {
+      toast(modeConfig(state.mode).missing);
+      return;
+    }
+    await openDeepEdit({ id: "source", url: state.primaryImage.dataUrl, title: state.primaryImage.name || "抠图原图", kind: "Primary" }, { initialTool: "lasso", initialTab: "selection" });
     return;
   }
   if (mode === "materialboard" && !state.primaryImage && activeReferenceImages().length) {
@@ -9415,7 +9419,7 @@ function applyAgentPanelCollapsed(collapsed = state.agentPanelCollapsed) {
   if (els.agentPanelContent) {
     els.agentPanelContent.setAttribute("aria-hidden", String(state.agentPanelCollapsed));
   }
-  if (state.agentPanelCollapsed && els.agentPanelContent?.contains(document.activeElement)) {
+  if (state.agentPanelCollapsed && (els.agentPanelContent?.contains(document.activeElement) || activeBefore === els.toggleAgentPanelButton)) {
     focusElement(els.agentPanelRailButton) || focusElement(els.toggleAgentPanelButton);
   }
   if (!state.agentPanelCollapsed && (activeBefore === els.agentPanelRailButton || activeBefore === els.canvasFloatingExpandButton)) {
@@ -12127,11 +12131,8 @@ function outputNodeActions(outputId, url, item = null) {
     ${workflowButtons}
     ${outputActionButton({ action: "favorite", outputId, icon: "icon-star", label: favorite ? "已收藏" : "收藏", attrs: `aria-pressed="${favorite ? "true" : "false"}"` })}
     ${outputActionButton({ action: "compare", outputId, icon: "icon-compare", label: compare ? "移出对比" : "对比", attrs: `aria-pressed="${compare ? "true" : "false"}"` })}
-    ${outputActionButton({ action: "tool-upscale", outputId, icon: "icon-focus", label: "高清" })}
-    ${outputActionButton({ action: "tool-sharpen", outputId, icon: "icon-detail", label: "锐化" })}
-    ${outputActionButton({ action: "tool-colorgrade", outputId, icon: "icon-filter", label: "调色" })}
-    ${outputActionButton({ action: "tool-cutout", outputId, icon: "icon-box-select", label: "抠图" })}
-    ${outputActionButton({ action: "tool-detail", outputId, icon: "icon-zoom-in", label: "细节增强" })}
+    ${outputActionButton({ action: "tool-ai-edit", outputId, icon: "icon-spark", label: "AI 编辑" })}
+    ${outputActionButton({ action: "tool-deep-edit", outputId, icon: "icon-brush", label: "深度编辑" })}
     ${outputActionButton({ action: "tool-outpaint", outputId, icon: "icon-panel-show", label: "扩图" })}
     ${outputActionButton({ action: "promote", outputId, icon: "icon-pin", label: "设为最新" })}
     ${outputActionButton({ action: "copy-prompt", outputId, icon: "icon-copy", label: "复制提示词" })}
@@ -12348,7 +12349,7 @@ async function handleOutputAction(action, outputId, nextMode = "") {
 }
 
 async function runOutputImageTool(item, toolMode) {
-  if (!["upscale", "sharpen", "colorgrade", "cutout", "detail", "outpaint"].includes(toolMode)) return;
+  if (!["ai-edit", "deep-edit", "upscale", "sharpen", "colorgrade", "cutout", "detail", "outpaint"].includes(toolMode)) return;
   state.canvas.selectedImage = {
     id: item.nodeId || item.id,
     outputId: item.id,
@@ -13725,1484 +13726,112 @@ function closeCompareOverlay() {
   syncOverlayOpenClass();
 }
 
-function ensureDeepEditOverlay() {
-  let overlay = document.getElementById("deepEditOverlay");
-  if (overlay) return overlay;
-  overlay = document.createElement("div");
-  overlay.id = "deepEditOverlay";
-  overlay.className = "deep-edit-overlay";
-  overlay.hidden = true;
-  overlay.setAttribute("aria-hidden", "true");
-  overlay.innerHTML = `
-    <section class="deep-edit-dialog" role="dialog" aria-modal="true" aria-label="深度编辑">
-      <header class="deep-edit-head">
-        <div>
-          <span>局部深度编辑</span>
-          <strong data-deep-edit-title>选中图片</strong>
-        </div>
-        <button class="icon-button icon-only" type="button" data-deep-edit-action="cancel" title="关闭" aria-label="关闭">
-          <svg><use href="#icon-close"></use></svg>
-        </button>
-      </header>
-      <div class="deep-edit-tools" aria-label="编辑工具">
-        ${uiIconButton({ className: "secondary-button active", icon: "icon-box-select", label: "框选", attrs: `data-deep-edit-tool="box"` })}
-        ${uiIconButton({ className: "secondary-button", icon: "icon-brush", label: "涂鸦", attrs: `data-deep-edit-tool="brush"` })}
-        ${uiIconButton({ icon: "icon-eraser", label: "清除标记", attrs: `data-deep-edit-action="clear"` })}
-      </div>
-      <div class="deep-edit-stage">
-        <canvas data-deep-edit-canvas tabindex="0"></canvas>
-        <span data-deep-edit-hint>在图上框选或涂鸦需要修改的区域</span>
-      </div>
-      <footer class="deep-edit-agent">
-        <textarea data-deep-edit-prompt rows="2" placeholder="告诉 Agent：需要把选中区域调整成什么样？"></textarea>
-        <button class="primary-button icon-only" type="button" data-deep-edit-action="submit" title="生成局部编辑" aria-label="生成局部编辑">
-          <svg><use href="#icon-spark"></use></svg>
-        </button>
-      </footer>
-    </section>
-  `;
-  document.body.appendChild(overlay);
-
-  overlay.addEventListener("pointerdown", (event) => {
-    event.stopPropagation();
-    if (event.target === overlay) closeDeepEditOverlay();
-  });
-  overlay.querySelectorAll("[data-deep-edit-tool]").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.deepEdit.tool = button.dataset.deepEditTool || "box";
-      renderDeepEditOverlay();
-    });
-  });
-  overlay.querySelector("[data-deep-edit-action='clear']").addEventListener("click", () => {
-    state.deepEdit.selection = null;
-    state.deepEdit.strokes = [];
-    state.deepEdit.activeStroke = null;
-    drawDeepEditCanvas();
-    renderDeepEditOverlay();
-  });
-  overlay.querySelector("[data-deep-edit-action='cancel']").addEventListener("click", closeDeepEditOverlay);
-  overlay.querySelector("[data-deep-edit-action='submit']").addEventListener("click", () => {
-    submitDeepEdit().catch((error) => toast(error.message));
-  });
-  const prompt = overlay.querySelector("[data-deep-edit-prompt]");
-  prompt.addEventListener("input", () => {
-    state.deepEdit.prompt = prompt.value;
-  });
-  const canvas = overlay.querySelector("[data-deep-edit-canvas]");
-  canvas.addEventListener("pointerdown", startDeepEditPointer);
-  canvas.addEventListener("pointermove", moveDeepEditPointer);
-  canvas.addEventListener("pointerup", endDeepEditPointer);
-  canvas.addEventListener("pointercancel", endDeepEditPointer);
-  return overlay;
-}
-
-async function openDeepEdit(selected, { focusTarget = "prompt" } = {}) {
-  if (!selected?.url) return;
-  const outputItem = findOutputItem(selected.outputId) || getOutputItems().find((item) => item.url === selected.url) || null;
-  state.deepEdit = {
-    ...state.deepEdit,
-    open: true,
-    tool: "box",
-    selectedImage: selected,
-    outputItem,
-    image: null,
-    imageBox: null,
-    selection: null,
-    strokes: [],
-    activeStroke: null,
-    dragStart: null,
-    prompt: "",
-    busy: false
-  };
-  const overlay = ensureDeepEditOverlay();
-  rememberOverlayFocus(overlay);
-  overlay.hidden = false;
-  syncOverlayOpenClass();
-  renderDeepEditOverlay();
-  focusOverlayControl(overlay, focusTarget === "canvas" ? "[data-deep-edit-canvas]" : "[data-deep-edit-prompt]");
-  try {
-    state.deepEdit.image = await loadImage(selected.url);
-    drawDeepEditCanvas();
-  } catch {
-    closeDeepEditOverlay();
-    toast("无法载入这张图片进行深度编辑");
-  }
-}
-
-function closeDeepEditOverlay() {
-  const overlay = document.getElementById("deepEditOverlay");
-  if (!overlay) return;
-  const wasOpen = !overlay.hidden;
-  overlay.hidden = true;
-  state.deepEdit.open = false;
-  state.deepEdit.image = null;
-  state.deepEdit.imageBox = null;
-  state.deepEdit.activeStroke = null;
-  state.deepEdit.dragStart = null;
-  if (wasOpen) restoreOverlayFocus(overlay);
-  syncOverlayOpenClass();
-}
-
-function renderDeepEditOverlay() {
-  const overlay = ensureDeepEditOverlay();
-  const selected = state.deepEdit.selectedImage;
-  overlay.querySelector("[data-deep-edit-title]").textContent = selected?.title || "选中图片";
-  overlay.querySelectorAll("[data-deep-edit-tool]").forEach((button) => {
-    const active = button.dataset.deepEditTool === state.deepEdit.tool;
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-pressed", String(active));
-  });
-  const prompt = overlay.querySelector("[data-deep-edit-prompt]");
-  if (document.activeElement !== prompt) prompt.value = state.deepEdit.prompt || "";
-  const submit = overlay.querySelector("[data-deep-edit-action='submit']");
-  submit.disabled = state.deepEdit.busy;
-  submit.title = state.deepEdit.busy ? "生成中" : "生成局部编辑";
-  submit.setAttribute("aria-label", submit.title);
-  submit.innerHTML = state.deepEdit.busy
-    ? `<span class="icon-busy-dot" aria-hidden="true"></span>`
-    : `<svg><use href="#icon-spark"></use></svg>`;
-  const hint = overlay.querySelector("[data-deep-edit-hint]");
-  const markCount = (state.deepEdit.selection ? 1 : 0) + state.deepEdit.strokes.length;
-  hint.textContent = markCount
-    ? state.deepEdit.tool === "brush"
-      ? "已记录涂鸦区域，可继续补充修改要求"
-      : "已记录框选区域，可继续补充修改要求"
-    : "在图上框选或涂鸦需要修改的区域";
-}
-
-function drawDeepEditCanvas() {
-  const overlay = ensureDeepEditOverlay();
-  const canvas = overlay.querySelector("[data-deep-edit-canvas]");
-  const ctx = canvas.getContext("2d");
-  const rect = canvas.getBoundingClientRect();
-  const dpr = window.devicePixelRatio || 1;
-  const width = Math.max(360, Math.round(rect.width * dpr));
-  const height = Math.max(300, Math.round(rect.height * dpr));
-  if (canvas.width !== width || canvas.height !== height) {
-    canvas.width = width;
-    canvas.height = height;
-  }
-  ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = "#10100f";
-  ctx.fillRect(0, 0, width, height);
-  const image = state.deepEdit.image;
-  if (!image) return;
-  const scale = Math.min(width / image.naturalWidth, height / image.naturalHeight);
-  const drawWidth = image.naturalWidth * scale;
-  const drawHeight = image.naturalHeight * scale;
-  const dx = (width - drawWidth) / 2;
-  const dy = (height - drawHeight) / 2;
-  state.deepEdit.imageBox = { dx, dy, drawWidth, drawHeight, width, height };
-  ctx.drawImage(image, dx, dy, drawWidth, drawHeight);
-  ctx.fillStyle = "rgba(0, 0, 0, 0.18)";
-  ctx.fillRect(dx, dy, drawWidth, drawHeight);
-
-  if (state.deepEdit.selection) {
-    const { x, y, width: sw, height: sh } = state.deepEdit.selection;
-    const px = dx + x * drawWidth;
-    const py = dy + y * drawHeight;
-    const pw = sw * drawWidth;
-    const ph = sh * drawHeight;
-    ctx.fillStyle = "rgba(214, 180, 87, 0.24)";
-    ctx.strokeStyle = "#d6b457";
-    ctx.lineWidth = 2 * dpr;
-    ctx.fillRect(px, py, pw, ph);
-    ctx.strokeRect(px, py, pw, ph);
-  }
-
-  const strokes = state.deepEdit.activeStroke
-    ? [...state.deepEdit.strokes, state.deepEdit.activeStroke]
-    : state.deepEdit.strokes;
-  strokes.forEach((stroke) => {
-    if (!stroke.points?.length) return;
-    ctx.beginPath();
-    stroke.points.forEach((point, index) => {
-      const px = dx + point.x * drawWidth;
-      const py = dy + point.y * drawHeight;
-      if (index === 0) ctx.moveTo(px, py);
-      else ctx.lineTo(px, py);
-    });
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.strokeStyle = "rgba(74, 167, 255, 0.88)";
-    ctx.lineWidth = 12 * dpr;
-    ctx.stroke();
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.72)";
-    ctx.lineWidth = 3 * dpr;
-    ctx.stroke();
-  });
-}
-
-function deepEditCanvasPoint(event) {
-  const canvas = ensureDeepEditOverlay().querySelector("[data-deep-edit-canvas]");
-  const rect = canvas.getBoundingClientRect();
-  const dpr = window.devicePixelRatio || 1;
-  return {
-    x: (event.clientX - rect.left) * dpr,
-    y: (event.clientY - rect.top) * dpr
-  };
-}
-
-function normalizeDeepEditPoint(point) {
-  const box = state.deepEdit.imageBox;
-  if (!box) return null;
-  const x = clamp((point.x - box.dx) / box.drawWidth, 0, 1);
-  const y = clamp((point.y - box.dy) / box.drawHeight, 0, 1);
-  return { x: round4(x), y: round4(y) };
-}
-
-function updateDeepEditBoxSelection(from, to) {
-  const box = state.deepEdit.imageBox;
-  if (!box) return;
-  const x1 = clamp(Math.min(from.x, to.x), box.dx, box.dx + box.drawWidth);
-  const y1 = clamp(Math.min(from.y, to.y), box.dy, box.dy + box.drawHeight);
-  const x2 = clamp(Math.max(from.x, to.x), box.dx, box.dx + box.drawWidth);
-  const y2 = clamp(Math.max(from.y, to.y), box.dy, box.dy + box.drawHeight);
-  const width = x2 - x1;
-  const height = y2 - y1;
-  state.deepEdit.selection = width < 8 || height < 8
-    ? null
-    : {
-        x: round4((x1 - box.dx) / box.drawWidth),
-        y: round4((y1 - box.dy) / box.drawHeight),
-        width: round4(width / box.drawWidth),
-        height: round4(height / box.drawHeight)
-      };
-  drawDeepEditCanvas();
-}
-
-function startDeepEditPointer(event) {
-  if (!state.deepEdit.open || !state.deepEdit.imageBox || state.deepEdit.busy) return;
-  event.preventDefault();
-  event.stopPropagation();
-  const canvas = event.currentTarget;
-  canvas.setPointerCapture(event.pointerId);
-  const point = deepEditCanvasPoint(event);
-  if (state.deepEdit.tool === "brush") {
-    const normalized = normalizeDeepEditPoint(point);
-    if (!normalized) return;
-    state.deepEdit.activeStroke = { points: [normalized] };
-  } else {
-    state.deepEdit.dragStart = point;
-    updateDeepEditBoxSelection(point, point);
-  }
-}
-
-function moveDeepEditPointer(event) {
-  if (!state.deepEdit.open || state.deepEdit.busy) return;
-  if (!state.deepEdit.activeStroke && !state.deepEdit.dragStart) return;
-  event.preventDefault();
-  event.stopPropagation();
-  const point = deepEditCanvasPoint(event);
-  if (state.deepEdit.tool === "brush" && state.deepEdit.activeStroke) {
-    const normalized = normalizeDeepEditPoint(point);
-    if (normalized) {
-      const points = state.deepEdit.activeStroke.points;
-      const last = points[points.length - 1];
-      if (!last || Math.hypot(normalized.x - last.x, normalized.y - last.y) > 0.004) {
-        points.push(normalized);
-      }
-    }
-    drawDeepEditCanvas();
-    return;
-  }
-  if (state.deepEdit.dragStart) updateDeepEditBoxSelection(state.deepEdit.dragStart, point);
-}
-
-function endDeepEditPointer(event) {
-  if (!state.deepEdit.open) return;
-  event.preventDefault();
-  event.stopPropagation();
-  if (state.deepEdit.tool === "brush" && state.deepEdit.activeStroke) {
-    if (state.deepEdit.activeStroke.points.length > 1) {
-      state.deepEdit.strokes.push(state.deepEdit.activeStroke);
-    }
-    state.deepEdit.activeStroke = null;
-  }
-  if (state.deepEdit.dragStart) {
-    updateDeepEditBoxSelection(state.deepEdit.dragStart, deepEditCanvasPoint(event));
-    state.deepEdit.dragStart = null;
-  }
-  drawDeepEditCanvas();
-  renderDeepEditOverlay();
-}
-
-function deepEditStrokeBounds() {
-  const points = state.deepEdit.strokes.flatMap((stroke) => stroke.points || []);
-  if (!points.length) return null;
-  const minX = Math.min(...points.map((point) => point.x));
-  const minY = Math.min(...points.map((point) => point.y));
-  const maxX = Math.max(...points.map((point) => point.x));
-  const maxY = Math.max(...points.map((point) => point.y));
-  const padding = 0.025;
-  return {
-    x: round4(clamp(minX - padding, 0, 1)),
-    y: round4(clamp(minY - padding, 0, 1)),
-    width: round4(clamp(maxX - minX + padding * 2, 0.01, 1)),
-    height: round4(clamp(maxY - minY + padding * 2, 0.01, 1))
-  };
-}
-
-function deepEditSelectionSummary() {
-  if (state.deepEdit.selection) {
-    const s = state.deepEdit.selection;
-    return `框选区域：x=${s.x}, y=${s.y}, width=${s.width}, height=${s.height}`;
-  }
-  if (state.deepEdit.strokes.length) {
-    const bounds = deepEditStrokeBounds();
-    return `涂鸦区域：${state.deepEdit.strokes.length} 条笔迹；近似包围盒 x=${bounds.x}, y=${bounds.y}, width=${bounds.width}, height=${bounds.height}`;
-  }
-  return "";
-}
-
-async function submitDeepEdit() {
-  const prompt = String(state.deepEdit.prompt || "").trim();
-  if (!prompt) {
-    toast("请先写清楚选中区域要怎么调整");
-    return;
-  }
-  const selection = state.deepEdit.selection || deepEditStrokeBounds();
-  if (!selection) {
-    toast("请先在图上框选或涂鸦需要修改的区域");
-    return;
-  }
-  const selected = state.deepEdit.selectedImage;
-  const outputItem = state.deepEdit.outputItem;
-  const primaryImage = await imageSourceToPrimaryImage(selected);
-  primaryImage.id = outputItem?.id || selected.id || `deep-edit-${Date.now()}`;
-  primaryImage.parentImageId = outputItem?.id || selected.id || "";
-  primaryImage.parentNodeId = outputItem?.nodeId || selected.id || "";
-  primaryImage.workflowId = outputItem?.workflowId || "";
-  primaryImage.sourceType = "deep-edit-source";
-  primaryImage.inputAnalysis = outputItem
-    ? inputTypeForGeneratedMode(outputItem.stepMode || outputItem.mode)
-    : null;
-
-  const beforeCount = state.renders.length;
-  state.deepEdit.busy = true;
-  renderDeepEditOverlay();
-  try {
-    await renderFromImages({
-      mode: "detail",
-      primaryImage,
-      selection,
-      count: 1,
-      title: "深度编辑结果",
-      parentImageId: primaryImage.parentImageId,
-      parentNodeId: primaryImage.parentNodeId,
-      workflowId: primaryImage.workflowId,
-      inputAnalysis: primaryImage.inputAnalysis,
-      userPromptOverride: prompt,
-      intent: [
-        `深度编辑画布图片：${selected.title || "选中图片"}`,
-        "编辑方式：局部 P 图式编辑。",
-        deepEditSelectionSummary(),
-        "硬性约束：只修改用户框选或涂鸦标记的区域；未选中的空间结构、透视、材料、灯光、家具位置、边缘关系和画面风格尽量保持不变。",
-        "如果选区边缘需要融合，请只做自然过渡，不要扩散到未选区域。",
-        `用户对选中区域的修改要求：${prompt}`
-      ].filter(Boolean).join("\n")
-    });
-    if (state.renders.length > beforeCount) {
-      const latestIndex = state.renders.length - 1;
-      const latest = state.renders[latestIndex];
-      state.canvas.selectedImage = {
-        id: `render${latestIndex}`,
-        outputId: latest.id,
-        url: latest.url,
-        title: latest.title,
-        kind: "Output",
-        caption: latest.intent
-      };
-    }
-    closeDeepEditOverlay();
-    renderWorkflowCanvas();
-  } finally {
-    state.deepEdit.busy = false;
-    renderDeepEditOverlay();
-  }
-}
-
-function ensureColorGradeOverlay() {
-  let overlay = document.getElementById("colorGradeOverlay");
-  if (overlay) return overlay;
-  overlay = document.createElement("div");
-  overlay.id = "colorGradeOverlay";
-  overlay.className = "color-grade-overlay";
-  overlay.hidden = true;
-  overlay.setAttribute("aria-hidden", "true");
-  overlay.innerHTML = `
-    <section class="color-grade-dialog" role="dialog" aria-modal="true" aria-label="调色">
-      <header class="color-grade-head">
-        <div>
-          <span>本地调色</span>
-          <strong data-color-grade-title>选中图片</strong>
-        </div>
-        <div class="color-grade-head-actions">
-          ${uiIconButton({ className: "text-button", icon: "icon-refresh", label: "重置调色", attrs: `data-color-grade-action="reset"` })}
-          <button class="icon-button icon-only" type="button" data-color-grade-action="cancel" title="关闭" aria-label="关闭">
-            <svg><use href="#icon-close"></use></svg>
-          </button>
-        </div>
-      </header>
-      <div class="color-grade-tabs" role="tablist" aria-label="调色类别">
-        ${colorGradeTabs.map((tab) => `
-          <button type="button" data-color-grade-tab="${escapeAttr(tab.id)}" title="${escapeAttr(tab.label)}" aria-label="${escapeAttr(tab.label)}">
-            <svg><use href="#${tab.icon}"></use></svg>
-          </button>
-        `).join("")}
-      </div>
-      <div class="color-grade-stage">
-        <canvas data-color-grade-canvas></canvas>
-      </div>
-      <div class="color-grade-controls" data-color-grade-controls></div>
-      <footer class="color-grade-footer">
-        <span data-color-grade-status>调整参数后实时预览</span>
-        <button class="primary-button" type="button" data-color-grade-action="apply">
-          <svg><use href="#icon-spark"></use></svg>
-          应用调色
-        </button>
-      </footer>
-    </section>
-  `;
-  document.body.appendChild(overlay);
-  overlay.addEventListener("pointerdown", (event) => {
-    event.stopPropagation();
-    if (event.target === overlay) closeColorGradeOverlay();
-  });
-  overlay.querySelectorAll("[data-color-grade-tab]").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.colorGrade.tab = button.dataset.colorGradeTab || "light";
-      renderColorGradeOverlay();
-      drawColorGradeCanvas();
-    });
-  });
-  overlay.querySelector("[data-color-grade-action='reset']").addEventListener("click", () => {
-    state.colorGrade.adjustments = { ...defaultColorGradeAdjustments };
-    renderColorGradeOverlay();
-    drawColorGradeCanvas();
-  });
-  overlay.querySelector("[data-color-grade-action='cancel']").addEventListener("click", closeColorGradeOverlay);
-  overlay.querySelector("[data-color-grade-action='apply']").addEventListener("click", () => {
-    submitColorGrade().catch((error) => toast(error.message));
-  });
-  return overlay;
-}
-
-async function openPrimaryImageColorGrade() {
-  if (!state.primaryImage?.dataUrl) {
-    toast(modeConfig(state.mode).missing);
-    return;
-  }
-  await openColorGrade({
-    id: "source",
-    url: state.primaryImage.dataUrl,
-    title: state.primaryImage.name || "调色原图",
-    caption: "Primary"
-  });
-}
-
-async function openColorGrade(selected) {
-  if (!selected?.url) return;
-  const outputItem = findOutputItem(selected.outputId) || getOutputItems().find((item) => item.url === selected.url) || null;
-  state.colorGrade = {
-    ...state.colorGrade,
-    open: true,
-    tab: "light",
-    selectedImage: selected,
-    outputItem,
-    image: null,
-    adjustments: { ...defaultColorGradeAdjustments },
-    previewBusy: false,
-    busy: false
-  };
-  const overlay = ensureColorGradeOverlay();
-  rememberOverlayFocus(overlay);
-  overlay.hidden = false;
-  syncOverlayOpenClass();
-  renderColorGradeOverlay();
-  focusOverlayControl(overlay, "[data-color-grade-action='apply']");
-  try {
-    state.colorGrade.image = await loadImage(selected.url);
-    drawColorGradeCanvas();
-  } catch {
-    closeColorGradeOverlay();
-    toast("无法载入这张图片进行调色");
-  }
-}
-
-function closeColorGradeOverlay() {
-  const overlay = document.getElementById("colorGradeOverlay");
-  if (!overlay) return;
-  const wasOpen = !overlay.hidden;
-  overlay.hidden = true;
-  state.colorGrade.open = false;
-  state.colorGrade.image = null;
-  if (wasOpen) restoreOverlayFocus(overlay);
-  syncOverlayOpenClass();
-}
-
-function renderColorGradeOverlay() {
-  const overlay = ensureColorGradeOverlay();
-  const selected = state.colorGrade.selectedImage;
-  overlay.querySelector("[data-color-grade-title]").textContent = selected?.title || "选中图片";
-  overlay.querySelectorAll("[data-color-grade-tab]").forEach((button) => {
-    const active = button.dataset.colorGradeTab === state.colorGrade.tab;
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-selected", String(active));
-    button.setAttribute("aria-pressed", String(active));
-  });
-  const fields = colorGradeFields[state.colorGrade.tab] || colorGradeFields.light;
-  overlay.querySelector("[data-color-grade-controls]").innerHTML = fields.map((name) => {
-    const value = Number(state.colorGrade.adjustments[name] || 0);
-    return `
-      <label class="color-grade-slider">
-        <span>${escapeHtml(colorGradeFieldLabels[name] || name)}</span>
-        <strong data-color-grade-value="${escapeAttr(name)}">${escapeHtml(String(value))}</strong>
-        <input type="range" name="${escapeAttr(`color-grade-${name}`)}" min="-100" max="100" value="${escapeAttr(value)}" data-color-grade-range="${escapeAttr(name)}" aria-label="${escapeAttr(colorGradeFieldLabels[name] || name)}" />
-      </label>
-    `;
-  }).join("");
-  overlay.querySelectorAll("[data-color-grade-range]").forEach((input) => {
-    input.addEventListener("input", () => {
-      const key = input.dataset.colorGradeRange;
-      state.colorGrade.adjustments = {
-        ...normalizeColorGradeAdjustments(state.colorGrade.adjustments),
-        [key]: Math.round(clamp(Number(input.value) || 0, -100, 100))
-      };
-      const valueLabel = overlay.querySelector(`[data-color-grade-value="${key}"]`);
-      if (valueLabel) valueLabel.textContent = String(state.colorGrade.adjustments[key]);
-      drawColorGradeCanvas();
-    });
-  });
-  const apply = overlay.querySelector("[data-color-grade-action='apply']");
-  apply.disabled = state.colorGrade.busy || !state.colorGrade.image;
-  apply.innerHTML = state.colorGrade.busy
-    ? `<span class="icon-busy-dot" aria-hidden="true"></span>处理中`
-    : `<svg><use href="#icon-spark"></use></svg>应用调色`;
-  overlay.querySelector("[data-color-grade-status]").textContent = state.colorGrade.busy
-    ? "正在输出调色结果"
-    : "本地算法实时预览，不消耗模型生成";
-}
-
-function drawColorGradeCanvas() {
-  const overlay = ensureColorGradeOverlay();
-  const canvas = overlay.querySelector("[data-color-grade-canvas]");
-  const image = state.colorGrade.image;
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  const rect = canvas.getBoundingClientRect();
-  const dpr = window.devicePixelRatio || 1;
-  const width = Math.max(360, Math.round(rect.width * dpr));
-  const height = Math.max(260, Math.round(rect.height * dpr));
-  if (canvas.width !== width || canvas.height !== height) {
-    canvas.width = width;
-    canvas.height = height;
-  }
-  ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = "#10100f";
-  ctx.fillRect(0, 0, width, height);
-  if (!image) return;
-  const scale = Math.min(width / image.naturalWidth, height / image.naturalHeight);
-  const drawWidth = Math.max(1, Math.round(image.naturalWidth * scale));
-  const drawHeight = Math.max(1, Math.round(image.naturalHeight * scale));
-  const dx = Math.round((width - drawWidth) / 2);
-  const dy = Math.round((height - drawHeight) / 2);
-  const preview = document.createElement("canvas");
-  preview.width = drawWidth;
-  preview.height = drawHeight;
-  const previewCtx = preview.getContext("2d", { willReadFrequently: true });
-  previewCtx.imageSmoothingEnabled = true;
-  previewCtx.imageSmoothingQuality = "high";
-  previewCtx.drawImage(image, 0, 0, drawWidth, drawHeight);
-  const imageData = previewCtx.getImageData(0, 0, drawWidth, drawHeight);
-  applyColorGradeToImageData(imageData, drawWidth, drawHeight, state.colorGrade.adjustments);
-  previewCtx.putImageData(imageData, 0, 0);
-  ctx.drawImage(preview, dx, dy);
-}
-
-async function submitColorGrade() {
-  const image = state.colorGrade.image;
-  const selected = state.colorGrade.selectedImage;
-  if (!image || !selected?.url) return;
-  state.colorGrade.busy = true;
-  renderColorGradeOverlay();
-  const startedAt = new Date();
-  startActiveTask({
-    type: "local-colorgrade",
-    label: "调色",
-    total: 1,
-    userPrompt: colorGradeSummaryText(state.colorGrade.adjustments),
-    referenceCount: activeReferenceImages().length
-  });
-  try {
-    const result = localColorGradeImage(image, selected.title || "color-grade", state.colorGrade.adjustments);
-    attachDerivedCanvasResultMetadata(result, selected, state.colorGrade.outputItem);
-    state.imageToolResults.push(result);
-    state.render = result;
-    state.renders.push(result);
-    state.canvas.selectedImage = {
-      id: `render${state.renders.length - 1}`,
-      outputId: result.id,
-      url: result.url,
-      title: result.title,
-      kind: "Output",
-      caption: result.intent
-    };
-    state.thinking = {
-      status: "done",
-      target: "调色",
-      text: `已完成本地调色：${colorGradeSummaryText(state.colorGrade.adjustments)}。${featureOptimizationNotes.colorgrade}`
-    };
-    updateActiveTask({
-      success: 1,
-      finalPrompt: result.intent,
-      outputs: [result],
-      event: "本地调色完成"
-    });
-    logClientTask("local-colorgrade", {
-      startedAt: startedAt.toISOString(),
-      durationMs: Date.now() - startedAt.getTime(),
-      input: { mode: "colorgrade", adjustments: normalizeColorGradeAdjustments(state.colorGrade.adjustments) },
-      result: { title: result.title, mode: result.mode, intent: result.intent }
-    });
-    renderGeneratedResult();
-    closeColorGradeOverlay();
-    renderWorkflowCanvas();
-    toast("调色完成");
-    completeActiveTask("success");
-  } catch (error) {
-    updateActiveTask({ status: "failed", failed: 1, error: error.message, event: `调色失败：${error.message}` });
-    completeActiveTask("failed");
-    throw error;
-  } finally {
-    state.colorGrade.busy = false;
-    renderColorGradeOverlay();
-  }
-}
-
-function ensureCutoutOverlay() {
-  let overlay = document.getElementById("cutoutOverlay");
-  if (overlay) return overlay;
-  overlay = document.createElement("div");
-  overlay.id = "cutoutOverlay";
-  overlay.className = "cutout-overlay";
-  overlay.hidden = true;
-  overlay.setAttribute("aria-hidden", "true");
-  overlay.innerHTML = `
-    <section class="cutout-dialog" role="dialog" aria-modal="true" aria-label="抠图">
-      <header class="cutout-head">
-        <div>
-          <span>智能抠图</span>
-          <strong data-cutout-title>选中图片</strong>
-        </div>
-        <button class="icon-button icon-only" type="button" data-cutout-action="cancel" title="关闭" aria-label="关闭">
-          <svg><use href="#icon-close"></use></svg>
-        </button>
-      </header>
-      <div class="cutout-tools">
-        ${uiIconButton({ className: "secondary-button", icon: "icon-refresh", label: "重新识别图层", attrs: `data-cutout-action="reanalyze"` })}
-        <span data-cutout-status>正在识别候选图层</span>
-      </div>
-      <div class="cutout-stage">
-        <canvas data-cutout-canvas></canvas>
-        <span>移动鼠标预览淡蓝色候选区，单击选中，再次单击或点按钮抠图</span>
-      </div>
-      <footer class="cutout-footer">
-        <span data-cutout-count>0 个候选区域</span>
-        <button class="primary-button" type="button" data-cutout-action="apply">
-          <svg><use href="#icon-box-select"></use></svg>
-          抠出选区
-        </button>
-      </footer>
-    </section>
-  `;
-  document.body.appendChild(overlay);
-  overlay.addEventListener("pointerdown", (event) => {
-    event.stopPropagation();
-    if (event.target === overlay) closeCutoutOverlay();
-  });
-  overlay.querySelector("[data-cutout-action='cancel']").addEventListener("click", closeCutoutOverlay);
-  overlay.querySelector("[data-cutout-action='reanalyze']").addEventListener("click", () => {
-    analyzeCurrentCutoutImage({ force: true }).catch((error) => toast(error.message));
-  });
-  overlay.querySelector("[data-cutout-action='apply']").addEventListener("click", () => {
-    submitCutout().catch((error) => toast(error.message));
-  });
-  const canvas = overlay.querySelector("[data-cutout-canvas]");
-  canvas.addEventListener("pointermove", updateCutoutHover);
-  canvas.addEventListener("pointerleave", () => {
-    state.cutout.hoverCandidateId = "";
-    drawCutoutCanvas();
-  });
-  canvas.addEventListener("click", handleCutoutCanvasClick);
-  return overlay;
-}
-
-async function openPrimaryImageCutout() {
-  if (!state.primaryImage?.dataUrl) {
-    toast(modeConfig(state.mode).missing);
-    return;
-  }
-  await openCutout({
-    id: "source",
-    url: state.primaryImage.dataUrl,
-    title: state.primaryImage.name || "抠图原图",
-    caption: "Primary"
-  });
-}
-
-async function openCutout(selected) {
-  if (!selected?.url) return;
-  const outputItem = findOutputItem(selected.outputId) || getOutputItems().find((item) => item.url === selected.url) || null;
-  state.cutout = {
-    ...state.cutout,
-    open: true,
-    selectedImage: selected,
-    outputItem,
-    image: null,
-    imageBox: null,
-    analysis: null,
-    aiAnalysis: null,
-    analysisMethod: "",
-    analysisError: "",
-    selectedCandidateId: "",
-    hoverCandidateId: "",
-    busy: false,
-    analyzing: true
-  };
-  const overlay = ensureCutoutOverlay();
-  rememberOverlayFocus(overlay);
-  overlay.hidden = false;
-  syncOverlayOpenClass();
-  renderCutoutOverlay();
-  focusOverlayControl(overlay, "[data-cutout-action='apply']");
-  try {
-    state.cutout.image = await loadImage(selected.url);
-    drawCutoutCanvas();
-    await analyzeCurrentCutoutImage({ force: true });
-  } catch {
-    closeCutoutOverlay();
-    toast("无法载入这张图片进行抠图");
-  }
-}
-
-function closeCutoutOverlay() {
-  const overlay = document.getElementById("cutoutOverlay");
-  if (!overlay) return;
-  const wasOpen = !overlay.hidden;
-  overlay.hidden = true;
-  state.cutout.open = false;
-  state.cutout.image = null;
-  state.cutout.imageBox = null;
-  state.cutout.analysis = null;
-  state.cutout.aiAnalysis = null;
-  state.cutout.analysisMethod = "";
-  state.cutout.analysisError = "";
-  state.cutout.selectedCandidateId = "";
-  state.cutout.hoverCandidateId = "";
-  if (wasOpen) restoreOverlayFocus(overlay);
-  syncOverlayOpenClass();
-}
-
-function renderCutoutOverlay() {
-  const overlay = ensureCutoutOverlay();
-  const selected = state.cutout.selectedImage;
-  const candidates = state.cutout.analysis?.candidates || [];
-  const selectedCandidate = selectedCutoutCandidate();
-  overlay.querySelector("[data-cutout-title]").textContent = selected?.title || "选中图片";
-  const method = state.cutout.analysisMethod || "";
-  overlay.querySelector("[data-cutout-status]").textContent = state.cutout.analyzing
-    ? "正在调用 AI 视觉识别主体轮廓"
-    : selectedCandidate
-      ? method === "ai"
-        ? "AI 已描绘主体轮廓，单击同一区域或点按钮确认抠图"
-        : state.cutout.analysisError
-          ? "AI 识别暂不可用，已回退本地候选区域"
-          : "已选中候选区域，再次点击同一区域可直接抠图"
-      : candidates.length
-        ? method === "ai"
-          ? "AI 已识别主体轮廓，单击淡蓝区域确认"
-          : "点击图中淡蓝候选区域进行选择"
-        : state.cutout.analysisError
-          ? `AI 识别失败，已回退本地算法：${state.cutout.analysisError}`
-          : "未识别到明显主体，可尝试重新识别";
-  overlay.querySelector("[data-cutout-count]").textContent = method === "ai"
-    ? `AI 主体轮廓 · ${candidates.length} 个候选区域`
-    : `${candidates.length} 个候选区域`;
-  const apply = overlay.querySelector("[data-cutout-action='apply']");
-  apply.disabled = state.cutout.busy || state.cutout.analyzing || !selectedCandidate;
-  apply.innerHTML = state.cutout.busy
-    ? `<span class="icon-busy-dot" aria-hidden="true"></span>抠图中`
-    : `<svg><use href="#icon-box-select"></use></svg>抠出选区`;
-}
-
-async function requestAiCutoutAnalysis(selected, image) {
-  const primary = await imageSourceToPrimaryImage(selected);
-  const sourceDataUrl = await optimizeImageDataUrl(primary.dataUrl, {
-    maxEdge: 1400,
-    targetBytes: IMAGE_UPLOAD_PRIMARY_TARGET_BYTES,
-    cacheLabel: "ai-cutout-analysis"
-  });
-  const payload = {
-    mode: "cutout",
-    title: selected?.title || "抠图原图",
-    imageWidth: image?.naturalWidth || image?.width || 0,
-    imageHeight: image?.naturalHeight || image?.height || 0,
-    primaryImage: {
-      name: primary.name,
-      type: primary.type,
-      dataUrl: sourceDataUrl
-    }
-  };
-  const data = await requestJson(clientScopedApiPath("/api/ai-cutout-analysis"), {
-    method: "POST",
-    body: JSON.stringify(payload)
-  });
-  return data.analysis;
-}
-
-async function analyzeCurrentCutoutImage({ force = false } = {}) {
-  if (!state.cutout.image) return;
-  if (state.cutout.analysis && !force) return;
-  state.cutout.analyzing = true;
-  state.cutout.analysisError = "";
-  renderCutoutOverlay();
-  await new Promise((resolve) => requestAnimationFrame(resolve));
-  try {
-    const aiAnalysis = await requestAiCutoutAnalysis(state.cutout.selectedImage, state.cutout.image);
-    state.cutout.aiAnalysis = aiAnalysis;
-    state.cutout.analysis = buildAiGuidedCutoutAnalysis(state.cutout.image, aiAnalysis);
-    state.cutout.analysisMethod = "ai";
-    state.cutout.selectedCandidateId = state.cutout.analysis.candidates[0]?.id || "";
-    state.cutout.hoverCandidateId = "";
-  } catch (error) {
-    state.cutout.aiAnalysis = null;
-    state.cutout.analysis = buildCutoutAnalysis(state.cutout.image);
-    state.cutout.analysisMethod = "local";
-    state.cutout.analysisError = error.message;
-    state.cutout.selectedCandidateId = state.cutout.analysis.candidates[0]?.id || "";
-    state.cutout.hoverCandidateId = "";
-  }
-  state.cutout.analyzing = false;
-  renderCutoutOverlay();
-  drawCutoutCanvas();
-}
-
-function selectedCutoutCandidate() {
-  const id = state.cutout.selectedCandidateId;
-  return (state.cutout.analysis?.candidates || []).find((candidate) => candidate.id === id) || null;
-}
-
-function hoverCutoutCandidate() {
-  const id = state.cutout.hoverCandidateId;
-  return (state.cutout.analysis?.candidates || []).find((candidate) => candidate.id === id) || null;
-}
-
-function drawCutoutCanvas() {
-  const overlay = ensureCutoutOverlay();
-  const canvas = overlay.querySelector("[data-cutout-canvas]");
-  const image = state.cutout.image;
-  const ctx = canvas.getContext("2d");
-  const rect = canvas.getBoundingClientRect();
-  const dpr = window.devicePixelRatio || 1;
-  const width = Math.max(360, Math.round(rect.width * dpr));
-  const height = Math.max(300, Math.round(rect.height * dpr));
-  if (canvas.width !== width || canvas.height !== height) {
-    canvas.width = width;
-    canvas.height = height;
-  }
-  ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = "#10100f";
-  ctx.fillRect(0, 0, width, height);
-  if (!image) return;
-  const scale = Math.min(width / image.naturalWidth, height / image.naturalHeight);
-  const drawWidth = image.naturalWidth * scale;
-  const drawHeight = image.naturalHeight * scale;
-  const dx = (width - drawWidth) / 2;
-  const dy = (height - drawHeight) / 2;
-  state.cutout.imageBox = { dx, dy, drawWidth, drawHeight, width, height };
-  ctx.drawImage(image, dx, dy, drawWidth, drawHeight);
-  const hover = hoverCutoutCandidate();
-  const selected = selectedCutoutCandidate();
-  if (hover && hover !== selected) drawCutoutMaskOverlay(ctx, hover, state.cutout.analysis, { dx, dy, drawWidth, drawHeight }, "hover");
-  if (selected) drawCutoutMaskOverlay(ctx, selected, state.cutout.analysis, { dx, dy, drawWidth, drawHeight }, "selected");
-}
-
-function drawCutoutMaskOverlay(ctx, candidate, analysis, box, mode) {
-  if (!candidate || !analysis) return;
-  const maskCanvas = document.createElement("canvas");
-  maskCanvas.width = analysis.width;
-  maskCanvas.height = analysis.height;
-  const maskCtx = maskCanvas.getContext("2d");
-  const maskData = maskCtx.createImageData(analysis.width, analysis.height);
-  const selected = mode === "selected";
-  for (let i = 0; i < candidate.mask.length; i++) {
-    if (!candidate.mask[i]) continue;
-    const idx = i * 4;
-    maskData.data[idx] = selected ? 150 : 235;
-    maskData.data[idx + 1] = selected ? 210 : 245;
-    maskData.data[idx + 2] = 255;
-    maskData.data[idx + 3] = selected ? 108 : 76;
-  }
-  maskCtx.putImageData(maskData, 0, 0);
-  ctx.drawImage(maskCanvas, box.dx, box.dy, box.drawWidth, box.drawHeight);
-  const sx = box.drawWidth / analysis.width;
-  const sy = box.drawHeight / analysis.height;
-  ctx.strokeStyle = selected ? "rgba(169, 222, 255, 0.92)" : "rgba(255, 255, 255, 0.72)";
-  ctx.lineWidth = 2 * (window.devicePixelRatio || 1);
-  ctx.strokeRect(
-    box.dx + candidate.bounds.x * sx,
-    box.dy + candidate.bounds.y * sy,
-    candidate.bounds.width * sx,
-    candidate.bounds.height * sy
-  );
-}
-
-function cutoutCanvasPoint(event) {
-  const box = state.cutout.imageBox;
-  if (!box || !state.cutout.analysis) return null;
-  const canvas = event.currentTarget;
-  const rect = canvas.getBoundingClientRect();
-  const dpr = window.devicePixelRatio || 1;
-  const px = (event.clientX - rect.left) * dpr;
-  const py = (event.clientY - rect.top) * dpr;
-  if (px < box.dx || py < box.dy || px > box.dx + box.drawWidth || py > box.dy + box.drawHeight) return null;
-  const x = clamp(Math.floor(((px - box.dx) / box.drawWidth) * state.cutout.analysis.width), 0, state.cutout.analysis.width - 1);
-  const y = clamp(Math.floor(((py - box.dy) / box.drawHeight) * state.cutout.analysis.height), 0, state.cutout.analysis.height - 1);
-  return { x, y };
-}
-
-function cutoutCandidateAtPoint(point) {
-  if (!point || !state.cutout.analysis) return null;
-  const index = point.y * state.cutout.analysis.width + point.x;
-  return state.cutout.analysis.candidates
-    .filter((candidate) => candidate.mask[index])
-    .sort((a, b) => a.area - b.area)[0] || null;
-}
-
-function updateCutoutHover(event) {
-  if (state.cutout.busy || state.cutout.analyzing) return;
-  const candidate = cutoutCandidateAtPoint(cutoutCanvasPoint(event));
-  const nextId = candidate?.id || "";
-  if (nextId === state.cutout.hoverCandidateId) return;
-  state.cutout.hoverCandidateId = nextId;
-  drawCutoutCanvas();
-}
-
-function handleCutoutCanvasClick(event) {
-  if (state.cutout.busy || state.cutout.analyzing) return;
-  const candidate = cutoutCandidateAtPoint(cutoutCanvasPoint(event));
-  if (!candidate) {
-    toast("这里没有识别到独立候选区域，请换主体位置点击");
-    return;
-  }
-  if (state.cutout.selectedCandidateId === candidate.id) {
-    submitCutout().catch((error) => toast(error.message));
-    return;
-  }
-  state.cutout.selectedCandidateId = candidate.id;
-  renderCutoutOverlay();
-  drawCutoutCanvas();
-}
-
-async function submitCutout() {
-  const image = state.cutout.image;
-  const selected = state.cutout.selectedImage;
-  const candidate = selectedCutoutCandidate();
-  if (!image || !selected?.url || !candidate || !state.cutout.analysis) {
-    toast("请先选择要抠出的淡蓝区域");
-    return;
-  }
-  state.cutout.busy = true;
-  renderCutoutOverlay();
-  const startedAt = new Date();
-  const usedAiVision = state.cutout.analysisMethod === "ai";
-  startActiveTask({
-    type: usedAiVision ? "ai-cutout" : "local-cutout",
-    label: "抠图",
-    total: 1,
-    userPrompt: usedAiVision ? "AI 视觉主体轮廓抠图" : "智能候选图层抠图",
-    referenceCount: activeReferenceImages().length
-  });
-  try {
-    const result = localCutoutImage(image, selected.title || "cutout", candidate, state.cutout.analysis);
-    attachDerivedCanvasResultMetadata(result, selected, state.cutout.outputItem);
-    state.imageToolResults.push(result);
-    state.render = result;
-    state.renders.push(result);
-    state.canvas.selectedImage = {
-      id: `render${state.renders.length - 1}`,
-      outputId: result.id,
-      url: result.url,
-      title: result.title,
-      kind: "Output",
-      caption: result.intent
-    };
-    state.thinking = {
-      status: "done",
-      target: "抠图",
-      text: `已完成${usedAiVision ? "AI 视觉识别" : "本地"}抠图：识别并抠出 ${Math.round(candidate.area / Math.max(1, state.cutout.analysis.width * state.cutout.analysis.height) * 100)}% 的主体区域。${featureOptimizationNotes.cutout}`
-    };
-    updateActiveTask({
-      success: 1,
-      finalPrompt: result.intent,
-      outputs: [result],
-      event: usedAiVision ? "AI 视觉抠图完成" : "本地抠图完成"
-    });
-    logClientTask(usedAiVision ? "ai-cutout" : "local-cutout", {
-      startedAt: startedAt.toISOString(),
-      durationMs: Date.now() - startedAt.getTime(),
-      input: { mode: "cutout", candidateId: candidate.id, analysisMethod: state.cutout.analysisMethod },
-      result: { title: result.title, mode: result.mode, intent: result.intent }
-    });
-    renderGeneratedResult();
-    closeCutoutOverlay();
-    renderWorkflowCanvas();
-    toast("抠图完成");
-    completeActiveTask("success");
-  } catch (error) {
-    updateActiveTask({ status: "failed", failed: 1, error: error.message, event: `抠图失败：${error.message}` });
-    completeActiveTask("failed");
-    throw error;
-  } finally {
-    state.cutout.busy = false;
-    renderCutoutOverlay();
-  }
-}
-
-function cropAspectLabel(aspect = "source") {
-  const option = cropAspectOptions.find((item) => item.value === aspect);
-  return option?.label || "原图";
-}
-
-function cropAspectRatio(aspect = "source", image = null) {
-  if (aspect === "source") {
-    const width = Number(image?.naturalWidth || image?.width || 1);
-    const height = Number(image?.naturalHeight || image?.height || 1);
-    return width / Math.max(1, height);
-  }
-  const match = String(aspect || "").match(/^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/);
-  if (!match) return null;
-  const width = Number(match[1]);
-  const height = Number(match[2]);
-  return width / Math.max(0.001, height);
-}
-
-function cropBoxCenter(box = {}) {
-  return {
-    x: Number(box.x || 0) + Number(box.width || 0) / 2,
-    y: Number(box.y || 0) + Number(box.height || 0) / 2
-  };
-}
-
-function cropBoxFromAspect(image, aspect = "source", center = null, coverage = 0.92) {
-  const imgW = Math.max(1, Number(image?.naturalWidth || image?.width || 1));
-  const imgH = Math.max(1, Number(image?.naturalHeight || image?.height || 1));
-  if (aspect === "source") {
-    return { x: 0, y: 0, width: imgW, height: imgH };
-  }
-  const ratio = cropAspectRatio(aspect, image);
-  if (!ratio || !Number.isFinite(ratio)) {
-    return { x: 0, y: 0, width: imgW, height: imgH };
-  }
-  let width = imgW * clamp(coverage, 0.08, 1);
-  let height = width / ratio;
-  if (height > imgH * coverage) {
-    height = imgH * clamp(coverage, 0.08, 1);
-    width = height * ratio;
-  }
-  width = clamp(width, 1, imgW);
-  height = clamp(height, 1, imgH);
-  const focus = center || { x: imgW / 2, y: imgH / 2 };
-  const maxX = Math.max(0, imgW - width);
-  const maxY = Math.max(0, imgH - height);
-  const x = clamp(focus.x - width / 2, 0, maxX);
-  const y = clamp(focus.y - height / 2, 0, maxY);
-  return { x, y, width, height };
-}
-
-function clampCropBox(box, image) {
-  const imgW = Math.max(1, Number(image?.naturalWidth || image?.width || 1));
-  const imgH = Math.max(1, Number(image?.naturalHeight || image?.height || 1));
-  const width = clamp(Number(box?.width || 1), 1, imgW);
-  const height = clamp(Number(box?.height || 1), 1, imgH);
-  const x = clamp(Number(box?.x || 0), 0, Math.max(0, imgW - width));
-  const y = clamp(Number(box?.y || 0), 0, Math.max(0, imgH - height));
-  return { x, y, width, height };
-}
-
-function cropCanvasPoint(event) {
-  const box = state.crop.imageBox;
-  if (!box || !state.crop.image) return null;
-  const canvas = event.currentTarget;
-  const rect = canvas.getBoundingClientRect();
-  const dpr = window.devicePixelRatio || 1;
-  const px = (event.clientX - rect.left) * dpr;
-  const py = (event.clientY - rect.top) * dpr;
-  if (px < box.dx || py < box.dy || px > box.dx + box.drawWidth || py > box.dy + box.drawHeight) return null;
-  const imgW = Math.max(1, Number(state.crop.image.naturalWidth || state.crop.image.width || 1));
-  const imgH = Math.max(1, Number(state.crop.image.naturalHeight || state.crop.image.height || 1));
-  return {
-    x: clamp(((px - box.dx) / box.drawWidth) * imgW, 0, imgW),
-    y: clamp(((py - box.dy) / box.drawHeight) * imgH, 0, imgH)
-  };
-}
-
-function cropPointInBox(point, box) {
-  return Boolean(point && box)
-    && point.x >= box.x && point.x <= box.x + box.width
-    && point.y >= box.y && point.y <= box.y + box.height;
-}
-
-function cropBoxToCanvasRect(box, imageBox, image) {
-  const imgW = Math.max(1, Number(image?.naturalWidth || image?.width || 1));
-  const imgH = Math.max(1, Number(image?.naturalHeight || image?.height || 1));
-  const scaleX = imageBox.drawWidth / imgW;
-  const scaleY = imageBox.drawHeight / imgH;
-  return {
-    x: imageBox.dx + box.x * scaleX,
-    y: imageBox.dy + box.y * scaleY,
-    width: box.width * scaleX,
-    height: box.height * scaleY
-  };
-}
-
-function ensureCropOverlay() {
-  let overlay = document.getElementById("cropOverlay");
-  if (overlay) return overlay;
-  overlay = document.createElement("div");
-  overlay.id = "cropOverlay";
-  overlay.className = "crop-overlay";
-  overlay.hidden = true;
-  overlay.setAttribute("aria-hidden", "true");
-  overlay.innerHTML = `
-    <section class="crop-dialog" role="dialog" aria-modal="true" aria-label="裁切">
-      <header class="crop-head">
-        <div>
-          <span>本地裁切</span>
-          <strong data-crop-title>选中图片</strong>
-        </div>
-        <div class="crop-head-actions">
-          ${uiIconButton({ className: "text-button", icon: "icon-refresh", label: "重置裁切框", attrs: `data-crop-action="reset"` })}
-          <button class="icon-button icon-only" type="button" data-crop-action="cancel" title="关闭" aria-label="关闭">
-            <svg><use href="#icon-close"></use></svg>
-          </button>
-        </div>
-      </header>
-      <div class="crop-tools">
-        <span data-crop-status>先选比例，再拖动裁切框调整构图</span>
-      </div>
-      <div class="aspect-grid crop-aspect-grid" role="tablist" aria-label="裁切比例">
-        ${cropAspectOptions.map((item) => `
-          <button type="button" data-crop-aspect="${escapeAttr(item.value)}" title="${escapeAttr(item.label)}" aria-label="${escapeAttr(item.label)}">${escapeHtml(item.label)}</button>
-        `).join("")}
-      </div>
-      <div class="crop-stage">
-        <canvas data-crop-canvas></canvas>
-        <span data-crop-hint>拖动裁切框改变位置，点比例按钮切换构图比例</span>
-      </div>
-      <footer class="crop-footer">
-        <span data-crop-summary>比例：原图</span>
-        <button class="primary-button" type="button" data-crop-action="apply">
-          <svg><use href="#icon-crop"></use></svg>
-          裁切图片
-        </button>
-      </footer>
-    </section>
-  `;
-  document.body.appendChild(overlay);
-  overlay.addEventListener("pointerdown", (event) => {
-    event.stopPropagation();
-    if (event.target === overlay) closeCropOverlay();
-  });
-  overlay.querySelectorAll("[data-crop-aspect]").forEach((button) => {
-    button.addEventListener("click", () => setCropAspect(button.dataset.cropAspect || "source"));
-  });
-  overlay.querySelector("[data-crop-action='reset']").addEventListener("click", () => {
-    resetCropBox();
-  });
-  overlay.querySelector("[data-crop-action='cancel']").addEventListener("click", closeCropOverlay);
-  overlay.querySelector("[data-crop-action='apply']").addEventListener("click", () => {
-    submitCrop().catch((error) => toast(error.message));
-  });
-  const canvas = overlay.querySelector("[data-crop-canvas]");
-  canvas.addEventListener("pointerdown", startCropPointer);
-  canvas.addEventListener("pointermove", moveCropPointer);
-  canvas.addEventListener("pointerup", endCropPointer);
-  canvas.addEventListener("pointercancel", endCropPointer);
-  return overlay;
-}
-
-async function openCrop(selected) {
-  if (!selected?.url) return;
-  const outputItem = findOutputItem(selected.outputId) || getOutputItems().find((item) => item.url === selected.url) || null;
-  state.crop = {
-    ...state.crop,
-    open: true,
-    selectedImage: selected,
-    outputItem,
-    image: null,
-    imageBox: null,
-    cropBox: null,
-    dragStart: null,
-    dragOffset: null,
-    busy: false,
-    aspect: state.crop.aspect || "source"
-  };
-  const overlay = ensureCropOverlay();
-  rememberOverlayFocus(overlay);
-  overlay.hidden = false;
-  syncOverlayOpenClass();
-  renderCropOverlay();
-  focusOverlayControl(overlay, "[data-crop-action='apply']");
-  try {
-    state.crop.image = await loadImage(selected.url);
-    state.crop.cropBox = cropBoxFromAspect(state.crop.image, state.crop.aspect);
-    drawCropCanvas();
-    renderCropOverlay();
-  } catch {
-    closeCropOverlay();
-    toast("无法载入这张图片进行裁切");
-  }
-}
-
-function closeCropOverlay() {
-  const overlay = document.getElementById("cropOverlay");
-  if (!overlay) return;
-  const wasOpen = !overlay.hidden;
-  overlay.hidden = true;
-  state.crop.open = false;
-  state.crop.image = null;
-  state.crop.imageBox = null;
-  state.crop.cropBox = null;
-  state.crop.dragStart = null;
-  state.crop.dragOffset = null;
-  if (wasOpen) restoreOverlayFocus(overlay);
-  syncOverlayOpenClass();
-}
-
-function setCropAspect(aspect) {
-  if (!state.crop.image) return;
-  state.crop.aspect = aspect || "source";
-  const center = state.crop.cropBox ? cropBoxCenter(state.crop.cropBox) : null;
-  state.crop.cropBox = cropBoxFromAspect(state.crop.image, state.crop.aspect, center);
-  renderCropOverlay();
-  drawCropCanvas();
-}
-
-function resetCropBox() {
-  if (!state.crop.image) return;
-  state.crop.cropBox = cropBoxFromAspect(state.crop.image, state.crop.aspect);
-  renderCropOverlay();
-  drawCropCanvas();
-}
-
-function renderCropOverlay() {
-  const overlay = ensureCropOverlay();
-  const selected = state.crop.selectedImage;
-  const busy = state.crop.busy;
-  overlay.querySelector("[data-crop-title]").textContent = selected?.title || "选中图片";
-  overlay.querySelectorAll("[data-crop-aspect]").forEach((button) => {
-    const active = button.dataset.cropAspect === state.crop.aspect;
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-selected", String(active));
-    button.setAttribute("aria-pressed", String(active));
-  });
-  const summary = overlay.querySelector("[data-crop-summary]");
-  summary.textContent = `比例：${cropAspectLabel(state.crop.aspect)}${state.crop.cropBox ? " · 可拖动裁切框" : ""}`;
-  const apply = overlay.querySelector("[data-crop-action='apply']");
-  apply.disabled = busy || !state.crop.image || !state.crop.cropBox;
-  apply.innerHTML = busy
-    ? `<span class="icon-busy-dot" aria-hidden="true"></span>裁切中`
-    : `<svg><use href="#icon-crop"></use></svg>裁切图片`;
-  overlay.querySelector("[data-crop-status]").textContent = busy
-    ? "正在输出裁切结果"
-    : "选好比例后拖动裁切框，再点击裁切图片";
-  overlay.querySelector("[data-crop-hint]").textContent = busy
-    ? "处理中，请稍候"
-    : "拖动裁切框改变位置，点比例按钮切换构图比例";
-}
-
-function drawCropCanvas() {
-  const overlay = ensureCropOverlay();
-  const canvas = overlay.querySelector("[data-crop-canvas]");
-  const image = state.crop.image;
-  const ctx = canvas.getContext("2d");
-  const rect = canvas.getBoundingClientRect();
-  const dpr = window.devicePixelRatio || 1;
-  const width = Math.max(360, Math.round(rect.width * dpr));
-  const height = Math.max(300, Math.round(rect.height * dpr));
-  if (canvas.width !== width || canvas.height !== height) {
-    canvas.width = width;
-    canvas.height = height;
-  }
-  ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = "#10100f";
-  ctx.fillRect(0, 0, width, height);
-  if (!image) return;
-  const scale = Math.min(width / image.naturalWidth, height / image.naturalHeight);
-  const drawWidth = image.naturalWidth * scale;
-  const drawHeight = image.naturalHeight * scale;
-  const dx = (width - drawWidth) / 2;
-  const dy = (height - drawHeight) / 2;
-  state.crop.imageBox = { dx, dy, drawWidth, drawHeight, width, height };
-  ctx.drawImage(image, dx, dy, drawWidth, drawHeight);
-  const box = state.crop.cropBox ? clampCropBox(state.crop.cropBox, image) : cropBoxFromAspect(image, state.crop.aspect);
-  state.crop.cropBox = box;
-  const rectBox = cropBoxToCanvasRect(box, state.crop.imageBox, image);
-
-  ctx.fillStyle = "rgba(0, 0, 0, 0.42)";
-  ctx.fillRect(dx, dy, drawWidth, drawHeight);
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(rectBox.x, rectBox.y, rectBox.width, rectBox.height);
-  ctx.clip();
-  ctx.drawImage(image, dx, dy, drawWidth, drawHeight);
-  ctx.restore();
-
-  ctx.strokeStyle = "rgba(214, 180, 87, 0.96)";
-  ctx.lineWidth = 2 * dpr;
-  ctx.strokeRect(rectBox.x, rectBox.y, rectBox.width, rectBox.height);
-  ctx.fillStyle = "rgba(214, 180, 87, 0.14)";
-  ctx.fillRect(rectBox.x, rectBox.y, rectBox.width, rectBox.height);
-
-  ctx.strokeStyle = "rgba(255, 255, 255, 0.28)";
-  ctx.lineWidth = 1 * dpr;
-  ctx.beginPath();
-  ctx.moveTo(rectBox.x + rectBox.width / 3, rectBox.y);
-  ctx.lineTo(rectBox.x + rectBox.width / 3, rectBox.y + rectBox.height);
-  ctx.moveTo(rectBox.x + rectBox.width * 2 / 3, rectBox.y);
-  ctx.lineTo(rectBox.x + rectBox.width * 2 / 3, rectBox.y + rectBox.height);
-  ctx.moveTo(rectBox.x, rectBox.y + rectBox.height / 3);
-  ctx.lineTo(rectBox.x + rectBox.width, rectBox.y + rectBox.height / 3);
-  ctx.moveTo(rectBox.x, rectBox.y + rectBox.height * 2 / 3);
-  ctx.lineTo(rectBox.x + rectBox.width, rectBox.y + rectBox.height * 2 / 3);
-  ctx.stroke();
-
-  ctx.fillStyle = "rgba(18, 18, 16, 0.88)";
-  ctx.font = `${Math.max(12, 12 * dpr)}px sans-serif`;
-  const label = cropAspectLabel(state.crop.aspect);
-  const labelWidth = ctx.measureText(label).width + 16 * dpr;
-  const labelX = clamp(rectBox.x, 0, width - labelWidth);
-  const labelY = clamp(rectBox.y - 26 * dpr, 0, height - 24 * dpr);
-  ctx.fillRect(labelX, labelY, labelWidth, 22 * dpr);
-  ctx.fillStyle = "#fff";
-  ctx.fillText(label, labelX + 8 * dpr, labelY + 16 * dpr);
-}
-
-function startCropPointer(event) {
-  if (!state.crop.open || !state.crop.imageBox || state.crop.busy) return;
-  event.preventDefault();
-  event.stopPropagation();
-  const point = cropCanvasPoint(event);
-  if (!point) return;
-  const canvas = event.currentTarget;
-  canvas.setPointerCapture(event.pointerId);
-  const box = state.crop.cropBox || cropBoxFromAspect(state.crop.image, state.crop.aspect);
-  if (!cropPointInBox(point, box)) {
-    state.crop.cropBox = cropBoxFromAspect(state.crop.image, state.crop.aspect, point);
-  }
-  const nextBox = state.crop.cropBox || box;
-  state.crop.dragStart = point;
-  state.crop.dragOffset = {
-    x: point.x - nextBox.x,
-    y: point.y - nextBox.y
-  };
-  drawCropCanvas();
-}
-
-function moveCropPointer(event) {
-  if (!state.crop.open || state.crop.busy || !state.crop.dragStart || !state.crop.dragOffset) return;
-  event.preventDefault();
-  event.stopPropagation();
-  const point = cropCanvasPoint(event);
-  if (!point) return;
-  const image = state.crop.image;
-  const box = {
-    x: point.x - state.crop.dragOffset.x,
-    y: point.y - state.crop.dragOffset.y,
-    width: state.crop.cropBox?.width || 1,
-    height: state.crop.cropBox?.height || 1
-  };
-  state.crop.cropBox = clampCropBox(box, image);
-  drawCropCanvas();
-  renderCropOverlay();
-}
-
-function endCropPointer(event) {
-  if (!state.crop.open) return;
-  event.preventDefault();
-  event.stopPropagation();
-  state.crop.dragStart = null;
-  state.crop.dragOffset = null;
-  drawCropCanvas();
-  renderCropOverlay();
-}
-
-async function submitCrop() {
-  if (!state.crop.image || !state.crop.cropBox) {
-    toast("请先选择裁切比例并拖动裁切框");
-    return;
-  }
-  state.crop.busy = true;
-  renderCropOverlay();
-  const aspectLabel = cropAspectLabel(state.crop.aspect);
-  try {
-    await runLocalCanvasImageTool({
-      mode: "crop",
-      title: "裁切结果",
-      toastText: "裁切完成",
-      run: (image, name) => localCropImage(image, name, state.crop.cropBox, state.crop.aspect)
-    });
-    state.thinking = {
-      status: "done",
-      target: "裁切",
-      text: `已完成裁切：${aspectLabel}比例，输出新的构图版本。${featureOptimizationNotes.crop}`
-    };
-    closeCropOverlay();
-    renderWorkflowCanvas();
-  } finally {
-    state.crop.busy = false;
-    renderCropOverlay();
-  }
-}
-
-function localCropImage(image, name, cropBox, aspect) {
-  const maxDim = 2400;
-  const scale = Math.min(1, maxDim / Math.max(image.naturalWidth, image.naturalHeight));
-  const width = Math.max(1, Math.round(image.naturalWidth * scale));
-  const height = Math.max(1, Math.round(image.naturalHeight * scale));
-  const base = document.createElement("canvas");
-  base.width = width;
-  base.height = height;
-  const baseCtx = base.getContext("2d", { willReadFrequently: true });
-  baseCtx.imageSmoothingEnabled = true;
-  baseCtx.imageSmoothingQuality = "high";
-  baseCtx.drawImage(image, 0, 0, width, height);
-  const sx = width / Math.max(1, image.naturalWidth);
-  const sy = height / Math.max(1, image.naturalHeight);
-  const cropX = clamp(Math.floor(cropBox.x * sx), 0, width - 1);
-  const cropY = clamp(Math.floor(cropBox.y * sy), 0, height - 1);
-  const cropRight = clamp(Math.ceil((cropBox.x + cropBox.width) * sx), cropX + 1, width);
-  const cropBottom = clamp(Math.ceil((cropBox.y + cropBox.height) * sy), cropY + 1, height);
-  const cropWidth = Math.max(1, cropRight - cropX);
-  const cropHeight = Math.max(1, cropBottom - cropY);
-  const out = document.createElement("canvas");
-  out.width = cropWidth;
-  out.height = cropHeight;
-  const outCtx = out.getContext("2d", { willReadFrequently: true });
-  outCtx.imageSmoothingEnabled = true;
-  outCtx.imageSmoothingQuality = "high";
-  outCtx.drawImage(base, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
-  return {
-    id: `crop-${Date.now()}`,
-    title: "裁切结果",
-    url: out.toDataURL("image/png"),
-    mode: "crop",
-    intent: `本地裁切：${cropAspectLabel(aspect)}比例 PNG`,
+async function commitEditorChildResult({ dataUrl, title, mode, selected, width, height, editorName, regionCount = 0, optimizedPrompts = [] }) {
+  const outputItem = outputItemForSelectedImage(selected);
+  const normalizedMode = mode || "deep-edit";
+  const result = attachDerivedCanvasResultMetadata({
+    id: `${normalizedMode}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    title: title || `${editorName}结果`,
+    url: dataUrl,
+    mode: normalizedMode,
+    stepMode: normalizedMode,
+    intent: `${editorName}生成 · ${width} × ${height}${regionCount ? ` · ${regionCount} 个编号选区` : ""} · 原图未覆盖`,
+    optimizedPrompts: Array.isArray(optimizedPrompts) ? optimizedPrompts : [],
     createdAt: new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }),
-    fileBase: slugForFile(name || "crop"),
-    aspect: aspect || "source"
+    fileBase: slugForFile(`${selected?.title || normalizedMode}-result`)
+  }, selected, outputItem);
+  state.imageToolResults.push(result);
+  state.render = result;
+  state.renders.push(result);
+  state.canvas.selectedImage = {
+    id: `render${state.renders.length - 1}`,
+    outputId: result.id,
+    url: result.url,
+    title: result.title,
+    kind: "Output",
+    caption: result.intent
   };
+  state.thinking = {
+    status: "done",
+    target: editorName,
+    text: `${editorName}已完成，结果已作为原图的子节点保存。`
+  };
+  renderGeneratedResult();
+  scheduleCanvasStateSave({ delay: 160 });
+  toast(`${editorName}完成，已生成新的子节点`);
+}
+
+async function requestNumberedAiEdit({ selected, regionNumber, operation, selectionMode, prompt, sourceDataUrl, maskDataUrl, maskWidth, maskHeight, bounds, outputSize, promptOptimizationEnabled }) {
+  const primary = sourceDataUrl
+    ? { name: `${slugForFile(selected?.title || "ai-edit")}-region-${regionNumber}.png`, type: "image/png", dataUrl: sourceDataUrl }
+    : await imageSourceToPrimaryImage(selected);
+  const parent = outputItemForSelectedImage(selected);
+  const data = await api("/api/ai-edit", {
+    operation,
+    selectionMode,
+    prompt,
+    promptOptimizationEnabled: promptOptimizationEnabled === true,
+    regionNumber,
+    image: primary,
+    mask: { dataUrl: maskDataUrl, width: maskWidth, height: maskHeight, bounds },
+    outputSize: outputSize || state.generation?.size || "auto",
+    quality: state.generation?.quality || "high",
+    parentImageId: parent?.id || selected?.outputId || selected?.id || "",
+    parentNodeId: parent?.nodeId || selected?.id || "",
+    workflowId: parent?.workflowId || ""
+  });
+  return data.render;
+}
+
+let professionalDeepEditor = null;
+let professionalAiEditor = null;
+
+function deepEditorInstance() {
+  if (professionalDeepEditor) return professionalDeepEditor;
+  professionalDeepEditor = createDeepEditor({
+    notify: toast,
+    onCommit: (payload) => commitEditorChildResult({ ...payload, editorName: "深度编辑" })
+  });
+  return professionalDeepEditor;
+}
+
+function aiEditorInstance() {
+  if (professionalAiEditor) return professionalAiEditor;
+  professionalAiEditor = createAiEditor({
+    notify: toast,
+    onEditRegion: requestNumberedAiEdit,
+    onCommit: (payload) => commitEditorChildResult({ ...payload, editorName: "AI 编辑" })
+  });
+  return professionalAiEditor;
+}
+
+async function openDeepEdit(selected, options = {}) {
+  if (!selected?.url) {
+    toast("没有可以编辑的图片");
+    return;
+  }
+  try {
+    await deepEditorInstance().open(selected, {
+      initialTool: options.initialTool || "rect",
+      initialTab: options.initialTab || "selection"
+    });
+  } catch (error) {
+    deepEditorInstance().close();
+    toast(error.message || "无法打开深度编辑");
+  }
+}
+
+async function openAiEdit(selected) {
+  if (!selected?.url) {
+    toast("没有可以编辑的图片");
+    return;
+  }
+  try {
+    await aiEditorInstance().open(selected);
+  } catch (error) {
+    aiEditorInstance().close();
+    toast(error.message || "无法打开 AI 编辑");
+  }
 }
 
 function ensureCanvasImageToolbar() {
@@ -15248,6 +13877,10 @@ async function handleCanvasImageTool(action, nextMode = "", targetMode = "") {
     await openDeepEdit(selected);
     return;
   }
+  if (action === "ai-edit") {
+    await openAiEdit(selected);
+    return;
+  }
   if (action === "multi-angle") {
     await openMultiAngleOverlay(selected);
     return;
@@ -15255,19 +13888,19 @@ async function handleCanvasImageTool(action, nextMode = "", targetMode = "") {
   if (action === "colorgrade") {
     state.canvas.imageActionBusy = "";
     renderCanvasImageToolbar();
-    await openColorGrade(selected);
+    await openDeepEdit(selected, { initialTab: "adjust" });
     return;
   }
   if (action === "crop") {
     state.canvas.imageActionBusy = "";
     renderCanvasImageToolbar();
-    await openCrop(selected);
+    await openDeepEdit(selected, { initialTool: "rect", initialTab: "basic" });
     return;
   }
   if (action === "cutout") {
     state.canvas.imageActionBusy = "";
     renderCanvasImageToolbar();
-    await openCutout(selected);
+    await openDeepEdit(selected, { initialTool: "lasso", initialTab: "selection" });
     return;
   }
   if (action === "use-mode") {
@@ -16873,8 +15506,6 @@ function setMode(mode) {
   }
   if (mode !== previousMode) {
     state.viewControlOpen = isPlanSeriesDynamicMode(mode) && Boolean(state.primaryImage?.dataUrl);
-    closeColorGradeOverlay();
-    closeCutoutOverlay();
     if (state.primaryImage?.dataUrl && !state.primaryImage?.parentNodeId && !state.primaryImage?.detachedPanelInput && state.renders.length) {
       ensureSessionCanvasBranchAnchor();
     }
@@ -16943,21 +15574,6 @@ function iconActionButton({ className = "secondary-button", action = "", icon = 
   return `<button class="${className}" type="button" ${actionAttr} ${attrs} title="${escapeAttr(label)}" aria-label="${escapeAttr(label)}"><svg><use href="#${icon}"></use></svg>${escapeHtml(label)}</button>`;
 }
 
-function imageProcessMenuHtml(busyAttrs = "") {
-  return `
-    <details class="canvas-node-tool-menu" data-canvas-node-tool-menu>
-      <summary class="secondary-button canvas-node-tool-menu-summary" title="深度编辑" aria-label="深度编辑">
-        <svg><use href="#icon-zoom-in"></use></svg>深度编辑
-      </summary>
-      <div class="canvas-node-tool-menu-popover" aria-label="深度编辑工具">
-        ${iconActionButton({ className: "text-button", action: "colorgrade", icon: "icon-filter", label: "调色", attrs: busyAttrs })}
-        ${iconActionButton({ className: "text-button", action: "crop", icon: "icon-crop", label: "裁切", attrs: busyAttrs })}
-        ${iconActionButton({ className: "text-button", action: "cutout", icon: "icon-box-select", label: "抠图", attrs: busyAttrs })}
-      </div>
-    </details>
-  `;
-}
-
 function canvasNodeImageToolsHtml(node = {}) {
   if (!node.imageUrl) return "";
   const showBaseTools = Boolean(node.outputId) || node.kind === "Reference" || node.id === "source";
@@ -16974,8 +15590,8 @@ function canvasNodeImageToolsHtml(node = {}) {
     && !isPanoramaOutput(outputItem);
   return `
     <div class="canvas-node-image-tools" aria-label="图片操作">
-      ${imageProcessMenuHtml(busyAttrs)}
-      ${iconActionButton({ action: "deep-edit", icon: "icon-spark", label: "图像处理", attrs: busyAttrs })}
+      ${iconActionButton({ action: "ai-edit", icon: "icon-spark", label: "AI 编辑", attrs: busyAttrs })}
+      ${iconActionButton({ action: "deep-edit", icon: "icon-brush", label: "深度编辑", attrs: busyAttrs })}
       ${showOutputTools ? iconActionButton({ action: "send-to-panel", icon: "icon-panel-show", label: "加入创作面板", attrs: busyAttrs }) : ""}
       ${showMultiAngle ? iconActionButton({ action: "multi-angle", icon: "icon-series", label: "多角度", attrs: busyAttrs }) : ""}
       ${iconActionButton({ className: "text-button", action: "open-original", icon: "icon-image", label: "打开原图" })}
@@ -18265,367 +16881,6 @@ function localEnhanceQualityImage(image, name) {
   };
 }
 
-function normalizeColorGradeAdjustments(adjustments = {}) {
-  return Object.fromEntries(Object.keys(defaultColorGradeAdjustments).map((key) => [
-    key,
-    Math.round(clamp(Number(adjustments[key]) || 0, -100, 100))
-  ]));
-}
-
-function colorGradeSummaryText(adjustments = {}) {
-  const normalized = normalizeColorGradeAdjustments(adjustments);
-  const parts = Object.entries(normalized)
-    .filter(([, value]) => value)
-    .map(([key, value]) => `${colorGradeFieldLabels[key] || key} ${value > 0 ? "+" : ""}${value}`);
-  return parts.length ? parts.join("，") : "默认参数";
-}
-
-function localColorGradeImage(image, name, adjustments = {}) {
-  const maxDim = 2400;
-  const scale = Math.min(1, maxDim / Math.max(image.naturalWidth, image.naturalHeight));
-  const width = Math.max(1, Math.round(image.naturalWidth * scale));
-  const height = Math.max(1, Math.round(image.naturalHeight * scale));
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(image, 0, 0, width, height);
-  const src = ctx.getImageData(0, 0, width, height);
-  const normalized = normalizeColorGradeAdjustments(adjustments);
-  applyColorGradeToImageData(src, width, height, normalized);
-  ctx.putImageData(src, 0, 0);
-  return {
-    id: `colorgrade-${Date.now()}`,
-    title: "调色结果",
-    url: canvas.toDataURL("image/png"),
-    mode: "colorgrade",
-    adjustments: normalized,
-    intent: `本地调色：${colorGradeSummaryText(normalized)}`,
-    createdAt: new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }),
-    fileBase: slugForFile(name || "color-grade")
-  };
-}
-
-function applyColorGradeToImageData(imageData, width, height, adjustments = {}) {
-  const a = normalizeColorGradeAdjustments(adjustments);
-  const data = imageData.data;
-  const exposure = Math.pow(2, a.exposure / 100);
-  const contrast = 1 + a.contrast * 0.008;
-  const light = a.light * 0.72;
-  const temp = a.temperature;
-  const tint = a.tint;
-  const saturation = 1 + a.saturation * 0.009;
-  const clarityAmount = a.clarity / 100;
-
-  for (let i = 0; i < data.length; i += 4) {
-    if (data[i + 3] < 2) continue;
-    let r = data[i] * exposure;
-    let g = data[i + 1] * exposure;
-    let b = data[i + 2] * exposure;
-    const luma = r * 0.299 + g * 0.587 + b * 0.114;
-    const highWeight = smoothstep(118, 255, luma);
-    const shadowWeight = 1 - smoothstep(0, 150, luma);
-    const whiteWeight = smoothstep(180, 255, luma);
-    const blackWeight = 1 - smoothstep(0, 95, luma);
-    const toneShift =
-      light +
-      a.highlights * 0.78 * highWeight +
-      a.shadows * 0.82 * shadowWeight +
-      a.whites * 0.62 * whiteWeight -
-      a.blacks * 0.64 * blackWeight;
-    r = (r + toneShift - 128) * contrast + 128;
-    g = (g + toneShift - 128) * contrast + 128;
-    b = (b + toneShift - 128) * contrast + 128;
-
-    r += temp * 0.42 + tint * 0.16;
-    g -= tint * 0.26;
-    b -= temp * 0.42 + tint * -0.16;
-
-    const nextLuma = r * 0.299 + g * 0.587 + b * 0.114;
-    const max = Math.max(r, g, b);
-    const min = Math.min(r, g, b);
-    const currentSat = clamp((max - min) / 255, 0, 1);
-    const vibrance = 1 + (a.vibrance / 100) * (1 - currentSat) * 0.86;
-    const satScale = saturation * vibrance;
-    r = nextLuma + (r - nextLuma) * satScale;
-    g = nextLuma + (g - nextLuma) * satScale;
-    b = nextLuma + (b - nextLuma) * satScale;
-
-    data[i] = clampByte(r);
-    data[i + 1] = clampByte(g);
-    data[i + 2] = clampByte(b);
-  }
-
-  if (clarityAmount > 0.01) {
-    const sharpened = unsharpImageData(data, width, height, clarityAmount * 0.72);
-    data.set(sharpened);
-  } else if (clarityAmount < -0.01) {
-    const softened = smoothImageData(data, width, height, Math.min(0.62, Math.abs(clarityAmount) * 0.52));
-    data.set(softened);
-  }
-}
-
-function smoothstep(edge0, edge1, value) {
-  const t = clamp((value - edge0) / Math.max(1, edge1 - edge0), 0, 1);
-  return t * t * (3 - 2 * t);
-}
-
-function buildCutoutAnalysis(image) {
-  const maxSide = 720;
-  const scale = Math.min(1, maxSide / Math.max(image.naturalWidth || 1, image.naturalHeight || 1));
-  const width = Math.max(32, Math.round((image.naturalWidth || 1) * scale));
-  const height = Math.max(32, Math.round((image.naturalHeight || 1) * scale));
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(image, 0, 0, width, height);
-  const imageData = ctx.getImageData(0, 0, width, height);
-  const data = imageData.data;
-  const total = width * height;
-  const luma = new Float32Array(total);
-  for (let i = 0; i < total; i++) {
-    const idx = i * 4;
-    luma[i] = data[idx] * 0.299 + data[idx + 1] * 0.587 + data[idx + 2] * 0.114;
-  }
-  const edge = sobelLumaEdges(luma, width, height);
-  const borderMean = cutoutBorderMean(data, width, height);
-  const background = edgeAwareBackgroundMask(data, luma, edge, width, height, borderMean);
-  const candidates = foregroundComponentsFromBackground(data, background, width, height)
-    .sort((a, b) => b.area - a.area)
-    .slice(0, 8);
-  if (!candidates.length) {
-    candidates.push(fallbackCutoutCandidate(data, width, height));
-  }
-  candidates.forEach((candidate, index) => {
-    candidate.id = candidate.id || `layer-${index + 1}`;
-    candidate.label = `图层 ${index + 1}`;
-  });
-  return { width, height, data, luma, edge, candidates, method: "local" };
-}
-
-function buildAiGuidedCutoutAnalysis(image, aiAnalysis = {}) {
-  const maxSide = 720;
-  const scale = Math.min(1, maxSide / Math.max(image.naturalWidth || 1, image.naturalHeight || 1));
-  const width = Math.max(32, Math.round((image.naturalWidth || 1) * scale));
-  const height = Math.max(32, Math.round((image.naturalHeight || 1) * scale));
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(image, 0, 0, width, height);
-  const imageData = ctx.getImageData(0, 0, width, height);
-  const data = imageData.data;
-  const total = width * height;
-  const luma = new Float32Array(total);
-  for (let i = 0; i < total; i++) {
-    const idx = i * 4;
-    luma[i] = data[idx] * 0.299 + data[idx + 1] * 0.587 + data[idx + 2] * 0.114;
-  }
-  const edge = sobelLumaEdges(luma, width, height);
-  const rawMask = maskFromAiCutoutPolygons(aiAnalysis, width, height);
-  const mask = refineAiCutoutMask(rawMask, data, width, height);
-  const bounds = boundsFromMask(mask, width, height);
-  if (!bounds || bounds.area < Math.max(90, Math.round(total * 0.002))) {
-    const fallback = buildCutoutAnalysis(image);
-    return { ...fallback, method: "local", ai: aiAnalysis };
-  }
-  const candidate = {
-    id: "ai-main-subject",
-    label: aiAnalysis.subject || "AI 主体",
-    mask,
-    area: bounds.area,
-    bounds: { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height },
-    confidence: aiAnalysis.confidence || 0,
-    source: "ai"
-  };
-  return {
-    width,
-    height,
-    data,
-    luma,
-    edge,
-    candidates: [candidate],
-    ai: aiAnalysis,
-    method: "ai"
-  };
-}
-
-function maskFromAiCutoutPolygons(aiAnalysis = {}, width, height) {
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "#fff";
-  const polygons = Array.isArray(aiAnalysis.polygons) ? aiAnalysis.polygons : [];
-  for (const polygon of polygons) {
-    const points = normalizeAiCutoutPoints(polygon.points, width, height);
-    if (points.length < 3) continue;
-    ctx.beginPath();
-    ctx.moveTo(points[0][0], points[0][1]);
-    points.slice(1).forEach(([x, y]) => ctx.lineTo(x, y));
-    ctx.closePath();
-    ctx.fill();
-  }
-  const holes = Array.isArray(aiAnalysis.holes) ? aiAnalysis.holes : [];
-  if (holes.length) {
-    ctx.save();
-    ctx.globalCompositeOperation = "destination-out";
-    for (const hole of holes) {
-      const points = normalizeAiCutoutPoints(hole.points || hole, width, height);
-      if (points.length < 3) continue;
-      ctx.beginPath();
-      ctx.moveTo(points[0][0], points[0][1]);
-      points.slice(1).forEach(([x, y]) => ctx.lineTo(x, y));
-      ctx.closePath();
-      ctx.fill();
-    }
-    ctx.restore();
-  }
-  const hasPolygon = polygons.some((polygon) => normalizeAiCutoutPoints(polygon.points, width, height).length >= 3);
-  if (!hasPolygon && aiAnalysis.bounds) {
-    const x = clamp(Math.round((Number(aiAnalysis.bounds.x) || 0) * width), 0, width - 1);
-    const y = clamp(Math.round((Number(aiAnalysis.bounds.y) || 0) * height), 0, height - 1);
-    const w = clamp(Math.round((Number(aiAnalysis.bounds.width) || 1) * width), 1, width - x);
-    const h = clamp(Math.round((Number(aiAnalysis.bounds.height) || 1) * height), 1, height - y);
-    ctx.fillRect(x, y, w, h);
-  }
-  const imageData = ctx.getImageData(0, 0, width, height);
-  const mask = new Uint8Array(width * height);
-  for (let i = 0; i < mask.length; i++) mask[i] = imageData.data[i * 4 + 3] > 0 ? 1 : 0;
-  return mask;
-}
-
-function normalizeAiCutoutPoints(points = [], width, height) {
-  if (!Array.isArray(points)) return [];
-  return points.map((point) => {
-    const rawX = Array.isArray(point) ? point[0] : point?.x;
-    const rawY = Array.isArray(point) ? point[1] : point?.y;
-    const x = Number(rawX);
-    const y = Number(rawY);
-    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
-    return [
-      clamp(x > 1 ? x : x * width, 0, width - 1),
-      clamp(y > 1 ? y : y * height, 0, height - 1)
-    ];
-  }).filter(Boolean);
-}
-
-function refineAiCutoutMask(mask, data, width, height) {
-  const closed = closeMask(mask, width, height);
-  const eroded = erodeMask(closed, width, height, 2);
-  const dilated = dilateMask(closed, width, height, 8);
-  const foreground = meanColorForMask(data, eroded, true) || meanColorForMask(data, closed, true);
-  const background = meanColorForMask(data, dilated, false) || [255, 255, 255];
-  if (!foreground || !background) return closed;
-  const refined = new Uint8Array(closed.length);
-  for (let i = 0; i < closed.length; i++) {
-    if (!closed[i]) continue;
-    const boundary = !eroded[i];
-    if (!boundary) {
-      refined[i] = 1;
-      continue;
-    }
-    const fgDistance = pixelDistanceToColor(data, i, foreground);
-    const bgDistance = pixelDistanceToColor(data, i, background);
-    refined[i] = bgDistance + 10 < fgDistance ? 0 : 1;
-  }
-  return closeMask(refined, width, height);
-}
-
-function boundsFromMask(mask, width, height) {
-  let minX = width;
-  let minY = height;
-  let maxX = -1;
-  let maxY = -1;
-  let area = 0;
-  for (let i = 0; i < mask.length; i++) {
-    if (!mask[i]) continue;
-    const x = i % width;
-    const y = Math.floor(i / width);
-    area += 1;
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x);
-    maxY = Math.max(maxY, y);
-  }
-  if (!area) return null;
-  return { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1, area };
-}
-
-function erodeMask(mask, width, height, radius = 1) {
-  let current = new Uint8Array(mask);
-  for (let step = 0; step < radius; step++) {
-    const next = new Uint8Array(current.length);
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const i = y * width + x;
-        if (!current[i]) continue;
-        let keep = 1;
-        for (let ky = -1; ky <= 1 && keep; ky++) {
-          for (let kx = -1; kx <= 1; kx++) {
-            const nx = x + kx;
-            const ny = y + ky;
-            if (nx < 0 || nx >= width || ny < 0 || ny >= height || !current[ny * width + nx]) {
-              keep = 0;
-              break;
-            }
-          }
-        }
-        next[i] = keep;
-      }
-    }
-    current = next;
-  }
-  return current;
-}
-
-function dilateMask(mask, width, height, radius = 1) {
-  let current = new Uint8Array(mask);
-  for (let step = 0; step < radius; step++) {
-    const next = new Uint8Array(current);
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const i = y * width + x;
-        if (!current[i]) continue;
-        for (let ky = -1; ky <= 1; ky++) {
-          for (let kx = -1; kx <= 1; kx++) {
-            const nx = x + kx;
-            const ny = y + ky;
-            if (nx >= 0 && nx < width && ny >= 0 && ny < height) next[ny * width + nx] = 1;
-          }
-        }
-      }
-    }
-    current = next;
-  }
-  return current;
-}
-
-function meanColorForMask(data, mask, include = true) {
-  let r = 0;
-  let g = 0;
-  let b = 0;
-  let count = 0;
-  const step = Math.max(1, Math.floor(mask.length / 30000));
-  for (let i = 0; i < mask.length; i += step) {
-    if (Boolean(mask[i]) !== include) continue;
-    const idx = i * 4;
-    if (data[idx + 3] < 20) continue;
-    r += data[idx];
-    g += data[idx + 1];
-    b += data[idx + 2];
-    count += 1;
-  }
-  return count ? [r / count, g / count, b / count] : null;
-}
-
 function sobelLumaEdges(luma, width, height) {
   const edge = new Uint8Array(width * height);
   for (let y = 1; y < height - 1; y++) {
@@ -18641,259 +16896,6 @@ function sobelLumaEdges(luma, width, height) {
     }
   }
   return edge;
-}
-
-function cutoutBorderMean(data, width, height) {
-  let r = 0;
-  let g = 0;
-  let b = 0;
-  let count = 0;
-  const add = (x, y) => {
-    const idx = (y * width + x) * 4;
-    if (data[idx + 3] < 20) return;
-    r += data[idx];
-    g += data[idx + 1];
-    b += data[idx + 2];
-    count += 1;
-  };
-  for (let x = 0; x < width; x++) {
-    add(x, 0);
-    add(x, height - 1);
-  }
-  for (let y = 1; y < height - 1; y++) {
-    add(0, y);
-    add(width - 1, y);
-  }
-  return count ? [r / count, g / count, b / count] : [255, 255, 255];
-}
-
-function edgeAwareBackgroundMask(data, luma, edge, width, height, borderMean) {
-  const total = width * height;
-  const background = new Uint8Array(total);
-  const visited = new Uint8Array(total);
-  const queue = new Int32Array(total);
-  let head = 0;
-  let tail = 0;
-  const push = (index) => {
-    if (visited[index]) return;
-    visited[index] = 1;
-    background[index] = 1;
-    queue[tail++] = index;
-  };
-  for (let x = 0; x < width; x++) {
-    push(x);
-    push((height - 1) * width + x);
-  }
-  for (let y = 1; y < height - 1; y++) {
-    push(y * width);
-    push(y * width + width - 1);
-  }
-  const offsets = [-1, 1, -width, width];
-  while (head < tail) {
-    const current = queue[head++];
-    const cx = current % width;
-    for (const offset of offsets) {
-      const next = current + offset;
-      if (next < 0 || next >= total || visited[next]) continue;
-      const nx = next % width;
-      if ((offset === -1 && cx === 0) || (offset === 1 && cx === width - 1)) continue;
-      const nextIdx = next * 4;
-      if (data[nextIdx + 3] < 24) {
-        push(next);
-        continue;
-      }
-      const d = pixelDistance(data, current, next);
-      const borderD = pixelDistanceToColor(data, next, borderMean);
-      const ldiff = Math.abs(luma[current] - luma[next]);
-      const hardEdge = edge[next] > 72 && d > 18;
-      const allowed = !hardEdge && (d < 44 || ldiff < 18 || (borderD < 58 && edge[next] < 92));
-      if (allowed) push(next);
-    }
-  }
-  return background;
-}
-
-function foregroundComponentsFromBackground(data, background, width, height) {
-  const total = width * height;
-  const visited = new Uint8Array(total);
-  const candidates = [];
-  const queue = new Int32Array(total);
-  const minArea = Math.max(90, Math.round(total * 0.003));
-  const maxArea = Math.round(total * 0.94);
-  const offsets = [-1, 1, -width, width, -width - 1, -width + 1, width - 1, width + 1];
-  for (let start = 0; start < total; start++) {
-    if (visited[start] || background[start] || data[start * 4 + 3] < 20) continue;
-    let head = 0;
-    let tail = 0;
-    let area = 0;
-    let minX = width;
-    let minY = height;
-    let maxX = 0;
-    let maxY = 0;
-    const mask = new Uint8Array(total);
-    visited[start] = 1;
-    queue[tail++] = start;
-    while (head < tail) {
-      const current = queue[head++];
-      const x = current % width;
-      const y = Math.floor(current / width);
-      mask[current] = 1;
-      area += 1;
-      minX = Math.min(minX, x);
-      minY = Math.min(minY, y);
-      maxX = Math.max(maxX, x);
-      maxY = Math.max(maxY, y);
-      for (const offset of offsets) {
-        const next = current + offset;
-        if (next < 0 || next >= total || visited[next] || background[next] || data[next * 4 + 3] < 20) continue;
-        const nx = next % width;
-        if (Math.abs(nx - x) > 1) continue;
-        visited[next] = 1;
-        queue[tail++] = next;
-      }
-    }
-    if (area >= minArea && area <= maxArea) {
-      candidates.push({
-        id: `layer-${candidates.length + 1}`,
-        mask: closeMask(mask, width, height),
-        area,
-        bounds: { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 }
-      });
-    }
-  }
-  return candidates;
-}
-
-function fallbackCutoutCandidate(data, width, height) {
-  const total = width * height;
-  const mask = new Uint8Array(total);
-  let area = 0;
-  const padX = Math.round(width * 0.12);
-  const padY = Math.round(height * 0.12);
-  for (let y = padY; y < height - padY; y++) {
-    for (let x = padX; x < width - padX; x++) {
-      const i = y * width + x;
-      if (data[i * 4 + 3] < 20) continue;
-      mask[i] = 1;
-      area += 1;
-    }
-  }
-  return {
-    id: "layer-center",
-    mask,
-    area,
-    bounds: { x: padX, y: padY, width: width - padX * 2, height: height - padY * 2 }
-  };
-}
-
-function localCutoutImage(image, name, candidate, analysis) {
-  const maxDim = 2400;
-  const scale = Math.min(1, maxDim / Math.max(image.naturalWidth, image.naturalHeight));
-  const width = Math.max(1, Math.round(image.naturalWidth * scale));
-  const height = Math.max(1, Math.round(image.naturalHeight * scale));
-  const base = document.createElement("canvas");
-  base.width = width;
-  base.height = height;
-  const baseCtx = base.getContext("2d", { willReadFrequently: true });
-  baseCtx.imageSmoothingEnabled = true;
-  baseCtx.imageSmoothingQuality = "high";
-  baseCtx.drawImage(image, 0, 0, width, height);
-  const sx = width / analysis.width;
-  const sy = height / analysis.height;
-  const pad = 10;
-  const cropX = Math.max(0, Math.floor(candidate.bounds.x * sx) - pad);
-  const cropY = Math.max(0, Math.floor(candidate.bounds.y * sy) - pad);
-  const cropRight = Math.min(width, Math.ceil((candidate.bounds.x + candidate.bounds.width) * sx) + pad);
-  const cropBottom = Math.min(height, Math.ceil((candidate.bounds.y + candidate.bounds.height) * sy) + pad);
-  const cropWidth = Math.max(1, cropRight - cropX);
-  const cropHeight = Math.max(1, cropBottom - cropY);
-  const out = document.createElement("canvas");
-  out.width = cropWidth;
-  out.height = cropHeight;
-  const outCtx = out.getContext("2d", { willReadFrequently: true });
-  outCtx.drawImage(base, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
-  const outData = outCtx.getImageData(0, 0, cropWidth, cropHeight);
-  const softMask = featherMask(candidate.mask, analysis.width, analysis.height, 2);
-  for (let y = 0; y < cropHeight; y++) {
-    for (let x = 0; x < cropWidth; x++) {
-      const sourceX = clamp(Math.round(((cropX + x) / width) * analysis.width), 0, analysis.width - 1);
-      const sourceY = clamp(Math.round(((cropY + y) / height) * analysis.height), 0, analysis.height - 1);
-      const alpha = softMask[sourceY * analysis.width + sourceX] / 255;
-      const idx = (y * cropWidth + x) * 4 + 3;
-      outData.data[idx] = clampByte(outData.data[idx] * alpha);
-    }
-  }
-  outCtx.putImageData(outData, 0, 0);
-  return {
-    id: `cutout-${Date.now()}`,
-    title: "抠图结果",
-    url: out.toDataURL("image/png"),
-    mode: "cutout",
-    intent: analysis.method === "ai" ? "AI 视觉主体轮廓抠图：透明背景 PNG" : "本地智能抠图：透明背景 PNG",
-    createdAt: new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }),
-    fileBase: slugForFile(name || "cutout")
-  };
-}
-
-function closeMask(mask, width, height) {
-  const expanded = new Uint8Array(mask.length);
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const i = y * width + x;
-      if (!mask[i]) continue;
-      for (let ky = -1; ky <= 1; ky++) {
-        for (let kx = -1; kx <= 1; kx++) {
-          const nx = x + kx;
-          const ny = y + ky;
-          if (nx >= 0 && nx < width && ny >= 0 && ny < height) expanded[ny * width + nx] = 1;
-        }
-      }
-    }
-  }
-  return expanded;
-}
-
-function featherMask(mask, width, height, iterations = 1) {
-  let current = new Uint8ClampedArray(mask.length);
-  for (let i = 0; i < mask.length; i++) current[i] = mask[i] ? 255 : 0;
-  for (let iter = 0; iter < iterations; iter++) {
-    const next = new Uint8ClampedArray(current.length);
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        let sum = 0;
-        let count = 0;
-        for (let ky = -1; ky <= 1; ky++) {
-          for (let kx = -1; kx <= 1; kx++) {
-            const nx = x + kx;
-            const ny = y + ky;
-            if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-            sum += current[ny * width + nx];
-            count += 1;
-          }
-        }
-        next[y * width + x] = Math.round(sum / Math.max(1, count));
-      }
-    }
-    current = next;
-  }
-  return current;
-}
-
-function pixelDistance(data, a, b) {
-  const ai = a * 4;
-  const bi = b * 4;
-  const dr = data[ai] - data[bi];
-  const dg = data[ai + 1] - data[bi + 1];
-  const db = data[ai + 2] - data[bi + 2];
-  return Math.sqrt(dr * dr + dg * dg + db * db);
-}
-
-function pixelDistanceToColor(data, index, color) {
-  const i = index * 4;
-  const dr = data[i] - color[0];
-  const dg = data[i + 1] - color[1];
-  const db = data[i + 2] - color[2];
-  return Math.sqrt(dr * dr + dg * dg + db * db);
 }
 
 function histPercentile(hist, total, percentile) {
@@ -20942,11 +18944,8 @@ function closeCanvasImageToolbarFromOutside(target) {
   if (!element || !state.canvas.selectedImage) return;
   if (
     element.closest("#canvasImageToolbar") ||
-    element.closest("#deepEditOverlay") ||
-    element.closest("#colorGradeOverlay") ||
     element.closest("#multiAngleOverlay") ||
-    element.closest("#cutoutOverlay") ||
-    element.closest("#cropOverlay") ||
+    element.closest(".deep-workspace-overlay") ||
     element.closest("[data-preview-url]")
   ) return;
   state.canvas.selectedImage = null;
@@ -21195,6 +19194,10 @@ els.probeAllImageApiProfilesButton?.addEventListener("click", probeAllImageApiPr
 els.importApiTextButton?.addEventListener("click", importApiText);
 els.chooseApiFilesButton?.addEventListener("click", () => els.apiImportFileInput?.click());
 els.chooseApiFolderButton?.addEventListener("click", () => els.apiImportFolderInput?.click());
+els.apiImportText?.addEventListener("paste", handleApiImportTextPaste);
+els.apiImportText?.addEventListener("dragover", handleApiImportTextDragOver);
+els.apiImportText?.addEventListener("dragleave", handleApiImportTextDragLeave);
+els.apiImportText?.addEventListener("drop", handleApiImportTextDrop);
 els.apiImportFileInput?.addEventListener("change", () => handleApiImportFiles(els.apiImportFileInput));
 els.apiImportFolderInput?.addEventListener("change", () => handleApiImportFiles(els.apiImportFolderInput));
 els.exportApiFileButton?.addEventListener("click", exportApiShareFile);
@@ -21202,6 +19205,10 @@ els.copyApiTextButton?.addEventListener("click", copyApiShareText);
 els.saveImageApiSettingsButton?.addEventListener("click", saveImageApiSettings);
 els.probePrimaryImageApiButton?.addEventListener("click", () => probeRuntimeProvider("image"));
 els.activateImageApiProfileButton?.addEventListener("click", () => activateImageApiProfile());
+els.workspaceApiProfileSelect?.addEventListener("change", () => {
+  const id = els.workspaceApiProfileSelect?.value || "";
+  if (id) activateImageApiProfile(id);
+});
 els.imageApiProfileList?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-image-api-profile-action]");
   if (!button || button.disabled) return;
@@ -21413,20 +19420,8 @@ window.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     if (closeSizePicker()) return;
     if (closeSettings()) return;
-    if (state.deepEdit.open) {
-      closeDeepEditOverlay();
-      return;
-    }
-    if (state.colorGrade.open) {
-      closeColorGradeOverlay();
-      return;
-    }
     if (isOverlayOpen("multiAngleOverlay")) {
       closeMultiAngleOverlay();
-      return;
-    }
-    if (state.cutout.open) {
-      closeCutoutOverlay();
       return;
     }
     if (isOverlayOpen("imageCompareOverlay")) {

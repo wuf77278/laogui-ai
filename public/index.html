@@ -758,9 +758,21 @@
           </button>
           <section id="agentPanelContent" class="panel-section agent-section" aria-hidden="false" tabindex="-1">
             <div class="agent-head">
-              <div>
-                <p class="eyebrow">AI Strategy</p>
-                <h1>设计策略</h1>
+              <div class="agent-head-title-row">
+                <div>
+                  <p class="eyebrow">AI Strategy</p>
+                  <h1>设计策略</h1>
+                </div>
+                <label id="workspaceApiSwitcher" class="workspace-api-switcher" title="快捷切换当前生图 API">
+                  <span id="workspaceApiStatusDot" class="workspace-api-status-dot unknown" aria-hidden="true"></span>
+                  <span class="workspace-api-switcher-copy">
+                    <span>当前 API</span>
+                    <small id="workspaceApiLatency" aria-live="polite">未配置</small>
+                  </span>
+                  <select id="workspaceApiProfileSelect" aria-label="快捷切换当前生图 API" disabled>
+                    <option value="">未配置 API</option>
+                  </select>
+                </label>
               </div>
               <div class="agent-head-actions">
                 <details class="mode-switcher">
@@ -784,9 +796,6 @@
                     <button class="mode-tab" type="button" role="tab" data-mode="styletransfer" aria-selected="false" aria-pressed="false" tabindex="-1">风格迁移</button>
                   </div>
                 </details>
-                <button id="toggleAgentPanelButton" class="icon-button icon-only agent-collapse-button" type="button" title="隐藏创作面板" aria-label="隐藏创作面板" aria-controls="agentPanelContent" aria-expanded="true" aria-pressed="false">
-                  <svg><use href="#icon-panel-hide"></use></svg>
-                </button>
               </div>
             </div>
             <section id="agentBriefInsight" class="agent-brief-insight" aria-live="polite"></section>
@@ -996,6 +1005,9 @@
             </details>
           </section>
         </aside>
+        <button id="toggleAgentPanelButton" class="icon-button icon-only agent-collapse-button" type="button" title="隐藏创作面板" aria-label="隐藏创作面板" aria-controls="agentPanelContent" aria-expanded="true" aria-pressed="false">
+          <svg><use href="#icon-panel-hide"></use></svg>
+        </button>
       </main>
 
       <main id="assetLibraryView" class="asset-library-view" hidden tabindex="-1">
@@ -1187,22 +1199,32 @@
               </button>
             </div>
             <p class="settings-hint">API 配置会保存在本机用户数据目录，关闭软件和自动更新都不会丢失。Key 不会写入网页文件，也不会显示给远程设备。</p>
-            <details class="api-transfer-panel">
-              <summary>API 导入与分享</summary>
-              <div class="api-transfer-body">
-                <textarea id="apiImportText" rows="4" spellcheck="false" placeholder="粘贴 API 配置文本、JSON 或 .env 内容"></textarea>
-                <div class="settings-actions api-transfer-actions">
-                  <button id="importApiTextButton" class="secondary-button" type="button">导入粘贴文本</button>
-                  <button id="chooseApiFilesButton" class="text-button" type="button">选择文件</button>
-                  <button id="chooseApiFolderButton" class="text-button" type="button">选择文件夹</button>
-                  <button id="exportApiFileButton" class="text-button" type="button">导出分享文件</button>
-                  <button id="copyApiTextButton" class="text-button" type="button">复制分享文本</button>
+            <section class="api-transfer-panel" aria-labelledby="apiTransferTitle">
+              <div class="api-transfer-heading">
+                <div>
+                  <span class="api-transfer-kicker">快速配置</span>
+                  <strong id="apiTransferTitle">复制粘贴，一次完成</strong>
+                  <p>可以粘贴配置文字，也可以直接把 .txt / .md 配置文件复制后粘贴，或拖到下面的输入框。</p>
                 </div>
-                <input id="apiImportFileInput" type="file" accept=".json,.txt,.env,.config,.yaml,.yml" multiple hidden />
-                <input id="apiImportFolderInput" type="file" accept=".json,.txt,.env,.config,.yaml,.yml" webkitdirectory directory multiple hidden />
-                <p class="settings-hint api-key-warning">注意：导出的文件和分享文本会包含完整 API Key，只能发给可信任的同事。</p>
+                <span class="api-transfer-badge">推荐</span>
               </div>
-            </details>
+              <div class="api-transfer-body">
+                <textarea id="apiImportText" rows="6" spellcheck="false" aria-label="粘贴 API 配置内容" placeholder="粘贴文字，或把 .txt / .md 文件直接粘贴、拖到这里"></textarea>
+                <div class="settings-actions api-transfer-actions">
+                  <button id="importApiTextButton" class="primary-button api-import-main-button" type="button">一键导入粘贴内容</button>
+                  <button id="chooseApiFilesButton" class="secondary-button" type="button">选择配置文件</button>
+                  <button id="chooseApiFolderButton" class="text-button" type="button">选择配置文件夹</button>
+                </div>
+                <input id="apiImportFileInput" type="file" accept=".json,.txt,.md,.env,.config,.yaml,.yml" multiple hidden />
+                <input id="apiImportFolderInput" type="file" accept=".json,.txt,.md,.env,.config,.yaml,.yml" webkitdirectory directory multiple hidden />
+                <div class="api-transfer-share-actions">
+                  <span>需要交给可信任的同事使用？</span>
+                  <button id="exportApiFileButton" class="text-button" type="button">导出分享文件</button>
+                  <button id="copyApiTextButton" class="text-button" type="button">复制当前配置</button>
+                </div>
+                <p class="settings-hint api-key-warning">安全提醒：配置文字包含完整 API Key，只能发给可信任的公司同事。</p>
+              </div>
+            </section>
             <div id="localApiConnectionStatus" class="api-probe-feedback" aria-live="polite"></div>
             <div class="api-profile-layout">
               <aside class="api-profile-sidebar" aria-labelledby="imageApiProfilesTitle">
@@ -1243,14 +1265,14 @@
                       生图 API 形态
                       <select id="primaryImageApiMode">
                         <option value="responses">Responses API</option>
-                        <option value="images">Images API</option>
+                        <option value="images" selected>Images API</option>
                       </select>
                     </label>
                     <label>
                       Images API 返回方式
                       <select id="primaryImageImagesNewApiCompat">
                         <option value="false">流式返回（推荐，速度更快）</option>
-                        <option value="true">普通返回（旧接口兼容）</option>
+                        <option value="true" selected>普通返回（旧接口兼容）</option>
                       </select>
                     </label>
                     <label>

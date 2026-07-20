@@ -6,7 +6,12 @@
 .env.*.local
 .env.bak-*
 
+# 本机 API 一键导入文件包含真实密钥，禁止提交到代码仓库。
+API/*.private.*
+API/可直接复制粘贴到API输入框.txt
+
 logs/
+models/
 public/generated/
 public/archive/
 public/vendor/

@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { isIP } from "node:net";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { gzipSync } from "node:zlib";
+import { gzipSync, inflateSync } from "node:zlib";
 import {
   communityPromptBlueprintLines,
   communityPromptCompactRules,
@@ -15,6 +15,12 @@ import {
   communityPromptPreflightLines,
   promptLibraryVersion
 } from "./prompt-library.mjs";
+import {
+  buildAiEditFinalPrompt,
+  buildAiEditOptimizerInput,
+  fallbackAiEditInstruction,
+  normalizeAiEditInstruction
+} from "./public/ai-edit/prompt-engine.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -335,8 +341,8 @@ const config = {
     timeoutSeconds: boundedIntegerEnv(["IMAGE_STUDIO_TIMEOUT_SECONDS", "IMAGE_STUDIO_ENGINE_TIMEOUT_SECONDS"], 360, 30, 1200),
     responsesTransport: process.env.IMAGE_STUDIO_RESPONSES_TRANSPORT || "sse",
     requestPolicy: process.env.IMAGE_STUDIO_REQUEST_POLICY || "openai",
-    // FHL Images API 支持流式响应；兼容模式会关闭 stream，必须等完整 JSON 返回。
-    imagesNewApiCompat: parseBooleanEnv(process.env.IMAGE_STUDIO_IMAGES_NEW_API_COMPAT, false),
+    // 默认兼容普通 JSON 返回；需要流式响应时可在配置中手动关闭兼容模式。
+    imagesNewApiCompat: parseBooleanEnv(process.env.IMAGE_STUDIO_IMAGES_NEW_API_COMPAT, true),
     reasoningEffort: process.env.IMAGE_STUDIO_REASONING_EFFORT || "xhigh",
     fastReasoningEffort: process.env.IMAGE_STUDIO_FAST_REASONING_EFFORT || "low",
     partialImages: boundedIntegerEnv("IMAGE_STUDIO_PARTIAL_IMAGES", 0, 0, 3),
@@ -349,7 +355,7 @@ const config = {
   maxJsonBodyBytes: boundedIntegerEnv("MAX_JSON_BODY_MB", 80, 1, 200) * 1024 * 1024,
   downloadImageMaxBytes: boundedIntegerEnv("DOWNLOAD_IMAGE_MAX_MB", 25, 1, 100) * 1024 * 1024,
   downloadImageTimeoutMs: boundedIntegerEnv("DOWNLOAD_IMAGE_TIMEOUT_SECONDS", 15, 2, 120) * 1000,
-  imageApiMode: normalizeImageApiMode(process.env.IMAGE_API_MODE || process.env.IMAGE_GENERATION_API_MODE || "responses"),
+  imageApiMode: normalizeImageApiMode(process.env.IMAGE_API_MODE || process.env.IMAGE_GENERATION_API_MODE || "images"),
   imageGenerationConcurrency: boundedIntegerEnv(["IMAGE_GENERATION_CONCURRENCY", "LAOGUI_IMAGE_CONCURRENCY"], 2, 1, 8),
   imageGenerationQueueMaxPending: boundedIntegerEnv(["IMAGE_GENERATION_QUEUE_MAX_PENDING", "LAOGUI_IMAGE_QUEUE_MAX_PENDING"], 12, 0, 200),
   imageGenerationQueueTimeoutMs: boundedIntegerEnv(["IMAGE_GENERATION_QUEUE_TIMEOUT_SECONDS", "LAOGUI_IMAGE_QUEUE_TIMEOUT_SECONDS"], 600, 10, 3600) * 1000,
@@ -408,6 +414,7 @@ const COMPRESSIBLE_STATIC_EXTENSIONS = new Set([
   ".html",
   ".css",
   ".js",
+  ".mjs",
   ".json",
   ".svg",
   ".gltf",
@@ -2508,6 +2515,107 @@ function imageExtensionFromMime(mime = "") {
   if (normalized.includes("webp")) return "webp";
   if (normalized.includes("gif")) return "gif";
   return "png";
+}
+
+function decodedImageDataUrl(dataUrl) {
+  const match = String(dataUrl || "").match(/^data:(image\/(?:png|jpeg|jpg|webp));base64,([A-Za-z0-9+/=\s]+)$/i);
+  if (!match) {
+    const error = new Error("只接受 PNG、JPG 或 WebP 图片");
+    error.status = 400;
+    throw error;
+  }
+  return { mime: match[1].toLowerCase().replace("image/jpg", "image/jpeg"), buffer: Buffer.from(match[2].replace(/\s/g, ""), "base64") };
+}
+
+function decodedImageDimensions(buffer, mime) {
+  if (mime === "image/png" && buffer.length >= 24 && buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
+    return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+  }
+  if (mime === "image/jpeg") {
+    let offset = 2;
+    while (offset + 9 < buffer.length) {
+      if (buffer[offset] !== 0xff) { offset += 1; continue; }
+      const marker = buffer[offset + 1];
+      if ([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(marker)) {
+        return { width: buffer.readUInt16BE(offset + 7), height: buffer.readUInt16BE(offset + 5) };
+      }
+      const length = buffer.readUInt16BE(offset + 2);
+      if (!length) break;
+      offset += 2 + length;
+    }
+  }
+  if (mime === "image/webp" && buffer.length >= 30 && buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "WEBP") {
+    const kind = buffer.toString("ascii", 12, 16);
+    if (kind === "VP8X") {
+      return { width: 1 + buffer.readUIntLE(24, 3), height: 1 + buffer.readUIntLE(27, 3) };
+    }
+    if (kind === "VP8 " && buffer.length >= 30) {
+      return { width: buffer.readUInt16LE(26) & 0x3fff, height: buffer.readUInt16LE(28) & 0x3fff };
+    }
+    if (kind === "VP8L" && buffer.length >= 25) {
+      const bits = buffer.readUInt32LE(21);
+      return { width: (bits & 0x3fff) + 1, height: ((bits >> 14) & 0x3fff) + 1 };
+    }
+  }
+  const error = new Error("无法读取图片尺寸或图片格式不受支持");
+  error.status = 400;
+  throw error;
+}
+
+function pngMaskInfo(buffer) {
+  const dimensions = decodedImageDimensions(buffer, "image/png");
+  const bitDepth = buffer[24];
+  const colorType = buffer[25];
+  if (bitDepth !== 8 || colorType !== 6) {
+    const error = new Error("蒙版必须是 8 位 RGBA PNG");
+    error.status = 400;
+    throw error;
+  }
+  const chunks = [];
+  let offset = 8;
+  while (offset + 12 <= buffer.length) {
+    const length = buffer.readUInt32BE(offset);
+    const type = buffer.toString("ascii", offset + 4, offset + 8);
+    if (type === "IDAT") chunks.push(buffer.subarray(offset + 8, offset + 8 + length));
+    offset += length + 12;
+    if (type === "IEND") break;
+  }
+  const packed = inflateSync(Buffer.concat(chunks));
+  const rowBytes = dimensions.width * 4;
+  const previous = Buffer.alloc(rowBytes);
+  let sourceOffset = 0;
+  let hasEditablePixel = false;
+  for (let y = 0; y < dimensions.height; y += 1) {
+    const filter = packed[sourceOffset++];
+    const row = Buffer.allocUnsafe(rowBytes);
+    for (let x = 0; x < rowBytes; x += 1) {
+      const raw = packed[sourceOffset++];
+      const left = x >= 4 ? row[x - 4] : 0;
+      const up = previous[x];
+      const upLeft = x >= 4 ? previous[x - 4] : 0;
+      let value = raw;
+      if (filter === 1) value += left;
+      else if (filter === 2) value += up;
+      else if (filter === 3) value += Math.floor((left + up) / 2);
+      else if (filter === 4) {
+        const p = left + up - upLeft;
+        const pa = Math.abs(p - left);
+        const pb = Math.abs(p - up);
+        const pc = Math.abs(p - upLeft);
+        value += pa <= pb && pa <= pc ? left : pb <= pc ? up : upLeft;
+      } else if (filter !== 0) {
+        const error = new Error("蒙版 PNG 使用了不支持的滤镜");
+        error.status = 400;
+        throw error;
+      }
+      row[x] = value & 0xff;
+    }
+    for (let x = 3; x < rowBytes; x += 4) {
+      if (row[x] < 250) { hasEditablePixel = true; break; }
+    }
+    row.copy(previous);
+  }
+  return { ...dimensions, hasEditablePixel };
 }
 
 async function safeJsonResponse(response) {
@@ -5359,6 +5467,19 @@ async function writeImageStudioFhlReferences(inputImages = [], outputDir) {
   }));
 }
 
+async function writeImageStudioFhlMask(maskImage, outputDir) {
+  if (!maskImage?.dataUrl) return "";
+  const { mime, buffer } = decodedImageDataUrl(maskImage.dataUrl);
+  if (mime !== "image/png") {
+    const error = new Error("精准编辑蒙版必须是 PNG");
+    error.status = 400;
+    throw error;
+  }
+  const filePath = path.join(outputDir, "edit-mask.png");
+  await fs.writeFile(filePath, buffer);
+  return filePath;
+}
+
 async function runImageStudioEngine({ prompt, inputImages = [], size = "auto", quality = "medium", sourceOverride = null, imageModelOverride = "", textModelOverride = "", fastMode = false } = {}) {
   const status = imageStudioEngineStatus();
   if (!status.enabled || !status.available) {
@@ -5488,7 +5609,7 @@ function redactImageStudioCommand(command = "") {
   return String(command || "").replace(/(--api-key\s+)(?:"[^"]+"|\S+)/g, "$1<redacted>");
 }
 
-async function runImageStudioFhlSkill({ prompt, inputImages = [], size = "auto", quality = "medium" } = {}) {
+async function runImageStudioFhlSkill({ prompt, inputImages = [], maskImage = null, size = "auto", quality = "medium", providerOverride = "" } = {}) {
   const status = imageStudioFhlSkillStatus();
   if (!status.enabled) {
     const error = new Error(status.available
@@ -5501,10 +5622,12 @@ async function runImageStudioFhlSkill({ prompt, inputImages = [], size = "auto",
   const outputDir = path.join(status.outputDir, `${Date.now()}-${randomUUID().slice(0, 8)}`);
   await fs.mkdir(outputDir, { recursive: true });
   const references = await writeImageStudioFhlReferences(inputImages, outputDir);
+  const maskPath = await writeImageStudioFhlMask(maskImage, outputDir);
+  const provider = providerOverride ? normalizeImageStudioFhlProvider(providerOverride) : status.provider;
   const args = [
     status.script,
     "--provider",
-    status.provider,
+    provider,
     "--prompt",
     String(prompt || ""),
     "--output-dir",
@@ -5520,6 +5643,7 @@ async function runImageStudioFhlSkill({ prompt, inputImages = [], size = "auto",
     String(status.timeoutSeconds)
   ];
   for (const filePath of references) args.push("--reference-image", filePath);
+  if (maskPath) args.push("--mask-image", maskPath);
 
   const result = await runCommand("python3", args, {
     cwd: outputDir,
@@ -5527,7 +5651,7 @@ async function runImageStudioFhlSkill({ prompt, inputImages = [], size = "auto",
   });
   const combinedOutput = [result.stdout, result.stderr].filter(Boolean).join("\n");
   const resultImage = imageStudioFhlResultLine(combinedOutput, "RESULT_IMAGE");
-  const resultProvider = imageStudioFhlResultLine(combinedOutput, "RESULT_PROVIDER") || status.provider;
+  const resultProvider = imageStudioFhlResultLine(combinedOutput, "RESULT_PROVIDER") || provider;
   const rawResponses = imageStudioFhlTaggedLines(combinedOutput, "RAW_RESPONSE");
   const diagnoses = imageStudioFhlTaggedLines(combinedOutput, "DIAGNOSIS");
 
@@ -5541,7 +5665,7 @@ async function runImageStudioFhlSkill({ prompt, inputImages = [], size = "auto",
     error.details = {
       command: result.command,
       outputDir,
-      provider: status.provider,
+      provider,
       rawResponses,
       diagnoses: [...new Set(diagnoses)],
       desktopProfile: status.desktop,
@@ -5568,7 +5692,8 @@ async function runImageStudioFhlSkill({ prompt, inputImages = [], size = "auto",
       size: String(size || "auto"),
       quality: normalizeImageToolQuality(quality),
       output_format: "png",
-      provider: "auto",
+      provider,
+      masked_edit: Boolean(maskPath),
       no_auto_retry: true
     },
     diagnostics: {
@@ -5584,6 +5709,231 @@ async function runImageStudioFhlSkill({ prompt, inputImages = [], size = "auto",
       outputDir,
       resultImage: imagePath
     }
+  };
+}
+
+const AI_EDIT_OPERATIONS = new Set(["remove", "replace", "material", "detail", "custom"]);
+
+function responsesOutputText(body = {}) {
+  if (typeof body?.output_text === "string" && body.output_text.trim()) return body.output_text.trim();
+  return findOutputText(body).trim();
+}
+
+let aiEditPromptOptimizerUnavailableUntil = 0;
+let aiEditPromptOptimizerUnavailableReason = "";
+
+function normalizeAiEditUserPrompt(value = "") {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (text.length >= 8 && text.length % 2 === 0) {
+    const half = text.length / 2;
+    if (text.slice(0, half) === text.slice(half)) return text.slice(0, half);
+  }
+  return text;
+}
+
+async function optimizeAiEditInstruction({ operation, userPrompt = "", regionNumber = 1, selectionMode = "precise" } = {}) {
+  const fallback = fallbackAiEditInstruction(operation, userPrompt);
+  if (Date.now() < aiEditPromptOptimizerUnavailableUntil) {
+    return {
+      instruction: fallback,
+      optimizer: "structured-fallback",
+      fallbackReason: aiEditPromptOptimizerUnavailableReason || "FHL 当前没有可用的文字模型通道"
+    };
+  }
+  const source = imageProviderSources().find((item) => item?.apiKey && isFhlBaseUrl(item.baseUrl));
+  if (!source) {
+    return {
+      instruction: fallback,
+      optimizer: "structured-fallback",
+      fallbackReason: "没有可用的 FHL 文本优化接口"
+    };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 45000);
+  try {
+    const response = await fetch(providerUrl(source, providerResponsesPath(source)), {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${source.apiKey}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        model: config.imageToolRunnerModel,
+        instructions: "只优化局部图片编辑提示词，不生成图片，不解释过程，只返回最终编辑要求正文。",
+        input: [{
+          role: "user",
+          content: [{ type: "input_text", text: buildAiEditOptimizerInput({ operation, userPrompt, regionNumber, selectionMode }) }]
+        }],
+        reasoning: { effort: "low" },
+        max_output_tokens: 900,
+        store: false,
+        stream: false
+      }),
+      signal: controller.signal
+    });
+    const responseBody = await safeJsonResponse(response);
+    if (!response.ok) {
+      throw new Error(responseBody?.error?.message || responseBody?.message || `提示词优化接口返回 ${response.status}`);
+    }
+    const instruction = normalizeAiEditInstruction(responsesOutputText(responseBody), fallback);
+    if (!instruction) throw new Error("提示词优化接口没有返回有效内容");
+    aiEditPromptOptimizerUnavailableUntil = 0;
+    aiEditPromptOptimizerUnavailableReason = "";
+    return {
+      instruction,
+      optimizer: config.imageToolRunnerModel,
+      fallbackReason: ""
+    };
+  } catch (error) {
+    const rawReason = error.name === "AbortError" ? "提示词优化超时" : String(error.message || "提示词优化失败");
+    const fallbackReason = /无可用渠道|distributor/i.test(rawReason)
+      ? "FHL 当前没有可用的文字模型通道，已自动使用专业编辑规则优化"
+      : rawReason;
+    if (/无可用渠道|distributor/i.test(rawReason)) {
+      aiEditPromptOptimizerUnavailableUntil = Date.now() + 30 * 60 * 1000;
+      aiEditPromptOptimizerUnavailableReason = fallbackReason;
+    }
+    return {
+      instruction: fallback,
+      optimizer: "structured-fallback",
+      fallbackReason
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function runAiEdit(body = {}) {
+  const operation = String(body.operation || "").trim().toLowerCase();
+  if (!AI_EDIT_OPERATIONS.has(operation)) {
+    const error = new Error("不支持的 AI 编辑类型");
+    error.status = 400;
+    throw error;
+  }
+  if (!body.image?.dataUrl || !body.mask?.dataUrl) {
+    const error = new Error("原始图片和蒙版都不能为空");
+    error.status = 400;
+    throw error;
+  }
+  const source = decodedImageDataUrl(body.image.dataUrl);
+  const mask = decodedImageDataUrl(body.mask.dataUrl);
+  if (mask.mime !== "image/png") {
+    const error = new Error("蒙版必须是 PNG 图片");
+    error.status = 400;
+    throw error;
+  }
+  const sourceSize = decodedImageDimensions(source.buffer, source.mime);
+  const maskInfo = pngMaskInfo(mask.buffer);
+  if (sourceSize.width !== maskInfo.width || sourceSize.height !== maskInfo.height) {
+    const error = new Error("蒙版尺寸必须与原图完全一致");
+    error.status = 400;
+    throw error;
+  }
+  if (Number(body.mask.width || 0) !== sourceSize.width || Number(body.mask.height || 0) !== sourceSize.height) {
+    const error = new Error("蒙版声明尺寸与图片实际尺寸不一致");
+    error.status = 400;
+    throw error;
+  }
+  if (!maskInfo.hasEditablePixel || Number(body.mask.bounds?.area || 0) <= 0) {
+    const error = new Error("蒙版中没有可编辑的选区");
+    error.status = 400;
+    throw error;
+  }
+  const regionNumber = Math.max(1, Math.min(2, Number(body.regionNumber || 1)));
+  const selectionMode = body.selectionMode === "semantic" ? "semantic" : "precise";
+  const userPrompt = normalizeAiEditUserPrompt(body.prompt || "");
+  const promptOptimizationEnabled = body.promptOptimizationEnabled === true;
+  const promptOptimization = promptOptimizationEnabled
+    ? await optimizeAiEditInstruction({ operation, userPrompt, regionNumber, selectionMode })
+    : {
+        instruction: userPrompt || fallbackAiEditInstruction(operation, userPrompt),
+        optimizer: "off",
+        fallbackReason: ""
+      };
+  const prompt = buildAiEditFinalPrompt({
+    operation,
+    optimizedInstruction: promptOptimization.instruction,
+    userPrompt,
+    regionNumber,
+    selectionMode
+  });
+  const generated = await runImageStudioFhlSkill({
+    prompt,
+    inputImages: [body.image],
+    maskImage: body.mask,
+    size: imageStudioCliSize(body.outputSize || "auto"),
+    quality: body.quality || "high",
+    providerOverride: "auto"
+  });
+  const title = {
+    remove: "局部消除结果",
+    replace: "局部替换结果",
+    material: "材质替换结果",
+    detail: "细节增强结果",
+    custom: "自定义编辑结果"
+  }[operation];
+  const saved = await saveGeneratedImage({
+    buffer: generated.buffer,
+    slug: `ai-edit-${operation}`,
+    meta: {
+      type: "ai-edit",
+      operation,
+      regionNumber,
+      selection_mode: selectionMode,
+      prompt: userPrompt,
+      prompt_optimization_enabled: promptOptimizationEnabled,
+      optimized_prompt: promptOptimization.instruction,
+      final_prompt: prompt,
+      prompt_optimizer: promptOptimization.optimizer,
+      prompt_optimization_fallback_reason: promptOptimization.fallbackReason,
+      parentImageId: String(body.parentImageId || ""),
+      parentNodeId: String(body.parentNodeId || ""),
+      workflowId: String(body.workflowId || ""),
+      sourceSize,
+      masked: true
+    },
+    extra: {
+      imageApi: generated.imageApi,
+      actualParams: {
+        ...generated.actualParams,
+        selection_mode: selectionMode,
+        prompt_optimization_enabled: promptOptimizationEnabled,
+        prompt_optimizer: promptOptimization.optimizer
+      },
+      endpoint: generated.endpoint,
+      prompt,
+      sourcePrompt: userPrompt,
+      thinking: !promptOptimizationEnabled
+        ? "提示词优化已关闭，已将用户原始要求直接交给 FHL 图片大模型。"
+        : promptOptimization.fallbackReason
+          ? `提示词大模型不可用，已使用专业编辑规则优化：${promptOptimization.fallbackReason}`
+          : `已由 ${promptOptimization.optimizer} 优化局部编辑提示词，再交给 FHL 图片大模型。`,
+      reasoningModel: promptOptimization.optimizer
+    }
+  });
+  return {
+    id: `ai-edit-${Date.now()}-${randomUUID().slice(0, 8)}`,
+    title,
+    mode: `ai-edit-${operation}`,
+    stepMode: `ai-edit-${operation}`,
+    intent: String(userPrompt || title),
+    optimizedPrompt: promptOptimization.instruction,
+    selectionMode,
+    promptOptimizationEnabled,
+    prompt,
+    sourcePrompt: userPrompt,
+    thinking: !promptOptimizationEnabled
+      ? "提示词优化已关闭，已将用户原始要求直接交给 FHL 图片大模型。"
+      : promptOptimization.fallbackReason
+        ? `提示词大模型不可用，已使用专业编辑规则优化：${promptOptimization.fallbackReason}`
+        : `已由 ${promptOptimization.optimizer} 优化局部编辑提示词，再交给 FHL 图片大模型。`,
+    reasoningModel: promptOptimization.optimizer,
+    createdAt: new Date().toISOString(),
+    parentImageId: String(body.parentImageId || ""),
+    parentNodeId: String(body.parentNodeId || ""),
+    workflowId: String(body.workflowId || ""),
+    ...saved
   };
 }
 
@@ -11134,14 +11484,16 @@ function summarizeTaskInput(body = {}) {
     inputImageType: body.inputImageType || body.primaryImage?.inputAnalysis?.label || body.primaryImage?.sourceType || null,
     size: body.size || null,
     quality: body.quality || null,
+    promptOptimizationEnabled: body.promptOptimizationEnabled === true,
+    selectionMode: body.selectionMode || null,
     skill: body.skill || null,
     useCase: body.useCase || null,
     intentKind: body.intentKind || null,
     primaryRequest: truncateLogText(body.primaryRequest || "", 5000),
-    userPrompt: truncateLogText(body.userPrompt || "", 5000),
-    intent: truncateLogText(body.intent || body.imagePrompt || body.primaryRequest || "", 5000),
+    userPrompt: truncateLogText(body.userPrompt || body.prompt || "", 5000),
+    intent: truncateLogText(body.intent || body.imagePrompt || body.primaryRequest || body.prompt || "", 5000),
     brief: body.brief || null,
-    selection: body.selection || null,
+    selection: body.selection || body.mask?.bounds || null,
     seriesIndex: body.seriesIndex || null,
     seriesCount: body.seriesCount || body.count || null,
     primaryImage: summarizeImageForLog(body.primaryImage),
@@ -11411,12 +11763,12 @@ function normalizeRuntimeProvider(provider = {}, existing = null, { kind = "imag
   };
   if (kind === "image") {
     const providerManifest = providerManifestFromInput(provider, existing);
-    normalized.apiMode = normalizeImageApiMode(provider.apiMode || provider.imageApiMode || existing?.apiMode || config.imageApiMode || "responses");
+    normalized.apiMode = normalizeImageApiMode(provider.apiMode || provider.imageApiMode || existing?.apiMode || config.imageApiMode || "images");
     normalized.responsesTransport = normalizeResponsesTransport(provider.responsesTransport || existing?.responsesTransport || config.imageStudioEngine.responsesTransport || "sse");
     normalized.requestPolicy = normalizeImageStudioRequestPolicy(provider.requestPolicy || existing?.requestPolicy || config.imageStudioEngine.requestPolicy || "openai");
     normalized.imagesNewApiCompat = parseBooleanEnv(
       provider.imagesNewApiCompat,
-      existing?.imagesNewApiCompat ?? config.imageStudioEngine.imagesNewApiCompat ?? false
+      existing?.imagesNewApiCompat ?? config.imageStudioEngine.imagesNewApiCompat ?? true
     );
     normalized.reasoningEffort = normalizeImageStudioReasoningEffort(provider.reasoningEffort || existing?.reasoningEffort || config.imageStudioEngine.reasoningEffort || "xhigh");
     normalized.imageGenerationPath = normalizeProviderApiPath(
@@ -11441,7 +11793,7 @@ function publicRuntimeProvider(provider, { source = "" } = {}) {
     apiMode: provider?.apiMode || "",
     responsesTransport: provider?.responsesTransport || "",
     requestPolicy: provider?.requestPolicy || "",
-    imagesNewApiCompat: provider?.imagesNewApiCompat ?? false,
+    imagesNewApiCompat: provider?.imagesNewApiCompat ?? config.imageStudioEngine.imagesNewApiCompat,
     reasoningEffort: provider?.reasoningEffort || "",
     responsesPath: provider?.responsesPath || "",
     imageGenerationPath: provider?.imageGenerationPath || "",
@@ -11509,7 +11861,7 @@ function publicRuntimeImageEndpoint(endpoint) {
     apiMode: endpoint.apiMode || "",
     responsesTransport: endpoint.responsesTransport || "",
     requestPolicy: endpoint.requestPolicy || "",
-    imagesNewApiCompat: endpoint.imagesNewApiCompat ?? false,
+    imagesNewApiCompat: endpoint.imagesNewApiCompat ?? config.imageStudioEngine.imagesNewApiCompat,
     reasoningEffort: endpoint.reasoningEffort || "",
     imageGenerationPath: endpoint.imageGenerationPath,
     imageEditPath: endpoint.imageEditPath,
@@ -13167,7 +13519,7 @@ function createOpenApiDocument(req) {
             apiMode: { type: "string", enum: ["responses", "images", "auto"] },
             responsesTransport: { type: "string" },
             requestPolicy: { type: "string" },
-            imagesNewApiCompat: { type: "boolean", default: false, description: "关闭时优先使用 Images API 流式返回；仅在旧中转不支持流式时开启。" },
+            imagesNewApiCompat: { type: "boolean", default: true, description: "默认使用普通 JSON 返回；关闭后改用 Images API 流式返回。" },
             reasoningEffort: { type: "string" },
             responsesPath: { type: "string" },
             imageGenerationPath: { type: "string" },
@@ -13259,6 +13611,8 @@ async function serveStatic(req, res) {
       ".html": "text/html; charset=utf-8",
       ".css": "text/css; charset=utf-8",
       ".js": "text/javascript; charset=utf-8",
+      ".mjs": "text/javascript; charset=utf-8",
+      ".wasm": "application/wasm",
       ".png": "image/png",
       ".jpg": "image/jpeg",
       ".jpeg": "image/jpeg",
@@ -13349,6 +13703,8 @@ async function serveStaticFromDir(req, res, baseDir, requestedPath) {
       ".svg": "image/svg+xml; charset=utf-8",
       ".json": "application/json; charset=utf-8",
       ".js": "text/javascript; charset=utf-8",
+      ".mjs": "text/javascript; charset=utf-8",
+      ".wasm": "application/wasm",
       ".glb": "model/gltf-binary",
       ".gltf": "model/gltf+json; charset=utf-8",
       ".dxf": "application/dxf",
@@ -13957,6 +14313,19 @@ async function handleApi(req, res) {
       };
       await appendTaskLog(entry, clientId);
       sendJson(res, 200, { ok: true, log: entry });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/ai-edit") {
+      const clientId = await clientIdFromRequest(req, url);
+      const body = await readJson(req);
+      const render = await runLoggedTask({
+        type: "ai-edit",
+        body,
+        clientId,
+        run: () => withImageGenerationSlot("ai-edit", () => runAiEdit(body))
+      });
+      sendJson(res, 200, { ok: true, render });
       return;
     }
 
