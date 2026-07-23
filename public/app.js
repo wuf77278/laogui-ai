@@ -548,6 +548,7 @@ const els = {
   apiImportFileInput: $("apiImportFileInput"),
   apiImportFolderInput: $("apiImportFolderInput"),
   imageApiProfileName: $("imageApiProfileName"),
+  imageApiProfilePriority: $("imageApiProfilePriority"),
   imageApiProfileList: $("imageApiProfileList"),
   workspaceApiSwitcher: $("workspaceApiSwitcher"),
   workspaceApiStatusDot: $("workspaceApiStatusDot"),
@@ -3753,6 +3754,7 @@ function renderApiSettingsAccess() {
   const disabled = !state.canManageApiSettings;
   [
     els.imageApiProfileName,
+    els.imageApiProfilePriority,
     els.addImageApiProfileButton,
     els.probeAllImageApiProfilesButton,
     els.apiImportText,
@@ -4052,11 +4054,12 @@ function renderWorkspaceApiSwitcher() {
   const activeProvider = imageApiProfileProvider(activeProfile);
 
   els.workspaceApiProfileSelect.innerHTML = profiles.length
-    ? profiles.map((profile) => {
+    ? profiles.map((profile, index) => {
       const profileConnection = imageApiProfileConnectionInfo(profile);
       const latency = Number(profile?.latencyMs);
       const latencyText = Number.isFinite(latency) && latency >= 0 ? `${Math.round(latency)}ms` : profileConnection.label;
-      return `<option value="${escapeAttr(profile.id)}" ${isActiveImageApiProfile(profile) ? "selected" : ""}>${escapeHtml(profile.label || "未命名配置")} · ${escapeHtml(latencyText)}</option>`;
+      const priority = Number(profile?.priority) > 0 ? Number(profile.priority) : index + 1;
+      return `<option value="${escapeAttr(profile.id)}" ${isActiveImageApiProfile(profile) ? "selected" : ""}>#${priority} ${escapeHtml(profile.label || "未命名配置")} · ${escapeHtml(latencyText)}</option>`;
     }).join("")
     : `<option value="">未配置 API</option>`;
   els.workspaceApiProfileSelect.disabled = !profiles.length || !state.canManageApiSettings;
@@ -4093,8 +4096,9 @@ function renderImageApiProfileList() {
     return;
   }
   const readOnly = !state.canManageApiSettings;
-  els.imageApiProfileList.innerHTML = profiles.map((profile) => {
+  els.imageApiProfileList.innerHTML = profiles.map((profile, index) => {
     const provider = imageApiProfileProvider(profile);
+    const priority = Number(profile.priority) > 0 ? Number(profile.priority) : index + 1;
     const active = isActiveImageApiProfile(profile);
     const editing = profile.id === state.editingImageApiProfileId;
     const connection = imageApiProfileConnectionInfo(profile);
@@ -4107,7 +4111,7 @@ function renderImageApiProfileList() {
           <span class="api-profile-dot"></span>
           <strong>${escapeHtml(profile.label || "未命名配置")}</strong>
           <small>${escapeHtml(endpointText || "未填写接口地址")}</small>
-          <small>${escapeHtml(active ? `当前使用 · ${savedKeyText}` : `${editing ? "正在编辑 · " : ""}${savedKeyText}`)}</small>
+          <small>${escapeHtml(`优先级 #${priority} · ${active ? "当前使用 · " : ""}${editing ? "正在编辑 · " : ""}${savedKeyText}`)}</small>
           <small class="api-profile-connection ${escapeAttr(connection.className)}">${escapeHtml(`${connection.label} · ${connection.detail}`)}</small>
         </button>
         <div class="api-profile-role-actions">
@@ -4127,6 +4131,10 @@ function fillImageApiProfileEditor(profile = null) {
   const provider = imageApiProfileProvider(profile);
   const baseUrl = provider.baseUrl || "";
   if (els.imageApiProfileName) els.imageApiProfileName.value = profile?.label || "";
+  if (els.imageApiProfilePriority) {
+    const index = profile ? state.imageApiProfiles.findIndex((item) => item.id === profile.id) : state.imageApiProfiles.length;
+    els.imageApiProfilePriority.value = String(Number(profile?.priority) > 0 ? profile.priority : index + 1);
+  }
   if (els.primaryImageApiBaseUrl) els.primaryImageApiBaseUrl.value = baseUrl;
   if (els.primaryImageApiModel) els.primaryImageApiModel.value = provider.model || "gpt-image-2";
   if (els.primaryImageApiMode) els.primaryImageApiMode.value = provider.apiMode || "images";
@@ -4242,6 +4250,7 @@ function runtimeProviderProbePayload(kind) {
 function currentImageApiPayload() {
   const payload = {
     label: els.imageApiProfileName?.value.trim() || "",
+    priority: Math.max(1, Number.parseInt(els.imageApiProfilePriority?.value || "1", 10) || 1),
     baseUrl: els.primaryImageApiBaseUrl?.value.trim() || "",
     model: els.primaryImageApiModel?.value.trim() || "gpt-image-2",
     apiMode: els.primaryImageApiMode?.value || "images",
@@ -19221,6 +19230,7 @@ els.imageApiProfileList?.addEventListener("click", (event) => {
 });
 [
   els.imageApiProfileName,
+  els.imageApiProfilePriority,
   els.primaryImageApiBaseUrl,
   els.primaryImageApiModel,
   els.primaryImageApiMode,

@@ -329,7 +329,7 @@ const config = {
   },
   imageStudioFhlSkill: {
     enabled: process.env.IMAGE_STUDIO_FHL_ENABLED || process.env.FHL_IMAGE_STUDIO_ENABLED || "auto",
-    script: process.env.IMAGE_STUDIO_FHL_SCRIPT || "/Users/Apple_501/.codex/skills/image-studio-fhl/scripts/yingfang_image.py",
+    script: process.env.IMAGE_STUDIO_FHL_SCRIPT || "/Users/Apple_501/.codex/skills/aggregate-image-generation/scripts/yingfang_image.py",
     provider: process.env.IMAGE_STUDIO_FHL_PROVIDER || "auto",
     outputDir: process.env.IMAGE_STUDIO_FHL_OUTPUT_DIR || path.join(logsDir, "image-studio-fhl"),
     timeoutSeconds: boundedIntegerEnv("IMAGE_STUDIO_FHL_TIMEOUT_SECONDS", 300, 30, 900)
@@ -1357,7 +1357,6 @@ function allRuntimeImageEndpointSources() {
 
 function runtimeImageEndpointSources() {
   return runtimeSettings.imageEndpoints
-    .filter((endpoint) => endpoint?.enabled === true)
     .map(runtimeImageEndpointSource)
     .filter(Boolean);
 }
@@ -1432,6 +1431,11 @@ function imageEndpointBlockReason(source, now = Date.now()) {
 }
 
 function imageEndpointPriority(baseUrl) {
+  const runtimeEndpoint = runtimeSettings.imageEndpoints.find(
+    (endpoint) => normalizeBaseUrl(endpoint?.baseUrl) === normalizeBaseUrl(baseUrl)
+  );
+  const runtimePriority = Number(runtimeEndpoint?.priority);
+  if (Number.isInteger(runtimePriority) && runtimePriority > 0) return runtimePriority;
   const priorityIndex = priorityImageBaseUrls().indexOf(normalizeBaseUrl(baseUrl));
   return priorityIndex >= 0 ? priorityIndex + 1 : null;
 }
@@ -1461,6 +1465,11 @@ function orderedImageProviderSources({ includeBlocked = false } = {}) {
     .map((source, index) => ({ source, stat: imageEndpointStat(source.baseUrl), index }))
     .filter((item) => includeBlocked || !imageEndpointBlockReason(item.source, now))
     .sort((a, b) => {
+      const aPriority = imageEndpointPriority(a.source.baseUrl);
+      const bPriority = imageEndpointPriority(b.source.baseUrl);
+      if (aPriority && bPriority && aPriority !== bPriority) return aPriority - bPriority;
+      if (aPriority && !bPriority) return -1;
+      if (!aPriority && bPriority) return 1;
       const score = (item) => {
         const unsupported = item.stat.imageUnsupportedUntil > now ? 1 : 0;
         const cooling = item.stat.cooldownUntil > now ? 1 : 0;
@@ -11703,14 +11712,48 @@ async function writeCanvasState(body = {}, clientId = "local") {
 
 function normalizeRuntimeImageEndpoint(endpoint = {}, existing = null) {
   const provider = normalizeRuntimeProvider(endpoint, existing, { kind: "image" });
+  const requestedPriority = Number(endpoint.priority ?? endpoint.rank ?? endpoint.order ?? existing?.priority);
   return {
     id: String(existing?.id || endpoint.id || randomUUID()),
     label: String(endpoint.label || endpoint.name || existing?.label || shortRuntimeEndpointLabel(provider.baseUrl)).trim(),
     ...provider,
+    priority: Number.isInteger(requestedPriority) && requestedPriority > 0 ? requestedPriority : 0,
     enabled: parseBooleanEnv(endpoint.enabled, existing?.enabled ?? true),
     createdAt: existing?.createdAt || new Date().toISOString(),
     updatedAt: provider.updatedAt || new Date().toISOString()
   };
+}
+
+function sortAndRenumberRuntimeImageEndpoints() {
+  runtimeSettings.imageEndpoints = runtimeSettings.imageEndpoints
+    .map((endpoint, index) => ({ endpoint, index }))
+    .sort((a, b) => {
+      const aPriority = Number.isInteger(a.endpoint.priority) && a.endpoint.priority > 0
+        ? a.endpoint.priority
+        : a.index + 1;
+      const bPriority = Number.isInteger(b.endpoint.priority) && b.endpoint.priority > 0
+        ? b.endpoint.priority
+        : b.index + 1;
+      return aPriority - bPriority || a.index - b.index;
+    })
+    .map(({ endpoint }, index) => ({ ...endpoint, priority: index + 1 }));
+  return runtimeSettings.imageEndpoints;
+}
+
+function moveRuntimeImageEndpointToPriority(id, requestedPriority) {
+  sortAndRenumberRuntimeImageEndpoints();
+  const currentIndex = runtimeSettings.imageEndpoints.findIndex((endpoint) => endpoint.id === id);
+  if (currentIndex < 0) return null;
+  const [endpoint] = runtimeSettings.imageEndpoints.splice(currentIndex, 1);
+  const numericPriority = Number(requestedPriority);
+  const targetIndex = Number.isInteger(numericPriority) && numericPriority > 0
+    ? Math.min(numericPriority - 1, runtimeSettings.imageEndpoints.length)
+    : runtimeSettings.imageEndpoints.length;
+  runtimeSettings.imageEndpoints.splice(targetIndex, 0, endpoint);
+  runtimeSettings.imageEndpoints.forEach((item, index) => {
+    item.priority = index + 1;
+  });
+  return endpoint;
 }
 
 function shortRuntimeEndpointLabel(baseUrl) {
@@ -11855,6 +11898,7 @@ function publicRuntimeImageEndpoint(endpoint) {
   return {
     id: endpoint.id,
     label: endpoint.label,
+    priority: endpoint.priority,
     baseUrl: endpoint.baseUrl,
     model: endpoint.model || "",
     responsesPath: endpoint.responsesPath,
@@ -11958,11 +12002,13 @@ async function loadRuntimeSettings() {
 
     runtimeSettings.providers = { image: null };
     runtimeSettings.imageEndpoints = endpoints;
-    ensureSingleActiveImageEndpoint(preferredId);
+    sortAndRenumberRuntimeImageEndpoints();
+    ensureSingleActiveImageEndpoint(runtimeSettings.imageEndpoints[0]?.id || preferredId);
     runtimeSettings.storage = normalizeStorageSettings(parsed.storage || {}, parsed.storage || null);
     applyRuntimeProviders();
     const needsMigration = Boolean(providers.image || providers.reasoning || rawProfiles.length)
       || endpoints.length !== rawEndpoints.length
+      || rawEndpoints.some((endpoint) => !Number.isInteger(Number(endpoint?.priority)) || Number(endpoint.priority) < 1)
       || (endpoints.length > 0 && originalEnabledCount !== 1);
     if (needsMigration) await saveRuntimeSettings();
   } catch (error) {
@@ -12010,6 +12056,7 @@ function apiImportCandidate(record = {}, fallbackLabel = "") {
     || (nested.submit && typeof nested.submit === "object" ? nested : undefined);
   return {
     label: unquoteApiImportValue(firstApiImportValue(nested, ["label", "name", "title"])) || fallbackLabel,
+    priority: unquoteApiImportValue(firstApiImportValue(nested, ["priority", "rank", "order", "调用优先级", "优先级", "顺序"])),
     baseUrl,
     apiKey,
     model: unquoteApiImportValue(firstApiImportValue(nested, ["model", "modelName", "imageModel", "image_model"])),
@@ -12053,10 +12100,15 @@ function collectApiImportRecords(parsed) {
 function parseApiImportTextBlock(text = "", fallbackLabel = "") {
   const aliases = {
     label: new Set(["name", "label", "title", "名称", "配置名称"]),
+    priority: new Set(["priority", "rank", "order", "调用优先级", "优先级", "顺序"]),
     baseUrl: new Set(["image_base_url", "openai_base_url", "api_base_url", "base_url", "baseurl", "url", "endpoint", "接口地址", "地址"]),
     apiKey: new Set(["image_api_key", "openai_api_key", "fhl_api_key", "yybb_api_key", "api_key", "apikey", "key", "token", "密钥"]),
     model: new Set(["image_model", "openai_image_model", "model", "模型"]),
     apiMode: new Set(["image_api_mode", "api_mode"]),
+    responsesTransport: new Set(["responses_transport"]),
+    requestPolicy: new Set(["request_policy"]),
+    imagesNewApiCompat: new Set(["images_new_api_compat"]),
+    reasoningEffort: new Set(["reasoning_effort"]),
     responsesPath: new Set(["image_responses_path", "responses_path"]),
     imageGenerationPath: new Set(["image_generations_path", "image_generation_path", "generation_path"]),
     imageEditPath: new Set(["image_edits_path", "image_edit_path", "edit_path"])
@@ -12120,7 +12172,7 @@ async function importRuntimeImageEndpoints(body = {}) {
 
   let added = 0;
   let updated = 0;
-  let preferredId = activeRuntimeImageEndpoint()?.id || "";
+  let preferredId = "";
   const errors = [];
   for (const candidate of candidates) {
     try {
@@ -12140,7 +12192,7 @@ async function importRuntimeImageEndpoints(body = {}) {
         runtimeSettings.imageEndpoints.push(endpoint);
         added += 1;
       }
-      if (candidate.active || (!preferredId && runtimeSettings.imageEndpoints.length === 1)) preferredId = endpoint.id;
+      if (candidate.active) preferredId = endpoint.id;
     } catch (error) {
       errors.push({ label: candidate.label || candidate.baseUrl || "未命名配置", message: error.message || "导入失败" });
     }
@@ -12150,7 +12202,9 @@ async function importRuntimeImageEndpoints(body = {}) {
     error.status = 400;
     throw error;
   }
-  ensureSingleActiveImageEndpoint(preferredId);
+  sortAndRenumberRuntimeImageEndpoints();
+  if (preferredId) moveRuntimeImageEndpointToPriority(preferredId, 1);
+  ensureSingleActiveImageEndpoint(runtimeSettings.imageEndpoints[0]?.id || preferredId);
   runtimeSettings.providers.image = null;
   applyRuntimeProviders();
   await saveRuntimeSettings();
@@ -12168,6 +12222,7 @@ function exportRuntimeImageEndpoints() {
     imageEndpoints: runtimeSettings.imageEndpoints.map((endpoint) => ({
       id: endpoint.id,
       label: endpoint.label,
+      priority: endpoint.priority,
       baseUrl: endpoint.baseUrl,
       apiKey: endpoint.apiKey,
       model: endpoint.model,
@@ -12566,14 +12621,14 @@ async function addRuntimeImageEndpoint(body = {}) {
   if (existingIndex >= 0) {
     runtimeSettings.imageEndpoints[existingIndex] = endpoint;
   } else {
-    runtimeSettings.imageEndpoints.unshift(endpoint);
+    runtimeSettings.imageEndpoints.push(endpoint);
   }
-  const active = activeRuntimeImageEndpoint();
-  ensureSingleActiveImageEndpoint(endpoint.enabled ? endpoint.id : active?.id || endpoint.id);
+  moveRuntimeImageEndpointToPriority(endpoint.id, body.priority || endpoint.priority || runtimeSettings.imageEndpoints.length);
+  ensureSingleActiveImageEndpoint(runtimeSettings.imageEndpoints[0]?.id || endpoint.id);
   runtimeSettings.providers.image = null;
   applyRuntimeProviders();
   await saveRuntimeSettings();
-  return endpoint;
+  return runtimeSettings.imageEndpoints.find((item) => item.id === endpoint.id) || endpoint;
 }
 
 async function updateRuntimeImageEndpoint(id, body = {}) {
@@ -12586,12 +12641,12 @@ async function updateRuntimeImageEndpoint(id, body = {}) {
   const endpoint = normalizeRuntimeImageEndpoint({ ...body, id }, runtimeSettings.imageEndpoints[index]);
   if (runtimeSettings.imageEndpoints[index].apiKey !== endpoint.apiKey) imageEndpointStats.delete(endpoint.baseUrl);
   runtimeSettings.imageEndpoints[index] = endpoint;
-  const active = activeRuntimeImageEndpoint();
-  ensureSingleActiveImageEndpoint(endpoint.enabled ? endpoint.id : active?.id || endpoint.id);
+  moveRuntimeImageEndpointToPriority(endpoint.id, body.priority || endpoint.priority);
+  ensureSingleActiveImageEndpoint(runtimeSettings.imageEndpoints[0]?.id || endpoint.id);
   runtimeSettings.providers.image = null;
   applyRuntimeProviders();
   await saveRuntimeSettings();
-  return endpoint;
+  return runtimeSettings.imageEndpoints.find((item) => item.id === endpoint.id) || endpoint;
 }
 
 async function deleteRuntimeImageEndpoint(id) {
@@ -12604,6 +12659,7 @@ async function deleteRuntimeImageEndpoint(id) {
     error.status = 404;
     throw error;
   }
+  sortAndRenumberRuntimeImageEndpoints();
   if (wasActive || !activeRuntimeImageEndpoint()) ensureSingleActiveImageEndpoint(runtimeSettings.imageEndpoints[0]?.id || "");
   if (removed && !runtimeSettings.imageEndpoints.some((endpoint) => endpoint.baseUrl === removed.baseUrl)) {
     imageEndpointStats.delete(removed.baseUrl);
@@ -12620,12 +12676,13 @@ async function activateRuntimeImageEndpoint(id) {
     error.status = 404;
     throw error;
   }
-  ensureSingleActiveImageEndpoint(endpoint.id);
-  endpoint.updatedAt = new Date().toISOString();
+  moveRuntimeImageEndpointToPriority(endpoint.id, 1);
+  const activeEndpoint = ensureSingleActiveImageEndpoint(endpoint.id);
+  activeEndpoint.updatedAt = new Date().toISOString();
   runtimeSettings.providers.image = null;
   applyRuntimeProviders();
   await saveRuntimeSettings();
-  return endpoint;
+  return activeEndpoint;
 }
 
 async function handleRuntimeImageEndpointSettingsRoute(req, res, routePath) {
@@ -13472,6 +13529,7 @@ function createOpenApiDocument(req) {
           required: ["baseUrl", "apiKey"],
           properties: {
             label: { type: "string" },
+            priority: { type: "integer", minimum: 1, description: "数字越小越优先" },
             baseUrl: { type: "string", description: "可包含端口，例如 http://127.0.0.1:8080 或 https://api.example.com/v1" },
             apiKey: { type: "string" },
             model: { type: "string" },
@@ -13492,6 +13550,7 @@ function createOpenApiDocument(req) {
           properties: {
             id: { type: "string" },
             label: { type: "string" },
+            priority: { type: "integer", minimum: 1, description: "数字越小越优先" },
             baseUrl: { type: "string" },
             model: { type: "string" },
             apiMode: { type: "string" },
