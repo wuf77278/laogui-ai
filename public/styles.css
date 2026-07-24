@@ -858,10 +858,10 @@ a:focus-visible {
 
 .reference-strip {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 6px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
   min-height: 0;
-  margin-top: 10px;
+  margin-top: 12px;
 }
 
 .reference-strip[hidden] {
@@ -871,11 +871,29 @@ a:focus-visible {
 .reference-card {
   position: relative;
   display: grid;
-  gap: 6px;
+  grid-template-columns: 104px minmax(0, 1fr);
+  gap: 12px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid rgba(184, 138, 87, 0.2);
+  border-radius: 8px;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.07), transparent 48%),
+    rgba(20, 19, 16, 0.72);
+  box-shadow: inset 0 1px 0 rgba(255, 244, 214, 0.055), 0 12px 30px rgba(0, 0, 0, 0.16);
+  backdrop-filter: blur(18px) saturate(1.12);
+  -webkit-backdrop-filter: blur(18px) saturate(1.12);
 }
 
 .reference-card.is-muted {
-  opacity: 0.58;
+  opacity: 0.64;
+}
+
+.reference-preview {
+  position: relative;
+  align-self: start;
+  min-width: 0;
+  aspect-ratio: 1;
 }
 
 .reference-remove {
@@ -907,35 +925,157 @@ a:focus-visible {
   color: #fff;
 }
 
-.reference-card img {
+.reference-preview img {
   width: 100%;
-  aspect-ratio: 1;
+  height: 100%;
   object-fit: cover;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--surface-soft);
+  border: 1px solid rgba(214, 181, 124, 0.18);
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.2);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18);
 }
 
-.reference-card select,
-.reference-free-label {
+.reference-index {
+  position: absolute;
+  left: 7px;
+  bottom: 7px;
+  max-width: calc(100% - 14px);
+  padding: 4px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 5px;
+  background: rgba(10, 10, 9, 0.7);
+  color: rgba(255, 250, 239, 0.9);
+  font-size: 10px;
+  font-weight: 720;
+  line-height: 1;
+  backdrop-filter: blur(10px);
+}
+
+.reference-card-body {
+  display: grid;
+  gap: 8px;
   min-width: 0;
-  height: 30px;
-  padding: 0 8px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--surface);
-  color: var(--ink-soft);
-  font-size: 12px;
 }
 
-.reference-weight-select {
+.reference-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reference-control {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.reference-control > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.reference-card select {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 28px 0 9px;
+  border: 1px solid rgba(214, 181, 124, 0.2);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.055);
+  color: var(--ink);
+  font-size: 12px;
+  color-scheme: dark;
+}
+
+.reference-weight-select,
+.reference-usage-select {
   cursor: pointer;
 }
 
-.reference-free-label {
-  display: flex;
+.reference-card select:hover,
+.reference-card select:focus-visible {
+  border-color: rgba(214, 181, 124, 0.46);
+  background: rgba(214, 181, 124, 0.1);
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(184, 138, 87, 0.12);
+}
+
+.reference-edit-button {
+  display: inline-flex;
   align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid rgba(214, 181, 124, 0.18);
+  border-radius: 6px;
+  background: rgba(214, 181, 124, 0.08);
+  color: var(--ink-soft);
+  font-size: 11px;
   font-weight: 720;
+}
+
+.reference-edit-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.reference-edit-button:hover,
+.reference-edit-button:focus-visible {
+  border-color: rgba(214, 181, 124, 0.42);
+  background: rgba(214, 181, 124, 0.15);
+  color: var(--ink);
+  outline: none;
+}
+
+body[data-theme="night"].workspace-active .reference-card {
+  border-color: rgba(214, 181, 124, 0.18) !important;
+  background:
+    linear-gradient(145deg, rgba(255, 244, 214, 0.055), transparent 52%),
+    rgba(18, 17, 14, 0.76) !important;
+  color: #f4ecdc !important;
+}
+
+body[data-theme="night"].workspace-active .reference-card select {
+  border-color: rgba(214, 181, 124, 0.2) !important;
+  background: rgba(255, 255, 255, 0.055) !important;
+  color: #f4ecdc !important;
+  color-scheme: dark;
+}
+
+body[data-theme="day"].workspace-active .reference-card {
+  border-color: rgba(117, 93, 52, 0.2);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.78), transparent 52%),
+    rgba(255, 253, 247, 0.72);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86), 0 12px 28px rgba(79, 59, 34, 0.09);
+}
+
+body[data-theme="day"].workspace-active .reference-card select {
+  border-color: rgba(104, 86, 55, 0.22);
+  background: rgba(255, 255, 255, 0.74);
+  color: #2f2a22;
+  color-scheme: light;
+}
+
+body[data-theme="day"].workspace-active .reference-edit-button {
+  border-color: rgba(117, 93, 52, 0.2);
+  background: rgba(155, 111, 60, 0.08);
+  color: #4c4538;
+}
+
+@media (max-width: 420px) {
+  .reference-card {
+    grid-template-columns: 88px minmax(0, 1fr);
+    gap: 9px;
+    padding: 8px;
+  }
 }
 
 .primary-button,

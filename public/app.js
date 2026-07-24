@@ -178,9 +178,9 @@ const referenceWeightOptions = [
 
 const referenceUsageOptions = [
   { value: "auto", label: "自动判断", prompt: "用户未指定用途，Agent 先整体观察后自行判断可贡献的信息。" },
-  { value: "space", label: "空间/构图", prompt: "用户希望重点参考空间组织、镜头构图、尺度和动线关系。" },
-  { value: "material", label: "材料/肌理", prompt: "用户希望重点参考材料、纹理、反射、粗糙度和工艺感。" },
-  { value: "lighting", label: "灯光/氛围", prompt: "用户希望重点参考光照时段、色温、明暗层次和空间情绪。" },
+  { value: "space", label: "空间结构", prompt: "用户希望重点参考空间组织、镜头构图、尺度和动线关系。" },
+  { value: "material", label: "材质肌理", prompt: "用户希望重点参考材料、纹理、反射、粗糙度和工艺感。" },
+  { value: "lighting", label: "灯光氛围", prompt: "用户希望重点参考光照时段、色温、明暗层次和空间情绪。" },
   { value: "color", label: "色彩/软装", prompt: "用户希望重点参考色彩关系、家具软装、陈列密度和搭配。" },
   { value: "detail", label: "细部/工艺", prompt: "用户希望重点参考节点、收口、装置、家具细节和完成度。" }
 ];
@@ -16310,7 +16310,6 @@ async function handleReferenceUpload(files) {
   }
 
   const selected = incoming.slice(0, remainingSlots);
-  const startIndex = state.referenceImages.length;
   state.designSeriesAnalysis = null;
   setUploadStatus("busy", `正在读取 ${selected.length} 张参考图，最多保留 ${referenceImageLimit} 张。`, { target: "reference" });
   const nextImages = await Promise.all(selected.map(async (file) => {
@@ -16340,10 +16339,6 @@ async function handleReferenceUpload(files) {
   setUploadStatus("ready", incoming.length > selected.length
     ? `已添加 ${selected.length} 张参考图；还有 ${incoming.length - selected.length} 张因数量上限未加入。`
     : `已添加 ${selected.length} 张参考图，当前共 ${state.referenceImages.length}/${referenceImageLimit} 张。`, { target: "reference" });
-  if (selected.length === 1) {
-    await focusReferenceImageForEditing(startIndex, { openEditor: true });
-    toast("参考图已加入画布，已直接打开框选编辑");
-  }
   if (state.mode === "designseries" && state.referenceImages.length) {
     analyzeDesignSeriesReferences();
   }
@@ -16372,25 +16367,46 @@ function renderReferenceStrip() {
       const weight = image.weight || "default";
       const usage = image.usage || "auto";
       return `
-      <div class="reference-card ${weight === "ignore" ? "is-muted" : ""}">
-        <button class="reference-remove" type="button" data-remove-reference="${index}" title="移除参考图" aria-label="移除参考图">
-          <svg><use href="#icon-trash"></use></svg>
-        </button>
-        <img src="${escapeAttr(image.dataUrl)}" alt="${escapeAttr(image.name)}" title="${escapeAttr(image.name)}" />
-        <span class="reference-free-label">参考图 ${index + 1}</span>
-        <select class="reference-weight-select" name="${escapeAttr(`reference-${index + 1}-weight`)}" data-reference-weight="${index}" aria-label="参考图 ${index + 1} 权重">
-          ${referenceWeightOptions.map((option) => `<option value="${escapeAttr(option.value)}" ${option.value === weight ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
-        </select>
-        <select class="reference-usage-select" name="${escapeAttr(`reference-${index + 1}-usage`)}" data-reference-usage="${index}" aria-label="参考图 ${index + 1} 使用意图">
-          ${referenceUsageOptions.map((option) => `<option value="${escapeAttr(option.value)}" ${option.value === usage ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
-        </select>
-      </div>
+      <article class="reference-card ${weight === "ignore" ? "is-muted" : ""}">
+        <div class="reference-preview">
+          <img src="${escapeAttr(image.dataUrl)}" alt="${escapeAttr(image.name)}" title="${escapeAttr(image.name)}" />
+          <span class="reference-index">参考图 ${index + 1}</span>
+          <button class="reference-remove" type="button" data-remove-reference="${index}" title="移除参考图" aria-label="移除参考图 ${index + 1}">
+            <svg><use href="#icon-trash"></use></svg>
+          </button>
+        </div>
+        <div class="reference-card-body">
+          <strong class="reference-name" title="${escapeAttr(image.name)}">${escapeHtml(image.name || `参考图 ${index + 1}`)}</strong>
+          <label class="reference-control">
+            <span>参考强度</span>
+            <select class="reference-weight-select" name="${escapeAttr(`reference-${index + 1}-weight`)}" data-reference-weight="${index}" aria-label="参考图 ${index + 1} 参考强度">
+              ${referenceWeightOptions.map((option) => `<option value="${escapeAttr(option.value)}" ${option.value === weight ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
+            </select>
+          </label>
+          <label class="reference-control">
+            <span>重点参考内容</span>
+            <select class="reference-usage-select" name="${escapeAttr(`reference-${index + 1}-usage`)}" data-reference-usage="${index}" aria-label="参考图 ${index + 1} 重点参考内容">
+              ${referenceUsageOptions.map((option) => `<option value="${escapeAttr(option.value)}" ${option.value === usage ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
+            </select>
+          </label>
+          <button class="reference-edit-button" type="button" data-edit-reference="${index}" title="在局部编辑中打开参考图">
+            <svg><use href="#icon-brush"></use></svg>
+            <span>局部编辑</span>
+          </button>
+        </div>
+      </article>
     `;
     })
     .join("");
   els.referenceStrip.querySelectorAll("[data-remove-reference]").forEach((button) => {
     button.addEventListener("click", () => {
       removeReferenceImage(button.dataset.removeReference);
+    });
+  });
+  els.referenceStrip.querySelectorAll("[data-edit-reference]").forEach((button) => {
+    button.addEventListener("click", () => {
+      focusReferenceImageForEditing(button.dataset.editReference, { openEditor: true })
+        .catch((error) => toast(error?.message || "打开局部编辑失败"));
     });
   });
   els.referenceStrip.querySelectorAll("[data-reference-weight]").forEach((select) => {
@@ -16546,7 +16562,17 @@ function drawSelectionCanvas() {
   }
 
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = "#f1f1f1";
+  const emptyBackground = ctx.createLinearGradient(0, 0, width, height);
+  if (state.theme === "night") {
+    emptyBackground.addColorStop(0, "#191915");
+    emptyBackground.addColorStop(0.52, "#11110f");
+    emptyBackground.addColorStop(1, "#1b1914");
+  } else {
+    emptyBackground.addColorStop(0, "#f7f5ef");
+    emptyBackground.addColorStop(0.52, "#efede7");
+    emptyBackground.addColorStop(1, "#f8f4eb");
+  }
+  ctx.fillStyle = emptyBackground;
   ctx.fillRect(0, 0, width, height);
 
   if (!state.primaryBitmap) {
@@ -18052,6 +18078,7 @@ function applyTheme(theme = "day") {
     applyDayTheme();
     renderThemeControls();
     applyCanvasBackgroundSettings();
+    scheduleSelectionCanvasDraw();
     return;
   }
   state.theme = "night";
@@ -18063,6 +18090,7 @@ function applyTheme(theme = "day") {
   } catch {}
   renderThemeControls();
   applyCanvasBackgroundSettings();
+  scheduleSelectionCanvasDraw();
 }
 
 function loadThemePreference() {
