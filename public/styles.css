@@ -20472,6 +20472,251 @@ body[data-theme="night"].workspace-active .canvas-toolbar-group-actions .icon-bu
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 14px 34px rgba(0, 0, 0, 0.28) !important;
 }
 
+/* Restore the original two-column reference-board layout. */
+body.workspace-active .reference-strip {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+body.workspace-active .reference-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+body.workspace-active .reference-preview {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  aspect-ratio: auto;
+}
+
+body.workspace-active .reference-preview img {
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+}
+
+body.workspace-active .reference-index {
+  position: static;
+  display: block;
+  width: 100%;
+  max-width: none;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-color: var(--studio-line);
+  border-radius: 6px;
+  background: var(--studio-field);
+  color: var(--studio-ink);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+body.workspace-active .reference-card-body {
+  gap: 7px;
+}
+
+body.workspace-active .reference-name,
+body.workspace-active .reference-edit-button {
+  display: none;
+}
+
+body.workspace-active .reference-control {
+  gap: 4px;
+}
+
+.reference-glass-select {
+  position: relative;
+  min-width: 0;
+}
+
+.reference-glass-select.is-open {
+  z-index: 120;
+}
+
+.reference-glass-select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px 0 12px;
+  border: 1px solid var(--studio-line);
+  border-radius: 999px;
+  color: var(--studio-ink-soft);
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+  box-shadow: var(--studio-inner);
+  transition: border-color 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
+}
+
+.reference-glass-select-trigger span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reference-glass-select-trigger svg {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin-left: 6px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 180ms ease;
+}
+
+.reference-glass-select.is-open .reference-glass-select-trigger svg {
+  transform: rotate(180deg);
+}
+
+.reference-glass-select-trigger:hover,
+.reference-glass-select.is-open .reference-glass-select-trigger,
+.reference-glass-select-trigger:focus-visible {
+  border-color: var(--studio-line-strong);
+  color: var(--studio-ink);
+  outline: none;
+  box-shadow: var(--studio-inner), 0 0 0 3px rgba(135, 161, 196, 0.16);
+}
+
+.reference-glass-select-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 2;
+  display: grid;
+  width: 100%;
+  max-height: 220px;
+  gap: 3px;
+  overflow-y: auto;
+  padding: 6px;
+  border-radius: 12px;
+  backdrop-filter: blur(24px) saturate(1.55);
+  -webkit-backdrop-filter: blur(24px) saturate(1.55);
+  transform-origin: top center;
+  animation: reference-glass-menu-in 160ms ease-out;
+}
+
+.reference-glass-select-menu[hidden] {
+  display: none !important;
+}
+
+.reference-glass-select-option {
+  position: relative;
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 22px 7px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  font-weight: 620;
+  line-height: 1.25;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.reference-glass-select-option.is-selected::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+  transform: translateY(-50%);
+  box-shadow: 0 0 0 3px rgba(133, 160, 196, 0.14);
+}
+
+body[data-theme="night"].workspace-active .reference-glass-select-trigger {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.11), rgba(255, 255, 255, 0.035)),
+    rgba(36, 40, 48, 0.78);
+}
+
+body[data-theme="night"].workspace-active .reference-glass-select-menu {
+  border: 1px solid rgba(238, 242, 248, 0.2);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.14), transparent 46%),
+    rgba(28, 31, 38, 0.84);
+  color: #f7f8fb;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 18px 42px rgba(0, 0, 0, 0.42);
+}
+
+body[data-theme="night"].workspace-active .reference-glass-select-option:hover,
+body[data-theme="night"].workspace-active .reference-glass-select-option:focus-visible,
+body[data-theme="night"].workspace-active .reference-glass-select-option.is-selected {
+  border-color: rgba(238, 242, 248, 0.2);
+  background: rgba(255, 255, 255, 0.13);
+  color: #ffffff;
+  outline: none;
+}
+
+body[data-theme="day"].workspace-active .reference-glass-select-trigger {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(255, 255, 255, 0.34)),
+    rgba(241, 244, 248, 0.84);
+}
+
+body[data-theme="day"].workspace-active .reference-glass-select-menu {
+  border: 1px solid rgba(94, 108, 126, 0.22);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.94), rgba(246, 248, 251, 0.58)),
+    rgba(248, 250, 252, 0.86);
+  color: #202124;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92), 0 18px 42px rgba(54, 67, 86, 0.2);
+}
+
+body[data-theme="day"].workspace-active .reference-glass-select-option:hover,
+body[data-theme="day"].workspace-active .reference-glass-select-option:focus-visible,
+body[data-theme="day"].workspace-active .reference-glass-select-option.is-selected {
+  border-color: rgba(104, 124, 150, 0.22);
+  background: rgba(221, 229, 239, 0.72);
+  color: #15171a;
+  outline: none;
+}
+
+@keyframes reference-glass-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reference-glass-select-trigger,
+  .reference-glass-select-trigger svg,
+  .reference-glass-select-option {
+    transition: none;
+  }
+
+  .reference-glass-select-menu {
+    animation: none;
+  }
+}
+
+@media (max-width: 360px) {
+  body.workspace-active .reference-strip {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* Ultimate palette clamp for scattered legacy selectors across home and workspace. */
 body[data-theme] .home-plan-flow-steps em,
 body[data-theme] .home-tool-search,

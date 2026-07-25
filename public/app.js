@@ -16361,6 +16361,71 @@ async function processReferenceImageInputSelection(source = "change") {
   }
 }
 
+function referenceGlassSelectMarkup({ type, index, value, options, label }) {
+  const selected = options.find((option) => option.value === value) || options[0];
+  const listboxId = `reference-${index + 1}-${type}-listbox`;
+  return `
+    <div class="reference-glass-select" data-reference-select="${escapeAttr(type)}">
+      <button
+        class="reference-glass-select-trigger"
+        type="button"
+        data-reference-select-trigger
+        aria-label="${escapeAttr(label)}"
+        aria-haspopup="listbox"
+        aria-expanded="false"
+        aria-controls="${escapeAttr(listboxId)}"
+      >
+        <span>${escapeHtml(selected.label)}</span>
+        <svg aria-hidden="true" viewBox="0 0 20 20"><path d="m5 7.5 5 5 5-5" /></svg>
+      </button>
+      <div class="reference-glass-select-menu" id="${escapeAttr(listboxId)}" role="listbox" aria-label="${escapeAttr(label)}" hidden>
+        ${options.map((option) => `
+          <button
+            class="reference-glass-select-option ${option.value === selected.value ? "is-selected" : ""}"
+            type="button"
+            role="option"
+            aria-selected="${option.value === selected.value ? "true" : "false"}"
+            tabindex="-1"
+            data-reference-option="${escapeAttr(option.value)}"
+          >${escapeHtml(option.label)}</button>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function closeReferenceGlassSelects(except = null) {
+  let closed = false;
+  document.querySelectorAll(".reference-glass-select.is-open").forEach((select) => {
+    if (select === except) return;
+    closed = true;
+    select.classList.remove("is-open");
+    select.querySelector("[data-reference-select-trigger]")?.setAttribute("aria-expanded", "false");
+    const menu = select.querySelector(".reference-glass-select-menu");
+    if (menu) menu.hidden = true;
+  });
+  return closed;
+}
+
+function updateReferenceSelectValue(type, index, value) {
+  const image = state.referenceImages[index];
+  if (!image) return;
+  if (type === "weight") {
+    image.weight = value || "default";
+    state.designSeriesAnalysis = null;
+    refreshGenerationControls();
+    renderReferenceStrip();
+    renderWorkflowCanvas();
+    toast("已更新参考图权重");
+    return;
+  }
+  image.usage = value || "auto";
+  state.designSeriesAnalysis = null;
+  renderReferenceStrip();
+  renderWorkflowCanvas();
+  toast("已更新参考图使用意图");
+}
+
 function renderReferenceStrip() {
   els.referenceStrip.innerHTML = state.referenceImages
     .map((image, index) => {
@@ -16377,18 +16442,26 @@ function renderReferenceStrip() {
         </div>
         <div class="reference-card-body">
           <strong class="reference-name" title="${escapeAttr(image.name)}">${escapeHtml(image.name || `参考图 ${index + 1}`)}</strong>
-          <label class="reference-control">
+          <div class="reference-control">
             <span>参考强度</span>
-            <select class="reference-weight-select" name="${escapeAttr(`reference-${index + 1}-weight`)}" data-reference-weight="${index}" aria-label="参考图 ${index + 1} 参考强度">
-              ${referenceWeightOptions.map((option) => `<option value="${escapeAttr(option.value)}" ${option.value === weight ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
-            </select>
-          </label>
-          <label class="reference-control">
+            ${referenceGlassSelectMarkup({
+              type: "weight",
+              index,
+              value: weight,
+              options: referenceWeightOptions,
+              label: `参考图 ${index + 1} 参考强度`
+            })}
+          </div>
+          <div class="reference-control">
             <span>重点参考内容</span>
-            <select class="reference-usage-select" name="${escapeAttr(`reference-${index + 1}-usage`)}" data-reference-usage="${index}" aria-label="参考图 ${index + 1} 重点参考内容">
-              ${referenceUsageOptions.map((option) => `<option value="${escapeAttr(option.value)}" ${option.value === usage ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
-            </select>
-          </label>
+            ${referenceGlassSelectMarkup({
+              type: "usage",
+              index,
+              value: usage,
+              options: referenceUsageOptions,
+              label: `参考图 ${index + 1} 重点参考内容`
+            })}
+          </div>
           <button class="reference-edit-button" type="button" data-edit-reference="${index}" title="在局部编辑中打开参考图">
             <svg><use href="#icon-brush"></use></svg>
             <span>局部编辑</span>
@@ -16409,29 +16482,59 @@ function renderReferenceStrip() {
         .catch((error) => toast(error?.message || "打开局部编辑失败"));
     });
   });
-  els.referenceStrip.querySelectorAll("[data-reference-weight]").forEach((select) => {
-    select.addEventListener("change", () => {
-      const index = Number(select.dataset.referenceWeight);
-      if (!state.referenceImages[index]) return;
-      state.referenceImages[index].weight = select.value || "default";
-      state.designSeriesAnalysis = null;
-      refreshGenerationControls();
-      renderReferenceStrip();
-      renderWorkflowCanvas();
-      toast("已更新参考图权重");
+  els.referenceStrip.querySelectorAll(".reference-glass-select").forEach((select) => {
+    const card = select.closest(".reference-card");
+    const index = Array.from(els.referenceStrip.children).indexOf(card);
+    const type = select.dataset.referenceSelect;
+    const trigger = select.querySelector("[data-reference-select-trigger]");
+    const menu = select.querySelector(".reference-glass-select-menu");
+    const options = Array.from(select.querySelectorAll("[data-reference-option]"));
+    const open = (focusSelected = false) => {
+      closeReferenceGlassSelects(select);
+      select.classList.add("is-open");
+      trigger.setAttribute("aria-expanded", "true");
+      menu.hidden = false;
+      if (focusSelected) (options.find((option) => option.classList.contains("is-selected")) || options[0])?.focus();
+    };
+    const close = (restoreFocus = false) => {
+      select.classList.remove("is-open");
+      trigger.setAttribute("aria-expanded", "false");
+      menu.hidden = true;
+      if (restoreFocus) trigger.focus();
+    };
+    trigger.addEventListener("click", () => {
+      if (select.classList.contains("is-open")) close();
+      else open();
     });
-  });
-  els.referenceStrip.querySelectorAll("[data-reference-usage]").forEach((select) => {
-    select.addEventListener("change", () => {
-      const index = Number(select.dataset.referenceUsage);
-      if (!state.referenceImages[index]) return;
-      state.referenceImages[index].usage = select.value || "auto";
-      state.designSeriesAnalysis = null;
-      renderWorkflowCanvas();
-      toast("已更新参考图使用意图");
+    trigger.addEventListener("keydown", (event) => {
+      if (!["ArrowDown", "ArrowUp", "Enter", " "].includes(event.key)) return;
+      event.preventDefault();
+      open(true);
+    });
+    options.forEach((option, optionIndex) => {
+      option.addEventListener("click", () => updateReferenceSelectValue(type, index, option.dataset.referenceOption));
+      option.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          close(true);
+          return;
+        }
+        if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        const nextIndex = event.key === "Home"
+          ? 0
+          : event.key === "End"
+            ? options.length - 1
+            : (optionIndex + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length;
+        options[nextIndex]?.focus();
+      });
     });
   });
 }
+
+document.addEventListener("pointerdown", (event) => {
+  if (!event.target.closest(".reference-glass-select")) closeReferenceGlassSelects();
+});
 
 function normalizedModelingShapePoint(point) {
   const rawX = Array.isArray(point) ? point[0] : point?.x;
@@ -19456,6 +19559,7 @@ window.addEventListener("pointerup", (event) => {
 });
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
+    if (closeReferenceGlassSelects()) return;
     if (closeSizePicker()) return;
     if (closeSettings()) return;
     if (isOverlayOpen("multiAngleOverlay")) {
