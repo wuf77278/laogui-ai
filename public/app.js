@@ -94,6 +94,10 @@ const state = {
   workspaceGlass: null,
   outputSearch: "",
   outputFavoritesOnly: false,
+  trashOutputs: [],
+  deletedOutputUrls: [],
+  trashAutoCleanDays: 30,
+  trashPanelOpen: false,
   favoriteOutputIds: new Set(),
   compareOutputIds: new Set(),
   thumbnailUrlCache: new Map(),
@@ -447,6 +451,8 @@ const els = {
   assetLibraryStats: $("assetLibraryStats"),
   assetLibraryCount: $("assetLibraryCount"),
   assetLibraryList: $("assetLibraryList"),
+  assetLibraryAssetsTab: $("assetLibraryAssetsTab"),
+  assetLibraryAssetsSection: $("assetLibraryAssetsSection"),
   workspaceHistoryButton: $("workspaceHistoryButton"),
   workspaceHistoryPanel: $("workspaceHistoryPanel"),
   workspaceHistoryList: $("workspaceHistoryList"),
@@ -638,6 +644,12 @@ const els = {
   taskProgressPrompt: $("taskProgressPrompt"),
   outputManagerList: $("outputManagerList"),
   outputManagerSearch: $("outputManagerSearch"),
+  outputTrashButton: $("outputTrashButton"),
+  outputTrashCount: $("outputTrashCount"),
+  outputTrashPanel: $("outputTrashPanel"),
+  outputTrashList: $("outputTrashList"),
+  outputTrashAutoClean: $("outputTrashAutoClean"),
+  emptyOutputTrashButton: $("emptyOutputTrashButton"),
   outputFavoritesOnlyButton: $("outputFavoritesOnlyButton"),
   exportOutputsButton: $("exportOutputsButton"),
   taskLogList: $("taskLogList"),
@@ -1319,6 +1331,9 @@ function blankCanvasSnapshot(mode = state.mode || "custom") {
     designSeriesResults: [],
     outputSearch: "",
     outputFavoritesOnly: false,
+    trashOutputs: [],
+    deletedOutputUrls: [],
+    trashAutoCleanDays: 30,
     favoriteOutputIds: [],
     compareOutputIds: [],
     selectedScenePreset: null,
@@ -1493,6 +1508,9 @@ function captureCanvasSnapshot() {
     designSeriesResults: cloneValue(state.designSeriesResults, []),
     outputSearch: state.outputSearch || "",
     outputFavoritesOnly: Boolean(state.outputFavoritesOnly),
+    trashOutputs: cloneValue(state.trashOutputs, []),
+    deletedOutputUrls: cloneValue(state.deletedOutputUrls, []),
+    trashAutoCleanDays: Number(state.trashAutoCleanDays) || 0,
     favoriteOutputIds: Array.from(state.favoriteOutputIds || []),
     compareOutputIds: Array.from(state.compareOutputIds || []),
     selectedScenePreset: state.selectedScenePreset,
@@ -1671,6 +1689,10 @@ async function restoreCanvasRecord(record) {
   state.designSeriesResults = cloneValue(snapshot.designSeriesResults, []);
   state.outputSearch = String(snapshot.outputSearch || "");
   state.outputFavoritesOnly = Boolean(snapshot.outputFavoritesOnly);
+  state.trashOutputs = cloneValue(snapshot.trashOutputs, []);
+  state.deletedOutputUrls = cloneValue(snapshot.deletedOutputUrls, []);
+  state.trashAutoCleanDays = [0, 7, 30].includes(Number(snapshot.trashAutoCleanDays)) ? Number(snapshot.trashAutoCleanDays) : 30;
+  state.trashPanelOpen = false;
   state.favoriteOutputIds = new Set(snapshot.favoriteOutputIds || []);
   state.compareOutputIds = new Set(snapshot.compareOutputIds || []);
   state.selectedScenePreset = snapshot.selectedScenePreset || null;
@@ -1740,6 +1762,7 @@ async function restoreCanvasRecord(record) {
   renderCanvasList();
   restoringCanvasState = false;
   if (restoredLayoutMigrated) scheduleCanvasStateSave({ delay: 120 });
+  autoCleanOutputTrash().catch(() => {});
 }
 
 function canvasSwitchBlocked() {
@@ -4845,6 +4868,7 @@ async function refreshStorageSummary({ silent = false } = {}) {
     const data = await requestJson("/api/storage");
     renderStorageSummary(data.summary);
     renderStorageAccess();
+    autoCleanOutputTrash().catch(() => {});
     if (!silent) toast("存储占用已刷新");
   } catch (error) {
     renderStorageSummary(null);
@@ -4941,8 +4965,12 @@ function scheduleDeferredStartupRefresh() {
 
 function generatedHistoryLogs() {
   const seen = new Set();
+  const hiddenUrls = new Set([
+    ...(state.trashOutputs || []).flatMap((item) => item.urls || [item.url]),
+    ...(state.deletedOutputUrls || [])
+  ].filter(Boolean));
   return state.taskLogs
-    .filter((log) => log.status === "success" && log.result?.outputUrl)
+    .filter((log) => log.status === "success" && log.result?.outputUrl && !hiddenUrls.has(log.result.outputUrl))
     .filter((log) => {
       const key = [log.result.outputUrl, log.result?.prompt || log.input?.intent || "", log.input?.stepMode || log.input?.mode || log.result?.mode || ""].join("|");
       if (seen.has(key)) return false;
@@ -5041,6 +5069,7 @@ function assetLibraryImageItems() {
 
 function renderAssetLibraryPage() {
   if (!els.assetLibraryList) return;
+  renderOutputTrash();
   const items = assetLibraryImageItems();
   const currentCount = items.filter((item) => item.kind === "output").length;
   const historyCount = items.filter((item) => item.kind === "history").length;
@@ -5057,7 +5086,8 @@ function renderAssetLibraryPage() {
       ["全部", items.length],
       ["当前画布", currentCount],
       ["历史创作", historyCount],
-      ["全景图", panoramaCount]
+      ["全景图", panoramaCount],
+      ["废纸篓", state.trashOutputs.length]
     ].map(([label, count]) => `<span>${escapeHtml(label)} <strong>${Number(count || 0)}</strong></span>`).join("");
   }
 
@@ -11464,6 +11494,7 @@ function showAssetLibraryPage() {
   document.body.classList.add("asset-library-active");
   state.historyPanelOpen = false;
   state.statusPanelOpen = false;
+  state.trashPanelOpen = false;
   renderWorkspaceHistoryPanel();
   renderWorkspaceStatusPanel();
   els.homeView.hidden = true;
@@ -12037,6 +12068,7 @@ function renderOutputManagerImageItem(item, imageItems) {
         ${outputActionButton({ action: "preview", outputId: item.id, icon: "icon-focus", label: previewLabel, className: "secondary-button" })}
         ${outputActionButton({ action: "download", outputId: item.id, icon: "icon-export", label: "下载", className: "text-button" })}
         ${outputActionButton({ action: "vector-export", outputId: item.id, icon: "icon-vector", label: "导出为矢量图", className: "text-button" })}
+        ${outputActionButton({ action: "delete", outputId: item.id, icon: "icon-trash", label: "移入废纸篓", className: "text-button danger-text" })}
       </div>
     </article>
   `;
@@ -12088,6 +12120,7 @@ function renderOutputManagerCadItem(item) {
 
 function renderOutputManager() {
   if (!els.outputManagerList) return;
+  renderOutputTrash();
   const imageItems = getOutputItems();
   const validIds = new Set(imageItems.map((item) => item.id));
   [...state.favoriteOutputIds].forEach((id) => { if (!validIds.has(id)) state.favoriteOutputIds.delete(id); });
@@ -12761,9 +12794,36 @@ async function lockLayoutFromOutput(item) {
   toast("已锁定布局，可继续写优化要求后生成。");
 }
 
-function deleteOutputItem(item) {
-  const ok = window.confirm(`删除「${item.title}」在当前画布中的记录？本地生成文件不会被删除。`);
-  if (!ok) return;
+function trashRecordFromOutputItem(item) {
+  const steps = item.source === "pipeline" ? item.render?.pipeline?.steps : null;
+  const pipelineStepIndex = Array.isArray(steps)
+    ? steps.findIndex((step) => step === item.pipelineStep || step?.url === item.url)
+    : -1;
+  const direction = item.source === "direction"
+    ? (state.plan?.directions || []).find((entry) => entry.id === item.directionId)
+    : null;
+  return {
+    id: `trash-${Date.now()}-${Math.random().toString(16).slice(2, 7)}`,
+    deletedAt: new Date().toISOString(),
+    outputId: item.id,
+    title: item.title || "生成图片",
+    url: item.url || "",
+    urls: [...new Set([
+      item.url,
+      ...(item.source === "render" ? renderPipelineImageSteps(item.render).map((step) => step.url) : [])
+    ].filter(Boolean))],
+    source: item.source,
+    index: item.index,
+    directionId: item.directionId || "",
+    renderId: item.render?.id || "",
+    render: item.source === "render" ? cloneValue(item.render) : null,
+    pipelineStep: item.source === "pipeline" ? cloneValue(item.pipelineStep) : null,
+    pipelineStepIndex,
+    directionImage: direction ? cloneValue(direction.image) : null
+  };
+}
+
+function removeOutputFromCanvas(item) {
   state.favoriteOutputIds.delete(item.id);
   state.compareOutputIds.delete(item.id);
   const deletedLatest = state.render?.url && state.render.url === item.url;
@@ -12773,6 +12833,15 @@ function deleteOutputItem(item) {
       if (/^render\d+(?:Pipeline\d+)?$/.test(key)) delete state.canvas.positions[key];
     });
     state.render = state.renders[state.renders.length - 1] || null;
+  } else if (item.source === "pipeline") {
+    const steps = item.render?.pipeline?.steps;
+    const stepIndex = Array.isArray(steps)
+      ? steps.findIndex((step) => step === item.pipelineStep || step?.url === item.url)
+      : -1;
+    if (stepIndex >= 0) steps.splice(stepIndex, 1);
+    Object.keys(state.canvas.positions).forEach((key) => {
+      if (key.startsWith(`render${item.index}Pipeline`)) delete state.canvas.positions[key];
+    });
   } else if (item.source === "direction") {
     const direction = (state.plan?.directions || []).find((entry) => entry.id === item.directionId);
     if (direction) direction.image = null;
@@ -12786,12 +12855,130 @@ function deleteOutputItem(item) {
   if (state.canvas.branchAnchorNodeId === item.nodeId || state.canvas.branchAnchorOutputId === item.id) {
     clearCanvasBranchAnchor();
   }
+  if (state.primaryImage?.id === item.id || state.primaryImage?.sourceOutputId === item.id) {
+    state.primaryImage = null;
+    state.primaryBitmap = null;
+    state.primaryImageAnalysis = null;
+    resetImageModelingAnalysis();
+    state.selection = null;
+    resetImageViewStates();
+    if (els.primaryImageInput) els.primaryImageInput.value = "";
+    setUploadStatus("idle", "", { target: "primary" });
+    refreshGenerationControls();
+    drawSelectionCanvas();
+  }
+}
+
+function refreshAfterTrashChange() {
   renderGeneratedResult();
   renderWorkflowCanvas();
   renderWorkspaceHistoryPanel();
   renderAssetLibraryPage();
   scheduleCanvasStateSave({ delay: 120 });
-  toast("已从画布记录中移除");
+}
+
+function deleteOutputItem(item) {
+  const ok = window.confirm(`把「${item.title}」移入废纸篓吗？\n\n在自动清理前可以恢复。`);
+  if (!ok) return;
+  state.trashOutputs.unshift(trashRecordFromOutputItem(item));
+  removeOutputFromCanvas(item);
+  refreshAfterTrashChange();
+  toast("已移入废纸篓");
+}
+
+function restoreTrashOutput(record) {
+  if (!record) return false;
+  if (record.source === "render" && record.render) {
+    const duplicate = state.renders.some((render) => (record.renderId && render.id === record.renderId) || render.url === record.url);
+    if (!duplicate) state.renders.splice(Math.min(Math.max(Number(record.index) || 0, 0), state.renders.length), 0, cloneValue(record.render));
+    state.render = state.renders[state.renders.length - 1] || null;
+  } else if (record.source === "pipeline" && record.pipelineStep) {
+    const parent = state.renders.find((render) => (record.renderId && render.id === record.renderId)) || state.renders[Number(record.index)];
+    if (!parent?.pipeline || !Array.isArray(parent.pipeline.steps)) {
+      toast("这张中间图所属的主结果已不存在，暂时无法恢复");
+      return false;
+    }
+    if (!parent.pipeline.steps.some((step) => step?.url === record.url)) {
+      const index = Math.min(Math.max(Number(record.pipelineStepIndex) || 0, 0), parent.pipeline.steps.length);
+      parent.pipeline.steps.splice(index, 0, cloneValue(record.pipelineStep));
+    }
+  } else if (record.source === "direction" && record.directionImage) {
+    const direction = (state.plan?.directions || []).find((entry) => entry.id === record.directionId);
+    if (!direction) {
+      toast("这张图片所属的方案方向已不存在，暂时无法恢复");
+      return false;
+    }
+    direction.image = cloneValue(record.directionImage);
+  } else {
+    return false;
+  }
+  state.trashOutputs = state.trashOutputs.filter((item) => item.id !== record.id);
+  refreshAfterTrashChange();
+  toast("图片已恢复");
+  return true;
+}
+
+async function permanentlyDeleteTrashRecords(records, { ask = true } = {}) {
+  const targets = (Array.isArray(records) ? records : []).filter(Boolean);
+  if (!targets.length) return;
+  if (ask && !window.confirm(`确定彻底删除 ${targets.length} 张图片吗？\n\n本地生成目录中的原图片也会删除，并且无法恢复。`)) return;
+  const response = await requestJson("/api/storage/maintenance", {
+    method: "POST",
+    body: JSON.stringify({ action: "delete-generated-urls", urls: targets.flatMap((item) => item.urls || [item.url]).filter(Boolean) })
+  });
+  const deletedUrls = targets.flatMap((item) => item.urls || [item.url]).filter(Boolean);
+  await removeCachedImagesForUrls(deletedUrls);
+  const ids = new Set(targets.map((item) => item.id));
+  state.deletedOutputUrls = [...new Set([...(state.deletedOutputUrls || []), ...deletedUrls])];
+  state.trashOutputs = state.trashOutputs.filter((item) => !ids.has(item.id));
+  renderAssetLibraryPage();
+  scheduleCanvasStateSave({ delay: 120 });
+  toast(response.deleted ? `已彻底删除本地图片及相关文件（${response.formattedBytes || "已释放空间"}）` : "已清除废纸篓记录");
+}
+
+async function autoCleanOutputTrash() {
+  const days = Number(state.trashAutoCleanDays) || 0;
+  if (!days || !state.trashOutputs.length || !state.canManageApiSettings) return;
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  const expired = state.trashOutputs.filter((item) => new Date(item.deletedAt || 0).getTime() <= cutoff);
+  if (expired.length) await permanentlyDeleteTrashRecords(expired, { ask: false });
+}
+
+function renderOutputTrash() {
+  if (!els.outputTrashPanel || !els.outputTrashList) return;
+  const items = state.trashOutputs || [];
+  els.outputTrashPanel.hidden = !state.trashPanelOpen;
+  if (els.assetLibraryAssetsSection) els.assetLibraryAssetsSection.hidden = state.trashPanelOpen;
+  els.outputTrashButton?.classList.toggle("active", state.trashPanelOpen);
+  els.outputTrashButton?.setAttribute("aria-selected", String(state.trashPanelOpen));
+  els.assetLibraryAssetsTab?.classList.toggle("active", !state.trashPanelOpen);
+  els.assetLibraryAssetsTab?.setAttribute("aria-selected", String(!state.trashPanelOpen));
+  if (els.assetLibraryDownloadAllButton) els.assetLibraryDownloadAllButton.hidden = state.trashPanelOpen;
+  if (els.outputTrashCount) {
+    els.outputTrashCount.textContent = String(items.length);
+    els.outputTrashCount.hidden = !items.length;
+  }
+  if (els.outputTrashAutoClean) els.outputTrashAutoClean.value = String(state.trashAutoCleanDays);
+  if (els.emptyOutputTrashButton) els.emptyOutputTrashButton.disabled = !items.length;
+  els.outputTrashList.innerHTML = items.length ? items.map((item) => `
+    <article class="output-trash-item" data-trash-id="${escapeAttr(item.id)}">
+      <img src="${escapeAttr(item.url)}" data-cache-thumbnail="true" alt="${escapeAttr(item.title)}" />
+      <div><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(formatTaskTime(item.deletedAt))} 移入</span></div>
+      <div class="output-trash-actions">
+        ${uiIconButton({ className: "text-button", icon: "icon-refresh", label: "恢复", attrs: `data-trash-action="restore" data-trash-id="${escapeAttr(item.id)}"` })}
+        ${uiIconButton({ className: "text-button danger-text", icon: "icon-trash", label: "彻底删除", attrs: `data-trash-action="delete" data-trash-id="${escapeAttr(item.id)}"` })}
+      </div>
+    </article>
+  `).join("") : `<p class="muted">废纸篓是空的。</p>`;
+  hydrateCachedThumbnails(els.outputTrashList);
+  els.outputTrashList.querySelectorAll("[data-trash-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const record = state.trashOutputs.find((item) => item.id === button.dataset.trashId);
+      if (!record) return;
+      if (button.dataset.trashAction === "restore") restoreTrashOutput(record);
+      else permanentlyDeleteTrashRecords([record]).catch((error) => toast(error.message));
+    });
+  });
 }
 
 function toggleSetValue(set, value) {
@@ -15607,6 +15794,7 @@ function canvasNodeImageToolsHtml(node = {}) {
       ${iconActionButton({ className: "text-button", action: "preview", icon: "icon-focus", label: previewLabel })}
       ${showOutputTools ? iconActionButton({ action: "favorite", icon: "icon-star", label: favorite ? "已收藏" : "收藏", attrs: `aria-pressed="${favorite ? "true" : "false"}"` }) : ""}
       ${showOutputTools ? iconActionButton({ action: "regenerate", icon: "icon-refresh", label: "重新生成", attrs: busyAttrs }) : ""}
+      ${showOutputTools ? outputActionButton({ action: "delete", outputId: outputItem.id, icon: "icon-trash", label: "移入废纸篓", className: "text-button danger-text", attrs: busyAttrs }) : ""}
     </div>
   `;
 }
@@ -18005,6 +18193,17 @@ async function imageCacheStore(storeName, mode, callback) {
   });
 }
 
+async function removeCachedImagesForUrls(urls = []) {
+  for (const url of [...new Set(urls.filter(Boolean))]) {
+    state.thumbnailUrlCache.delete(url);
+    const index = await imageCacheStore("urlIndex", "readonly", (store) => store.get(url)).catch(() => null);
+    await imageCacheStore("urlIndex", "readwrite", (store) => store.delete(url)).catch(() => null);
+    if (!index?.id) continue;
+    await imageCacheStore("thumbnails", "readwrite", (store) => store.delete(index.id)).catch(() => null);
+    await imageCacheStore("images", "readwrite", (store) => store.delete(index.id)).catch(() => null);
+  }
+}
+
 async function hashDataUrlForCache(dataUrl) {
   if (window.crypto?.subtle) {
     const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(dataUrl));
@@ -19629,6 +19828,24 @@ els.outputManagerSearch?.addEventListener("input", () => {
   state.outputSearch = els.outputManagerSearch.value || "";
   renderOutputManager();
   scheduleCanvasStateSave({ delay: 500 });
+});
+els.outputTrashButton?.addEventListener("click", () => {
+  state.trashPanelOpen = true;
+  renderOutputTrash();
+});
+els.assetLibraryAssetsTab?.addEventListener("click", () => {
+  state.trashPanelOpen = false;
+  renderOutputTrash();
+});
+els.outputTrashAutoClean?.addEventListener("change", () => {
+  const days = Number(els.outputTrashAutoClean.value);
+  state.trashAutoCleanDays = [0, 7, 30].includes(days) ? days : 30;
+  renderOutputTrash();
+  scheduleCanvasStateSave({ delay: 120 });
+  autoCleanOutputTrash().catch((error) => toast(error.message));
+});
+els.emptyOutputTrashButton?.addEventListener("click", () => {
+  permanentlyDeleteTrashRecords([...state.trashOutputs]).catch((error) => toast(error.message));
 });
 els.outputFavoritesOnlyButton?.addEventListener("click", () => {
   state.outputFavoritesOnly = !state.outputFavoritesOnly;

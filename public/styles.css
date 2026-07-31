@@ -25617,3 +25617,324 @@ body[data-theme].workspace-active .brief-panel.agent-panel .mode-tabs .mode-tab 
     font-size: 14px !important;
   }
 }
+
+/* Generated result deletion stays easy to identify in both themes. */
+body[data-theme].workspace-active .output-manager-buttons [data-output-action="delete"].text-button,
+body[data-theme].workspace-active .canvas-node-image-tools [data-output-action="delete"].text-button {
+  color: #e27b68 !important;
+}
+
+body[data-theme].workspace-active .output-manager-actions {
+  grid-template-columns: minmax(0, 1fr) 34px !important;
+}
+
+.output-manager-actions #outputTrashButton {
+  position: relative;
+}
+
+.output-trash-count {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border: 2px solid var(--surface);
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.output-trash-count[hidden] {
+  display: none !important;
+}
+
+.output-trash-panel {
+  display: grid;
+  gap: 10px;
+  margin: 0 12px 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-soft);
+}
+
+.output-trash-panel[hidden] {
+  display: none !important;
+}
+
+.output-trash-head,
+.output-trash-item,
+.output-trash-actions {
+  display: flex;
+  align-items: center;
+}
+
+.output-trash-head {
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.output-trash-head label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.output-trash-head select {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.output-trash-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.output-trash-list {
+  display: grid;
+  gap: 8px;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.output-trash-item {
+  gap: 9px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.output-trash-item img {
+  width: 48px;
+  height: 56px;
+  flex: 0 0 auto;
+  border-radius: 7px;
+  object-fit: cover;
+}
+
+.output-trash-item > div:nth-child(2) {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.output-trash-item strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.output-trash-item span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.output-trash-actions {
+  gap: 5px;
+}
+
+body[data-theme].workspace-active .output-trash-actions .danger-text,
+body[data-theme].workspace-active #emptyOutputTrashButton.danger-text {
+  color: #e27b68 !important;
+}
+
+body[data-theme].workspace-active .asset-center-entry-button {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: auto !important;
+  min-width: 112px !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  padding: 0 12px !important;
+  gap: 7px !important;
+}
+
+body[data-theme].workspace-active .asset-center-entry-button svg {
+  width: 17px !important;
+  height: 17px !important;
+}
+
+body[data-theme].workspace-active .asset-center-entry-button span {
+  font-size: 12px !important;
+  font-weight: 760 !important;
+  white-space: nowrap !important;
+}
+
+.asset-center-tabs {
+  display: flex;
+  gap: 10px;
+  margin-top: 18px;
+  padding: 6px;
+  border: 1px solid var(--vault-line, var(--line));
+  border-radius: 14px;
+  background: var(--vault-panel, var(--surface-soft));
+}
+
+.asset-center-tabs button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 132px;
+  min-height: 42px;
+  padding: 0 18px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--vault-muted, var(--muted));
+  font-size: 14px;
+  font-weight: 780;
+  cursor: pointer;
+}
+
+.asset-center-tabs button svg {
+  width: 18px;
+  height: 18px;
+}
+
+.asset-center-tabs button.active {
+  border-color: var(--vault-line-strong, var(--line));
+  background: var(--vault-field, var(--surface));
+  color: var(--vault-ink, var(--ink));
+  box-shadow: 0 8px 24px rgba(17, 17, 15, 0.08);
+}
+
+.asset-center-tab-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.asset-center-tab-count[hidden],
+.asset-library-content[hidden] {
+  display: none !important;
+}
+
+.asset-trash-head {
+  align-items: center;
+}
+
+.asset-trash-head > div {
+  display: grid;
+  gap: 6px;
+}
+
+.asset-trash-head p {
+  margin: 0;
+  color: var(--vault-muted, var(--muted));
+  font-size: 12px;
+}
+
+.asset-trash-head label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--vault-muted, var(--muted));
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.asset-trash-head select {
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--vault-line, var(--line));
+  border-radius: 9px;
+  background: var(--vault-field, var(--surface));
+  color: var(--vault-ink, var(--ink));
+}
+
+.asset-trash-grid {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.asset-trash-grid .output-trash-item {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 10px;
+  border-color: var(--vault-line, var(--line));
+  background: var(--vault-card, var(--surface));
+}
+
+.asset-trash-grid .output-trash-item img {
+  width: 84px;
+  height: 72px;
+}
+
+.asset-trash-grid .output-trash-item strong {
+  color: var(--vault-ink, var(--ink));
+  font-size: 14px;
+}
+
+.asset-trash-grid .output-trash-item span {
+  color: var(--vault-muted, var(--muted));
+  font-size: 11px;
+}
+
+.asset-trash-grid .output-trash-actions .text-button {
+  border-color: var(--vault-line, var(--line)) !important;
+  background: var(--vault-field, var(--surface)) !important;
+  color: var(--vault-ink-soft, var(--ink-soft)) !important;
+}
+
+.asset-trash-grid .output-trash-actions .danger-text,
+body[data-theme].asset-library-active .asset-trash-empty-button.danger-text {
+  color: #e27b68 !important;
+}
+
+.asset-trash-empty-button {
+  justify-self: end;
+  margin-top: 14px;
+}
+
+@media (max-width: 720px) {
+  body[data-theme].workspace-active .asset-center-entry-button {
+    min-width: 104px !important;
+    padding: 0 9px !important;
+  }
+
+  .asset-center-tabs button {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .asset-trash-grid .output-trash-item {
+    grid-template-columns: 64px minmax(0, 1fr);
+  }
+
+  .asset-trash-grid .output-trash-item img {
+    width: 64px;
+    height: 64px;
+  }
+
+  .asset-trash-grid .output-trash-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+  }
+}

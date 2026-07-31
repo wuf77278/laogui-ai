@@ -72,6 +72,11 @@
         <path d="M6.5 9l1.4-1.5 1.6 1.8" />
         <path d="M15.5 18l1.4-1.5 1.6 1.8" />
       </symbol>
+      <symbol id="icon-asset-folder" viewBox="0 0 24 24">
+        <path d="M3.5 7.5h6l2-2h9a1.5 1.5 0 0 1 1.5 1.5v11.5a1.5 1.5 0 0 1-1.5 1.5h-17A1.5 1.5 0 0 1 2 18.5V9a1.5 1.5 0 0 1 1.5-1.5z" />
+        <circle cx="8" cy="12" r="1.3" />
+        <path d="M5.5 17l3-3 2.2 2 2.3-2.6 3.5 3.6" />
+      </symbol>
       <symbol id="icon-status" viewBox="0 0 24 24">
         <path d="M4 13h4l2-6 4 10 2-4h4" />
       </symbol>
@@ -531,8 +536,9 @@
               <button id="canvasFocusResultsButton" class="icon-button icon-only" type="button" title="聚焦结果" aria-label="聚焦结果">
                 <svg><use href="#icon-image"></use></svg>
               </button>
-              <button id="workspaceHistoryButton" class="icon-button icon-only" type="button" title="方案资产库" aria-label="方案资产库" aria-controls="assetLibraryView">
-                <svg><use href="#icon-library"></use></svg>
+              <button id="workspaceHistoryButton" class="icon-button asset-center-entry-button" type="button" title="资产管理" aria-label="打开资产管理" aria-controls="assetLibraryView">
+                <svg><use href="#icon-asset-folder"></use></svg>
+                <span>资产管理</span>
               </button>
               <button id="workspaceStatusButton" class="icon-button icon-only" type="button" title="状态" aria-label="状态" aria-controls="workspaceStatusPanel" aria-expanded="false">
                 <svg><use href="#icon-status"></use></svg>
@@ -1014,7 +1020,7 @@
         <section class="asset-library-hero" aria-labelledby="assetLibraryTitle">
           <div>
             <p class="eyebrow">Project Vault</p>
-            <h1 id="assetLibraryTitle">方案资产库</h1>
+            <h1 id="assetLibraryTitle">资产管理</h1>
             <div id="assetLibraryStats" class="asset-library-stats" aria-label="资产统计"></div>
           </div>
           <div class="asset-library-toolbar">
@@ -1027,7 +1033,18 @@
             </button>
           </div>
         </section>
-        <section class="asset-library-content" aria-live="polite">
+        <nav class="asset-center-tabs" role="tablist" aria-label="资产管理分类">
+          <button id="assetLibraryAssetsTab" class="active" type="button" role="tab" aria-selected="true" aria-controls="assetLibraryAssetsSection">
+            <svg><use href="#icon-library"></use></svg>
+            资产库
+          </button>
+          <button id="outputTrashButton" type="button" role="tab" aria-selected="false" aria-controls="outputTrashPanel">
+            <svg><use href="#icon-trash"></use></svg>
+            废纸篓
+            <span id="outputTrashCount" class="asset-center-tab-count" hidden>0</span>
+          </button>
+        </nav>
+        <section id="assetLibraryAssetsSection" class="asset-library-content" aria-live="polite">
           <div class="asset-library-content-head">
             <h2>全部创作图</h2>
             <span id="assetLibraryCount">0 张创作图</span>
@@ -1035,6 +1052,23 @@
           <div id="assetLibraryList" class="asset-library-grid">
             <p class="muted">正在读取方案资产库。</p>
           </div>
+        </section>
+        <section id="outputTrashPanel" class="asset-library-content asset-trash-content" hidden aria-label="废纸篓" aria-live="polite">
+          <div class="asset-library-content-head asset-trash-head">
+            <div>
+              <h2>废纸篓</h2>
+              <p>图片在自动清理前可以恢复；彻底删除后，本地原图和缓存也会一起删除。</p>
+            </div>
+            <label>自动清理
+              <select id="outputTrashAutoClean" aria-label="废纸篓自动清理时间">
+                <option value="7">7 天后</option>
+                <option value="30" selected>30 天后</option>
+                <option value="0">永不</option>
+              </select>
+            </label>
+          </div>
+          <div id="outputTrashList" class="asset-trash-grid"></div>
+          <button id="emptyOutputTrashButton" class="text-button danger-text asset-trash-empty-button" type="button">清空废纸篓</button>
         </section>
       </main>
     </div>

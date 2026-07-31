@@ -12478,6 +12478,61 @@ async function cleanupTestGeneratedFiles(options = {}) {
   return deleteGeneratedPairsByPredicate((file, base) => testPattern.test(file.name) || testPattern.test(base), options);
 }
 
+async function deleteGeneratedFilesByUrls(urls = [], { dryRun = false } = {}) {
+  const requestedUrls = [...new Set((Array.isArray(urls) ? urls : []).map((item) => String(item || "").trim()).filter(Boolean))].slice(0, 200);
+  const imageExtensions = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif"]);
+  const targets = new Set();
+  let skipped = 0;
+
+  for (const value of requestedUrls) {
+    let pathname = "";
+    try {
+      pathname = new URL(value, "http://localhost").pathname;
+    } catch {
+      skipped += 1;
+      continue;
+    }
+    if (!pathname.startsWith("/generated/")) {
+      skipped += 1;
+      continue;
+    }
+    const relativePath = pathname.replace(/^\/generated\/?/, "");
+    const filePath = staticFilePath(generatedDirectory(), relativePath);
+    if (!imageExtensions.has(path.extname(filePath).toLowerCase())) {
+      skipped += 1;
+      continue;
+    }
+    targets.add(filePath);
+    targets.add(filePath.replace(/\.[^.]+$/, ".json"));
+  }
+
+  let deleted = 0;
+  let bytes = 0;
+  for (const filePath of targets) {
+    try {
+      const stat = await fs.stat(filePath);
+      if (!stat.isFile()) continue;
+      bytes += stat.size;
+      if (!dryRun) await fs.unlink(filePath);
+      deleted += 1;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+
+  return {
+    ok: true,
+    action: "delete-generated-urls",
+    dryRun,
+    requested: requestedUrls.length,
+    deleted: dryRun ? 0 : deleted,
+    matched: deleted,
+    skipped,
+    bytes,
+    formattedBytes: formatBytes(bytes)
+  };
+}
+
 async function pruneLogFile(filePath, keepDays = 30) {
   let raw = "";
   try {
@@ -12533,6 +12588,7 @@ async function runStorageMaintenance(body = {}) {
   if (action === "summary") return { ok: true, summary: await generatedStorageSummary() };
   if (action === "archive-generated") return archiveGeneratedFiles({ olderThanDays: body.olderThanDays ?? 30, dryRun });
   if (action === "cleanup-test-generated") return cleanupTestGeneratedFiles({ dryRun });
+  if (action === "delete-generated-urls") return deleteGeneratedFilesByUrls(body.urls, { dryRun });
   if (action === "prune-task-logs") return pruneTaskLogs({ keepDays: body.keepDays ?? 30 });
   if (action === "daily-maintenance") {
     const archive = await archiveGeneratedFiles({ olderThanDays: body.olderThanDays ?? 30, dryRun });
