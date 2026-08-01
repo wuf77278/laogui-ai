@@ -44,7 +44,11 @@
     "pack:all": "electron-builder --mac --arm64 --x64 --win --x64",
     "check": "node --check server.mjs && node --check public/app.js && node --check public/ai-edit/editor.js && node --check public/ai-edit/region-engine.js && node --check public/deep-edit/editor.js && node --check public/deep-edit/image-ops.worker.js && node --check public/deep-edit/mask-engine.js && node --check public/deep-edit/layer-engine.js && node --check public/deep-edit/project-store.js && node --check electron/main.cjs && node --check electron/preload.cjs && node --check scripts/doctor.mjs && node --check scripts/sync-vendor.mjs && npm run check:vendor",
     "test": "node --test test/*.test.mjs",
-    "doctor": "node scripts/doctor.mjs"
+    "doctor": "node scripts/doctor.mjs",
+    "mobile:config": "node scripts/generate-mobile-provider-config.mjs",
+    "mobile:sync": "npm run mobile:config && npx cap sync android",
+    "mobile:open": "npx cap open android",
+    "mobile:build": "node scripts/build-android.mjs"
   },
   "engines": {
     "node": ">=18"
@@ -53,6 +57,7 @@
     "adm-zip": "0.6.0"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.4.2",
     "electron": "^39.8.5",
     "electron-builder": "^26.15.3"
   },
@@ -126,6 +131,13 @@
     }
   },
   "dependencies": {
+    "@capacitor/android": "^8.4.2",
+    "@capacitor/camera": "^8.2.1",
+    "@capacitor/core": "^8.4.2",
+    "@capacitor/filesystem": "^8.1.2",
+    "@capacitor/network": "^8.0.1",
+    "@capacitor/preferences": "^8.0.1",
+    "@capacitor/share": "^8.0.1",
     "electron-updater": "^6.8.9",
     "pannellum": "^2.5.7",
     "three": "^0.160.0"

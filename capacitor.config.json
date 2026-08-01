@@ -1,0 +1,14 @@
+{
+  "appId": "cn.laogui.ai.mobile",
+  "appName": "老鬼AI",
+  "webDir": "mobile",
+  "android": {
+    "allowMixedContent": false,
+    "backgroundColor": "#11110f"
+  },
+  "plugins": {
+    "Camera": {
+      "presentationStyle": "fullscreen"
+    }
+  }
+}
