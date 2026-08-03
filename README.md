@@ -53,9 +53,10 @@ npm start
 - 本地桌面应用：通过 Electron 在 macOS / Windows 上运行，减少部署门槛。
 - 服务端代理 API：浏览器端不直接接触密钥，适合本机或小团队内网使用。
 
-## 当前开发进度（v2.3.5）
+## 当前开发进度（v2.3.6）
 
 - [x] 上传素材参考图后留在当前工作区，需要时可手动进入局部编辑。
+- [x] AI 编辑和深度编辑的画笔、橡皮擦支持实时轨迹、圆形光标与粗细控制。
 - [x] 参考强度与重点参考内容使用磨砂玻璃卡片，并适配白天、暗夜和窄屏。
 - [x] 多套生图 API 可设置调用优先级，并在失败时依次自动切换。
 - [x] API 配置文件支持读取 `优先级`、`顺序`、`priority`、`rank` 和 `order`。
@@ -224,36 +225,6 @@ Call the public `/api/v1/*` API with either header:
 curl http://localhost:4177/api/v1/health \
   -H "Authorization: Bearer replace-with-a-private-token"
 ```
-
-## Codex / CLI Bridge
-
-For Codex workflows, use the thin local CLI wrapper instead of hand-writing
-`curl` payloads. It calls the same `/api/v1` endpoints, converts local images to
-data URLs, and can copy the generated image to a workflow path.
-
-```bash
-npm run api -- health
-npm run api -- image \
-  --prompt "quiet boutique hotel lobby, warm stone, brass details" \
-  --size 1024x1536 \
-  --quality low \
-  --image-out /tmp/laogui-lobby.png
-npm run api -- render \
-  --mode plan-render \
-  --primary /path/to/plan.png \
-  --prompt "turn the selected public lounge zone into an eye-level render"
-npm run api -- series \
-  --brief /path/to/brief.json \
-  --ref /path/to/ref-a.jpg \
-  --ref /path/to/ref-b.jpg \
-  --count 6 \
-  --task-id minsu-board11 \
-  --out-dir /tmp/minsu-board11-series
-```
-
-Set `LAOGUI_API_BASE_URL`, `LAOGUI_API_TOKEN`, and `LAOGUI_CLIENT_ID` when a
-workflow runs outside the local machine. See `docs/codex-bridge.md` for the
-bridge command map and payload examples.
 
 Example plan request:
 

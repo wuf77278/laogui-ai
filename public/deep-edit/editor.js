@@ -124,6 +124,7 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
     panY: 0,
     view: null,
     gesture: null,
+    cursorPoint: null,
     polygonPoints: [],
     history: [],
     future: [],
@@ -255,8 +256,8 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
     if (state.tool === "select-shape") html = `<strong>形状选区</strong>${segment("shapeMode", [["rect", "矩形"], ["ellipse", "椭圆"]])}`;
     else if (state.tool === "lasso") html = `<strong>套索方式</strong>${segment("lassoMode", [["free", "自由套索"], ["polygon", "多边形"]])}`;
     else if (state.tool === "wand") html = `<strong>颜色选择</strong>${segment("wandContiguous", [["true", "仅相连"], ["false", "全图同色"]])}<label>容差 <output data-deep-tolerance-value>${state.tolerance}</output><input type="range" min="0" max="100" value="${state.tolerance}" data-deep-tolerance></label>`;
-    else if (state.tool === "brush-add") html = `<strong>修边画笔</strong>${segment("selectionBrushMode", [["add", "增加选区"], ["subtract", "减去选区"]])}<label>大小 <output data-deep-brush-value>${state.brushSize}</output><input type="range" min="2" max="180" value="${state.brushSize}" data-deep-brush></label>`;
-    else if (state.tool === "paint") html = `<strong>画笔</strong>${segment("paintMode", [["paint", "绘画"], ["erase", "擦除"]])}<div class="deep-tool-option-row"><label>颜色<input type="color" value="${state.paintColor}" data-paint-color></label><label>大小 <output data-deep-brush-value>${state.brushSize}</output><input type="range" min="2" max="180" value="${state.brushSize}" data-deep-brush></label></div>`;
+    else if (state.tool === "brush-add") html = `<strong>修边画笔</strong>${segment("selectionBrushMode", [["add", "增加选区"], ["subtract", "减去选区"]])}`;
+    else if (state.tool === "paint") html = `<strong>画笔</strong>${segment("paintMode", [["paint", "绘画"], ["erase", "擦除"]])}<div class="deep-tool-option-row"><label>颜色<input type="color" value="${state.paintColor}" data-paint-color></label></div>`;
     else if (state.tool === "fill") html = `<strong>填充</strong>${segment("fillMode", [["bucket", "油漆桶"], ["gradient", "渐变"]])}<div class="deep-tool-option-row"><label>起始色<input type="color" value="${state.paintColor}" data-paint-color></label>${state.fillMode === "gradient" ? `<label>结束色<input type="color" value="${state.secondaryColor}" data-secondary-color></label>` : ""}</div>`;
     else if (state.tool === "text") html = `<strong>文字</strong><label>内容<textarea rows="2" maxlength="500" data-layer-text>${state.textValue.replace(/[<>&]/g, "")}</textarea></label><div class="deep-tool-option-row"><label>颜色<input type="color" value="${state.paintColor}" data-paint-color></label><label>大小 <output data-text-size-value>${state.textSize}</output><input type="range" min="8" max="300" value="${state.textSize}" data-text-size></label></div><button type="button" data-layer-action="update-text">更新选中文字</button>`;
     panel.innerHTML = html;
@@ -354,6 +355,13 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
           <aside class="deep-tool-rail" aria-label="选区工具">
             ${TOOL_META.map(([id, iconId, label]) => `<button type="button" data-deep-tool="${id}" title="${label}" aria-label="${label}" aria-pressed="false">${icon(iconId)}<span>${label}</span></button>`).join("")}
           </aside>
+          <div class="ai-brush-flyout ai-brush-controls deep-brush-flyout" data-deep-brush-controls hidden>
+            <div class="ai-brush-heading"><span data-deep-brush-heading>画笔粗细</span><output data-deep-brush-value>36</output></div>
+            <div class="ai-brush-presets" role="group" aria-label="常用画笔粗细">
+              ${[[12, "细"], [36, "中"], [80, "粗"], [140, "特粗"]].map(([size, label]) => `<button type="button" data-deep-brush-preset="${size}" aria-label="${label} ${size}" aria-pressed="false"><i style="--brush-dot:${Math.max(5, Math.round(size / 7))}px"></i><span>${size}</span></button>`).join("")}
+            </div>
+            <label class="ai-slider-label">精细调整<input type="range" min="4" max="220" value="36" data-deep-brush aria-label="画笔粗细"></label>
+          </div>
           <main class="deep-stage" data-deep-stage>
             <canvas data-deep-canvas tabindex="0" aria-label="图片编辑画布"></canvas>
             <div class="deep-stage-hint" data-deep-hint>拖动创建选区</div>
@@ -531,6 +539,29 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
     const points = state.gesture?.points || state.polygonPoints;
     if (!points?.length || !state.view) return;
     ctx.save();
+    if (["brush", "layer-stroke"].includes(state.gesture?.type)) {
+      const subtracting = state.gesture.type === "brush" && state.selectionBrushMode === "subtract";
+      const erasing = state.gesture.type === "layer-stroke" && state.paintMode === "erase";
+      ctx.strokeStyle = subtracting || erasing ? "rgba(255, 92, 92, .58)" : state.gesture.type === "layer-stroke" ? state.paintColor : "rgba(67, 164, 255, .58)";
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.globalAlpha = state.gesture.type === "layer-stroke" && !erasing ? .68 : 1;
+      ctx.lineWidth = Math.max(1, state.brushSize * state.view.scale);
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      points.forEach((point, index) => {
+        const x = state.view.dx + point.x * state.view.scale;
+        const y = state.view.dy + point.y * state.view.scale;
+        if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      if (points.length === 1) {
+        const point = points[0];
+        ctx.arc(state.view.dx + point.x * state.view.scale, state.view.dy + point.y * state.view.scale, Math.max(.5, state.brushSize * state.view.scale / 2), 0, Math.PI * 2);
+        ctx.fill();
+      } else ctx.stroke();
+      ctx.restore();
+      return;
+    }
     ctx.strokeStyle = "#f0c978";
     ctx.fillStyle = "rgba(240,201,120,.16)";
     ctx.lineWidth = Math.max(1.5, (window.devicePixelRatio || 1) * 1.5);
@@ -555,6 +586,28 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
     if (state.gesture?.type === "lasso") ctx.closePath();
     ctx.fill();
     ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawBrushCursor(ctx) {
+    if (!state.cursorPoint || !state.view || !["brush-add", "paint"].includes(state.tool)) return;
+    const x = state.view.dx + state.cursorPoint.x * state.view.scale;
+    const y = state.view.dy + state.cursorPoint.y * state.view.scale;
+    const radius = Math.max(2, state.brushSize * state.view.scale / 2);
+    const erasing = state.tool === "paint" ? state.paintMode === "erase" : state.selectionBrushMode === "subtract";
+    const color = erasing ? "#ff5c5c" : state.tool === "paint" ? state.paintColor : "#43a4ff";
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = Math.max(1.5, (window.devicePixelRatio || 1) * 1.25);
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.arc(x, y, Math.max(1.5, ctx.lineWidth), 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
   }
 
@@ -588,6 +641,7 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
     ctx.drawImage(displayed, dx, dy, drawWidth, drawHeight);
     if (!state.compare && state.maskCanvas) ctx.drawImage(state.maskCanvas, dx, dy, drawWidth, drawHeight);
     drawGesture(ctx);
+    drawBrushCursor(ctx);
     updateUi();
   }
 
@@ -606,6 +660,23 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
     overlay.querySelector("[data-deep-command='undo']").disabled = state.busy || !state.history.length;
     overlay.querySelector("[data-deep-command='redo']").disabled = state.busy || !state.future.length;
     overlay.querySelector("[data-deep-command='compare']").setAttribute("aria-pressed", String(state.compare));
+    const brushActive = ["brush-add", "paint"].includes(state.tool);
+    const canvas = overlay.querySelector("[data-deep-canvas]");
+    if (canvas) canvas.style.cursor = brushActive ? "none" : "crosshair";
+    const brushControls = overlay.querySelector("[data-deep-brush-controls]");
+    if (brushControls) {
+      brushControls.hidden = !brushActive;
+      brushControls.dataset.tool = state.tool;
+      const heading = brushControls.querySelector("[data-deep-brush-heading]");
+      if (heading) heading.textContent = state.tool === "brush-add"
+        ? (state.selectionBrushMode === "subtract" ? "选区橡皮擦粗细" : "修边画笔粗细")
+        : (state.paintMode === "erase" ? "橡皮擦粗细" : "画笔粗细");
+      const output = brushControls.querySelector("[data-deep-brush-value]");
+      if (output) output.value = state.brushSize;
+      const slider = brushControls.querySelector("[data-deep-brush]");
+      if (slider && Number(slider.value) !== state.brushSize) slider.value = state.brushSize;
+      brushControls.querySelectorAll("[data-deep-brush-preset]").forEach((button) => button.setAttribute("aria-pressed", String(Number(button.dataset.deepBrushPreset) === state.brushSize)));
+    }
     updateLayerList();
     updateToolOptions();
     const hint = overlay.querySelector("[data-deep-hint]");
@@ -742,6 +813,7 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
     if (state.busy || !state.sourceCanvas) return;
     const point = sourcePointFromEvent(event);
     if (!point && state.tool !== "move") return;
+    state.cursorPoint = point;
     event.preventDefault();
     event.currentTarget.setPointerCapture?.(event.pointerId);
     if (state.tool === "move") {
@@ -775,14 +847,16 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
 
   function handlePointerMove(event) {
     const gesture = state.gesture;
-    if (!gesture || state.busy) return;
+    if (state.busy) return;
+    const point = sourcePointFromEvent(event);
+    state.cursorPoint = point;
+    if (!gesture) { render(); return; }
     if (gesture.type === "move") {
       state.panX = gesture.panX + event.clientX - gesture.startX;
       state.panY = gesture.panY + event.clientY - gesture.startY;
       render();
       return;
     }
-    const point = sourcePointFromEvent(event);
     if (!point) return;
     const points = gesture.points;
     const last = points.at(-1);
@@ -801,7 +875,7 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
     if (gesture.type === "rect" && gesture.points.length > 1) incoming = rectangleMask(state.sourceCanvas.width, state.sourceCanvas.height, gesture.points[0], gesture.points[1]);
     else if (gesture.type === "ellipse" && gesture.points.length > 1) incoming = ellipseMask(state.sourceCanvas.width, state.sourceCanvas.height, gesture.points[0], gesture.points[1]);
     else if (gesture.type === "lasso" && gesture.points.length > 2) incoming = polygonMask(state.sourceCanvas.width, state.sourceCanvas.height, gesture.points);
-    else if (gesture.type === "brush") incoming = strokeMask(state.sourceCanvas.width, state.sourceCanvas.height, gesture.points, state.brushSize);
+    else if (gesture.type === "brush") incoming = strokeMask(state.sourceCanvas.width, state.sourceCanvas.height, gesture.points, state.brushSize / 2);
     else if (gesture.type === "layer-stroke") paintLayerStroke(gesture.points, state.paintMode === "erase");
     else if (gesture.type === "gradient" && gesture.points.length > 1) applyGradient(gesture.points[0], gesture.points[1]);
     state.gesture = null;
@@ -997,6 +1071,7 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
     canvas.addEventListener("pointermove", handlePointerMove);
     canvas.addEventListener("pointerup", handlePointerUp);
     canvas.addEventListener("pointercancel", handlePointerUp);
+    canvas.addEventListener("pointerleave", () => { state.cursorPoint = null; if (!state.gesture) render(); });
     canvas.addEventListener("dblclick", () => state.tool === "lasso" && state.lassoMode === "polygon" && finishPolygon());
     canvas.addEventListener("wheel", (event) => { event.preventDefault(); state.zoom = clamp(state.zoom * (event.deltaY > 0 ? 0.9 : 1.1), 0.1, 8); render(); }, { passive: false });
     overlay.addEventListener("pointerdown", (event) => {
@@ -1006,6 +1081,12 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
       if (event.target.matches("[data-layer-x], [data-layer-y]")) pushHistory("document");
     });
     overlay.addEventListener("click", (event) => {
+      const brushPreset = event.target.closest("[data-deep-brush-preset]")?.dataset.deepBrushPreset;
+      if (brushPreset) {
+        state.brushSize = Number(brushPreset);
+        render();
+        return;
+      }
       const visibility = event.target.closest("[data-layer-visible]")?.dataset.layerVisible;
       if (visibility) {
         const layer = state.layers.find((item) => item.id === visibility);
@@ -1068,7 +1149,7 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
       if (local) localAction(local);
     });
     overlay.addEventListener("input", (event) => {
-      if (event.target.matches("[data-deep-brush]")) { state.brushSize = Number(event.target.value); overlay.querySelector("[data-deep-brush-value]").value = state.brushSize; }
+      if (event.target.matches("[data-deep-brush]")) { state.brushSize = Number(event.target.value); render(); }
       if (event.target.matches("[data-deep-tolerance]")) { state.tolerance = Number(event.target.value); overlay.querySelector("[data-deep-tolerance-value]").value = state.tolerance; }
       if (event.target.matches("[data-deep-feather]")) { state.feather = Number(event.target.value); overlay.querySelector("[data-deep-feather-value]").value = state.feather; }
       if (event.target.matches("[data-paint-color]")) { state.paintColor = event.target.value; }
@@ -1153,6 +1234,7 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
     state.history = [];
     state.future = [];
     state.historyBytes = 0;
+    state.cursorPoint = null;
     state.polygonPoints = [];
     state.compare = false;
     state.status = "正在载入图片";
@@ -1208,6 +1290,7 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
     clearTimeout(previewTimer);
     state.previewRevision += 1;
     state.gesture = null;
+    state.cursorPoint = null;
     state.polygonPoints = [];
   }
 

@@ -3922,16 +3922,16 @@ function renderImageStudioKernel() {
     els.imageStudioKernelSummary.innerHTML = `
       <div><span>调用模式</span><strong>${escapeHtml(modeLabel)}</strong><small>${escapeHtml(`engine ${providerLabel}`)}</small></div>
       <div><span>项目 API 配置</span><strong>${escapeHtml(configLabel)}</strong><small>${escapeHtml(routeLabel)}</small></div>
-      <div><span>模型</span><strong>${escapeHtml(modelLabel)}</strong><small>${escapeHtml(engine?.available ? "go-cli 已找到" : "go-cli 未找到")}</small></div>
+      <div><span>模型</span><strong>${escapeHtml(modelLabel)}</strong><small>${escapeHtml(engine?.available ? "本地内核已找到" : "本地内核未找到")}</small></div>
     `;
   }
   if (els.imageStudioKernelHint) {
     if (!engine?.available && engine?.required) {
-      els.imageStudioKernelHint.textContent = "未找到 Image Studio go-cli 引擎；当前软件生图中枢不可用，请检查打包资源或 IMAGE_STUDIO_CLI_PATH。";
+      els.imageStudioKernelHint.textContent = "未找到本地生图内核；当前软件生图中枢不可用，请检查打包资源。";
     } else if (!engine?.available) {
-      els.imageStudioKernelHint.textContent = "未找到 Image Studio go-cli；可选模式下会使用开发后备或原生通道。";
+      els.imageStudioKernelHint.textContent = "未找到本地生图内核；可选模式下会使用开发后备或原生通道。";
     } else {
-      els.imageStudioKernelHint.textContent = "已找到 Image Studio go-cli；朋友电脑上会使用老鬼AI设置中保存的 Base URL、Key 和模型驱动这个引擎。";
+      els.imageStudioKernelHint.textContent = "已找到本地生图内核；朋友电脑上会使用老鬼AI设置中保存的 Base URL、Key 和模型驱动这个引擎。";
     }
   }
 }

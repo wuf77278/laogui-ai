@@ -162,6 +162,7 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
     panY: 0,
     view: null,
     gesture: null,
+    cursorPoint: null,
     polygonPoints: [],
     history: [],
     future: [],
@@ -196,6 +197,16 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
           <aside class="deep-tool-rail" aria-label="AI 编辑选区工具">
             ${TOOLS.map(([id, iconId, label]) => `<button type="button" data-ai-tool="${id}" title="${label}" aria-label="${label}" aria-pressed="false">${icon(iconId)}<span>${label}</span></button>`).join("")}
           </aside>
+          <div class="ai-brush-flyout ai-brush-controls" data-ai-brush-controls hidden>
+            <div class="ai-brush-heading"><span data-ai-brush-heading>画笔粗细</span><output data-ai-brush-value>36</output></div>
+            <div class="ai-brush-presets" role="group" aria-label="快捷选择画笔粗细">
+              <button type="button" data-ai-brush-preset="12" aria-label="细画笔"><i style="--brush-dot:4px"></i><span>细</span></button>
+              <button type="button" data-ai-brush-preset="36" aria-label="中等画笔"><i style="--brush-dot:8px"></i><span>中</span></button>
+              <button type="button" data-ai-brush-preset="80" aria-label="粗画笔"><i style="--brush-dot:13px"></i><span>粗</span></button>
+              <button type="button" data-ai-brush-preset="140" aria-label="特粗画笔"><i style="--brush-dot:18px"></i><span>特粗</span></button>
+            </div>
+            <label class="ai-slider-label"><span>精细调整</span><input type="range" min="4" max="220" value="36" data-ai-brush-size aria-label="精细调整画笔粗细"></label>
+          </div>
           <main class="deep-stage ai-edit-stage" data-ai-stage>
             <canvas data-ai-canvas tabindex="0" aria-label="AI 编辑框选画布"></canvas>
             <div class="deep-stage-hint" data-ai-hint>先选择编号，再在图片上框选</div>
@@ -215,7 +226,6 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
               <div class="deep-segmented ai-combine-types" role="group" aria-label="选区组合方式">
                 <button type="button" data-ai-combine="replace">新建</button><button type="button" data-ai-combine="add">增加</button><button type="button" data-ai-combine="subtract">减去</button>
               </div>
-              <label class="ai-slider-label">画笔大小 <output data-ai-brush-value>36</output><input type="range" min="4" max="220" value="36" data-ai-brush-size></label>
               <label class="ai-slider-label">边缘羽化 <output data-ai-feather-value>2</output><input type="range" min="0" max="24" value="2" data-ai-feather></label>
               <button class="text-button ai-clear-region" type="button" data-ai-command="clear-region">清空当前编号选区</button>
               <h3 class="ai-prompt-heading" data-ai-prompt-heading>框选编号 1 的修改要求</h3>
@@ -394,6 +404,31 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
     if (!points?.length || !state.view) return;
     const region = activeRegion();
     const dpr = window.devicePixelRatio || 1;
+    if (state.gesture?.type === "brush") {
+      const color = state.tool === "brush-subtract" ? [234, 117, 96] : region.color;
+      const radius = Math.max(2, state.brushSize * state.view.scale / 2);
+      ctx.save();
+      ctx.fillStyle = `rgba(${color.join(",")},.48)`;
+      ctx.strokeStyle = `rgba(${color.join(",")},.48)`;
+      ctx.lineWidth = radius * 2;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      points.forEach((point, index) => {
+        const x = state.view.dx + point.x * state.view.scale;
+        const y = state.view.dy + point.y * state.view.scale;
+        if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      if (points.length === 1) {
+        const point = points[0];
+        ctx.arc(state.view.dx + point.x * state.view.scale, state.view.dy + point.y * state.view.scale, radius, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.stroke();
+      }
+      ctx.restore();
+      return;
+    }
     ctx.save();
     ctx.strokeStyle = `rgb(${region.color.join(",")})`;
     ctx.fillStyle = `rgba(${region.color.join(",")},.16)`;
@@ -419,6 +454,29 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
     }
     ctx.fill();
     ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawBrushCursor(ctx) {
+    if (!state.cursorPoint || !state.view || !["brush-add", "brush-subtract"].includes(state.tool)) return;
+    const region = activeRegion();
+    const dpr = window.devicePixelRatio || 1;
+    const x = state.view.dx + state.cursorPoint.x * state.view.scale;
+    const y = state.view.dy + state.cursorPoint.y * state.view.scale;
+    const radius = Math.max(2, state.brushSize * state.view.scale / 2);
+    const color = state.tool === "brush-subtract" ? [234, 117, 96] : region.color;
+    ctx.save();
+    ctx.strokeStyle = `rgb(${color.join(",")})`;
+    ctx.lineWidth = Math.max(1.5, 1.5 * dpr);
+    ctx.setLineDash([5 * dpr, 4 * dpr]);
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "rgba(255,255,255,.85)";
+    ctx.beginPath();
+    ctx.arc(x, y, Math.max(1.5, dpr), 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
   }
 
@@ -449,12 +507,19 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
     ctx.drawImage(state.previewCanvas || state.sourceCanvas, dx, dy, drawWidth, drawHeight);
     state.regions.forEach((region, index) => drawMask(ctx, region, index === state.activeRegion));
     drawGesture(ctx);
+    drawBrushCursor(ctx);
     updateUi();
   }
 
   function updateUi() {
     if (!overlay || !state.sourceCanvas) return;
     const region = activeRegion();
+    const canvas = overlay.querySelector("[data-ai-canvas]");
+    const brushActive = ["brush-add", "brush-subtract"].includes(state.tool);
+    canvas.style.cursor = brushActive ? "none" : "crosshair";
+    const brushControls = overlay.querySelector("[data-ai-brush-controls]");
+    brushControls.hidden = !brushActive;
+    brushControls.querySelector("[data-ai-brush-heading]").textContent = state.tool === "brush-subtract" ? "橡皮擦粗细" : "画笔粗细";
     overlay.querySelector("[data-ai-title]").textContent = state.selected?.title || "选中图片";
     overlay.querySelectorAll("[data-ai-tool]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.aiTool === state.tool)));
     overlay.querySelectorAll("[data-ai-combine]").forEach((button) => button.classList.toggle("active", button.dataset.aiCombine === state.combine));
@@ -497,7 +562,11 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
     });
     overlay.querySelector("[data-ai-feather]").value = region.feather;
     overlay.querySelector("[data-ai-feather-value]").value = region.feather;
+    overlay.querySelector("[data-ai-brush-size]").value = state.brushSize;
     overlay.querySelector("[data-ai-brush-value]").value = state.brushSize;
+    overlay.querySelectorAll("[data-ai-brush-preset]").forEach((button) => {
+      button.setAttribute("aria-pressed", String(Number(button.dataset.aiBrushPreset) === state.brushSize));
+    });
     const optimization = overlay.querySelector("[data-ai-prompt-optimization]");
     const optimizationToggle = overlay.querySelector("[data-ai-command='toggle-prompt-optimization']");
     optimization?.classList.toggle("active", state.promptOptimizationEnabled);
@@ -524,6 +593,7 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
     if (state.busy || !state.sourceCanvas) return;
     const point = sourcePoint(event);
     if (!point && state.tool !== "move") return;
+    state.cursorPoint = point;
     event.preventDefault();
     event.currentTarget.setPointerCapture?.(event.pointerId);
     if (state.tool === "move") {
@@ -546,15 +616,16 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
   }
 
   function handlePointerMove(event) {
+    const point = sourcePoint(event);
+    state.cursorPoint = point;
     const gesture = state.gesture;
-    if (!gesture || state.busy) return;
+    if (!gesture || state.busy) { render(); return; }
     if (gesture.type === "move") {
       state.panX = gesture.panX + event.clientX - gesture.startX;
       state.panY = gesture.panY + event.clientY - gesture.startY;
       render();
       return;
     }
-    const point = sourcePoint(event);
     if (!point) return;
     const last = gesture.points.at(-1);
     if (["rect", "ellipse"].includes(gesture.type)) gesture.points[1] = point;
@@ -572,7 +643,7 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
     if (gesture.type === "rect" && gesture.points.length > 1) incoming = rectangleMask(state.sourceCanvas.width, state.sourceCanvas.height, gesture.points[0], gesture.points[1]);
     else if (gesture.type === "ellipse" && gesture.points.length > 1) incoming = ellipseMask(state.sourceCanvas.width, state.sourceCanvas.height, gesture.points[0], gesture.points[1]);
     else if (gesture.type === "lasso" && gesture.points.length > 2) incoming = polygonMask(state.sourceCanvas.width, state.sourceCanvas.height, gesture.points);
-    else if (gesture.type === "brush") incoming = strokeMask(state.sourceCanvas.width, state.sourceCanvas.height, gesture.points, state.brushSize);
+    else if (gesture.type === "brush") incoming = strokeMask(state.sourceCanvas.width, state.sourceCanvas.height, gesture.points, state.brushSize / 2);
     state.gesture = null;
     if (incoming) {
       const mode = state.tool === "brush-add" ? "add" : state.tool === "brush-subtract" ? "subtract" : state.combine;
@@ -709,6 +780,8 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
       if (tool) { state.tool = tool; state.polygonPoints = []; render(); return; }
       const combine = event.target.closest("[data-ai-combine]")?.dataset.aiCombine;
       if (combine) { state.combine = combine; render(); return; }
+      const brushPreset = event.target.closest("[data-ai-brush-preset]")?.dataset.aiBrushPreset;
+      if (brushPreset) { state.brushSize = Number(brushPreset); render(); return; }
       const operation = event.target.closest("[data-ai-operation]")?.dataset.aiOperation;
       if (operation) { activeRegion().operation = operation; render(); return; }
       const preset = event.target.closest("[data-ai-preset]")?.dataset.aiPreset;
@@ -730,12 +803,13 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
         setError("");
         updateUi();
       }
-      if (event.target.matches("[data-ai-brush-size]")) { state.brushSize = Number(event.target.value); updateUi(); }
+      if (event.target.matches("[data-ai-brush-size]")) { state.brushSize = Number(event.target.value); render(); }
       if (event.target.matches("[data-ai-feather]")) { activeRegion().feather = Number(event.target.value); updateUi(); }
     });
     const canvas = overlay.querySelector("[data-ai-canvas]");
     canvas.addEventListener("pointerdown", handlePointerDown);
     canvas.addEventListener("pointermove", handlePointerMove);
+    canvas.addEventListener("pointerleave", () => { state.cursorPoint = null; render(); });
     canvas.addEventListener("pointerup", handlePointerUp);
     canvas.addEventListener("pointercancel", handlePointerUp);
     canvas.addEventListener("dblclick", () => { if (state.tool === "polygon") finishPolygon(); });
@@ -770,6 +844,7 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
     state.panX = 0;
     state.panY = 0;
     state.gesture = null;
+    state.cursorPoint = null;
     state.polygonPoints = [];
     state.history = [];
     state.future = [];

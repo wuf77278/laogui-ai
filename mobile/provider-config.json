@@ -1,0 +1,28 @@
+{
+  "source": "aggregate-image-generation",
+  "sourceHash": "9c0bffda146fe4f1",
+  "apiMode": "images",
+  "requestPolicy": "openai",
+  "model": "gpt-image-2",
+  "endpoints": {
+    "generation": "/v1/images/generations",
+    "edit": "/v1/images/edits"
+  },
+  "providers": [
+    {
+      "id": "fhl",
+      "baseUrl": "https://www.fhl.mom",
+      "imagesNewApiCompat": false
+    },
+    {
+      "id": "yybb",
+      "baseUrl": "https://yybb.codes",
+      "imagesNewApiCompat": true
+    },
+    {
+      "id": "aiwanwu",
+      "baseUrl": "https://2api.aiwanwu.cc",
+      "imagesNewApiCompat": false
+    }
+  ]
+}
