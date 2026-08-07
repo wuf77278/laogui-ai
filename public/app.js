@@ -2,6 +2,7 @@ import * as THREE from "./vendor/three.module.js";
 import { GLTFExporter } from "./vendor/GLTFExporter.js";
 import { createDeepEditor } from "./deep-edit/editor.js";
 import { createAiEditor } from "./ai-edit/editor.js";
+import { isTaskCanceledError, runSettledTaskBatch, summarizeTaskBatch } from "./task-batch.js";
 
 const referenceImageLimit = 8;
 const CANVAS_LAYOUT_VERSION = 16;
@@ -486,6 +487,7 @@ const els = {
   floatingQualitySelect: $("floatingQualitySelect"),
   floatingImageCountSelect: $("floatingImageCountSelect"),
   floatingGenerateButton: $("floatingGenerateButton"),
+  floatingStopGenerationButton: $("floatingStopGenerationButton"),
   floatingThinkingModeButton: $("floatingThinkingModeButton"),
   floatingContinueEditButton: $("floatingContinueEditButton"),
   floatingQuickIterationButtons: Array.from(document.querySelectorAll("[data-floating-quick-iteration]")),
@@ -604,6 +606,7 @@ const els = {
   canvasCommand: $("canvasCommand"),
   canvasFloatingParams: document.querySelector(".canvas-floating-params"),
   canvasGenerateButton: $("canvasGenerateButton"),
+  canvasStopGenerationButton: $("canvasStopGenerationButton"),
   thinkingModeButton: $("thinkingModeButton"),
   continueEditButton: $("continueEditButton"),
   quickIterationButtons: Array.from(document.querySelectorAll("[data-quick-iteration]")),
@@ -642,6 +645,7 @@ const els = {
   taskProgressEvents: $("taskProgressEvents"),
   taskProgressReview: $("taskProgressReview"),
   taskProgressPrompt: $("taskProgressPrompt"),
+  taskStopGenerationButton: $("taskStopGenerationButton"),
   outputManagerList: $("outputManagerList"),
   outputManagerSearch: $("outputManagerSearch"),
   outputTrashButton: $("outputTrashButton"),
@@ -654,6 +658,7 @@ const els = {
   exportOutputsButton: $("exportOutputsButton"),
   taskLogList: $("taskLogList"),
   refreshTaskLogsButton: $("refreshTaskLogsButton"),
+  exportFailureLogsButton: $("exportFailureLogsButton"),
   taskLogFilterButtons: Array.from(document.querySelectorAll("[data-task-log-filter]")),
   toast: $("toast")
 };
@@ -669,6 +674,7 @@ let pendingCanvasMinimapNodes = null;
 let selectionCanvasFrame = 0;
 let settingsReturnFocus = null;
 let desktopUpdateState = null;
+let activeGenerationBatch = null;
 const overlayFocusReturn = new WeakMap();
 let restoringCanvasState = false;
 let canvasStateSaveTimer = 0;
@@ -694,6 +700,7 @@ const TASK_RESULT_POLL_INTERVAL_MS = 2500;
 const TASK_RESULT_POLL_TIMEOUT_MS = 10 * 60 * 1000;
 const TASK_RESULT_MISSING_TIMEOUT_MS = 15000;
 const DESIGN_SERIES_PARALLEL_LIMIT = 2;
+const IMAGE_BATCH_PARALLEL_LIMIT = 2;
 function createClientId() {
   if (window.crypto?.randomUUID) return `client-${window.crypto.randomUUID()}`;
   return `client-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -3602,10 +3609,11 @@ function isMissingTaskResultError(error) {
   return error?.status === 404 || /not found|missing|404/i.test(message);
 }
 
-async function pollTaskResult(path, clientTaskId) {
+async function pollTaskResult(path, clientTaskId, { signal } = {}) {
   const started = Date.now();
   let firstMissingAt = 0;
   while (Date.now() - started < TASK_RESULT_POLL_TIMEOUT_MS) {
+    if (signal?.aborted) throw canceledTaskError();
     const pollPath = clientScopedApiPath(`/api/task-result?taskId=${encodeURIComponent(clientTaskId)}`);
     try {
       const data = await requestJson(pollPath);
@@ -3629,7 +3637,7 @@ async function pollTaskResult(path, clientTaskId) {
         throw error;
       }
     }
-    await sleep(TASK_RESULT_POLL_INTERVAL_MS);
+    await abortableSleep(TASK_RESULT_POLL_INTERVAL_MS, signal);
   }
   throw new Error("后台任务仍在运行，请稍后打开任务日志查看结果");
 }
@@ -3644,20 +3652,27 @@ function isRecoverableApiError(error) {
     || /network|fetch|aborted|abort|timeout|连接|断开|请求失败/i.test(message);
 }
 
-async function api(path, payload) {
+async function api(path, payload, options = {}) {
   const compactPayload = await prepareApiPayload(payload);
   const recoverable = RECOVERABLE_API_PATHS.has(path);
   const clientTaskId = recoverable ? createClientTaskId(path) : "";
-  const requestPayload = recoverable ? { ...compactPayload, clientTaskId } : compactPayload;
+  const batch = options.batch || null;
+  const signal = options.signal || batch?.controller?.signal;
+  const requestPayload = recoverable
+    ? { ...compactPayload, clientTaskId, batchId: batch?.id || compactPayload.batchId || "" }
+    : compactPayload;
+  if (clientTaskId && batch) batch.taskIds.add(clientTaskId);
   try {
     const data = await requestJson(clientScopedApiPath(path), {
       method: "POST",
-      body: JSON.stringify(requestPayload)
+      body: JSON.stringify(requestPayload),
+      signal
     });
     refreshHealth();
     refreshTaskLogs({ silent: true });
     return data;
   } catch (error) {
+    if (signal?.aborted || isTaskCanceledError(error)) throw canceledTaskError();
     if (!recoverable || !clientTaskId || !isRecoverableApiError(error)) throw error;
     updateActiveTask({
       status: "running",
@@ -3665,26 +3680,81 @@ async function api(path, payload) {
       event: "连接中断，正在等待后台生成结果"
     });
     toast("连接中断，正在等待后台结果");
-    const data = await pollTaskResult(path, clientTaskId);
+    const data = await pollTaskResult(path, clientTaskId, { signal });
     refreshHealth();
     refreshTaskLogs({ silent: true });
     return data;
+  } finally {
+    if (clientTaskId && batch) batch.taskIds.delete(clientTaskId);
   }
 }
 
-async function runWithConcurrency(items, limit, worker) {
-  const results = new Array(items.length);
-  let nextIndex = 0;
-  const workerCount = Math.max(1, Math.min(limit, items.length));
-  const runners = Array.from({ length: workerCount }, async () => {
-    while (nextIndex < items.length) {
-      const index = nextIndex;
-      nextIndex += 1;
-      results[index] = await worker(items[index], index);
-    }
+function canceledTaskError(message = "用户停止生成") {
+  const error = new Error(message);
+  error.name = "AbortError";
+  error.status = 499;
+  error.canceled = true;
+  return error;
+}
+
+function abortableSleep(ms, signal) {
+  if (!signal) return sleep(ms);
+  if (signal.aborted) return Promise.reject(canceledTaskError());
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(canceledTaskError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
   });
-  await Promise.all(runners);
-  return results;
+}
+
+function beginGenerationBatch(total = 1) {
+  const batch = {
+    id: createClientTaskId("batch"),
+    total: Math.max(1, Number(total) || 1),
+    controller: new AbortController(),
+    taskIds: new Set(),
+    stopping: false
+  };
+  activeGenerationBatch = batch;
+  renderGenerationStopButtons();
+  return batch;
+}
+
+function finishGenerationBatch(batch) {
+  if (activeGenerationBatch !== batch) return;
+  activeGenerationBatch = null;
+  renderGenerationStopButtons();
+}
+
+function renderGenerationStopButtons() {
+  const visible = Boolean(activeGenerationBatch && !activeGenerationBatch.controller.signal.aborted);
+  [els.canvasStopGenerationButton, els.floatingStopGenerationButton, els.taskStopGenerationButton].forEach((button) => {
+    if (!button) return;
+    button.hidden = !visible;
+    button.disabled = Boolean(activeGenerationBatch?.stopping);
+  });
+}
+
+async function stopActiveGenerationBatch() {
+  const batch = activeGenerationBatch;
+  if (!batch || batch.stopping) return;
+  batch.stopping = true;
+  renderGenerationStopButtons();
+  const taskIds = [...batch.taskIds];
+  batch.controller.abort();
+  updateActiveTask({ status: "canceled", phase: "正在停止", event: "用户停止本轮生成" });
+  renderWorkflowCanvas();
+  await Promise.allSettled(taskIds.map((taskId) => requestJson(clientScopedApiPath("/api/task-cancel"), {
+    method: "POST",
+    body: JSON.stringify({ taskId, batchId: batch.id })
+  })));
+  toast("已停止本轮生成，已完成的图片会保留");
 }
 
 async function refreshHealth() {
@@ -4916,9 +4986,9 @@ async function refreshTaskLogs({ silent = false } = {}) {
     state.taskLogs = logs;
     renderWorkspaceHistoryPanel();
     renderAssetLibraryPage();
-    const visibleLogs = state.taskLogFilter === "failed"
-      ? logs.filter((log) => log.status === "failed")
-      : logs;
+    const visibleLogs = state.taskLogFilter === "all"
+      ? logs
+      : logs.filter((log) => log.status === state.taskLogFilter);
     els.taskLogList.innerHTML = visibleLogs.length
       ? visibleLogs.map(renderTaskLogItem).join("")
       : `<p class="muted">暂无任务日志。</p>`;
@@ -5551,7 +5621,8 @@ function compactTaskLogText(value, maxLength = 128) {
 }
 
 function renderTaskLogItem(log) {
-  const statusText = log.status === "success" ? "成功" : "失败";
+  const statusText = log.status === "success" ? "成功" : log.status === "canceled" ? "已取消" : "失败";
+  const statusClass = log.status === "success" ? "success" : log.status === "canceled" ? "canceled" : "failed";
   const typeText = taskTypeLabel(log.type);
   const timeText = log.completedAt || log.startedAt || "";
   const duration = log.durationMs ? `${Math.round(log.durationMs / 1000)}s` : "--";
@@ -5610,12 +5681,12 @@ function renderTaskLogItem(log) {
     ? `<details><summary>Agent 融合输入</summary><p>${escapeHtml(sourcePrompt)}</p></details>`
     : "";
   return `
-    <article class="task-log-item ${log.status === "success" ? "success" : "failed"}">
+    <article class="task-log-item ${statusClass}">
       <div class="task-log-row task-log-title-row">
         <div>
           <strong>${escapeHtml(typeText)}${escapeHtml(mode)}</strong>
         </div>
-        <span class="task-log-status ${log.status === "success" ? "success" : "failed"}">${escapeHtml(statusText)} · ${escapeHtml(duration)}</span>
+        <span class="task-log-status ${statusClass}">${escapeHtml(statusText)} · ${escapeHtml(duration)}</span>
       </div>
       ${primaryMetaItems.length ? `<div class="task-log-meta">${primaryMetaItems.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
       ${secondaryMetaItems.length ? `<div class="task-log-context task-log-params">${secondaryMetaItems.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}
@@ -5708,7 +5779,7 @@ function formatTaskTime(value) {
   });
 }
 
-function logClientTask(type, { input = {}, result = {}, status = "success", startedAt = null, durationMs = 0 } = {}) {
+function logClientTask(type, { input = {}, result = {}, error = null, status = "success", startedAt = null, durationMs = 0 } = {}) {
   fetch(clientScopedApiPath("/api/task-log-event"), {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -5720,14 +5791,76 @@ function logClientTask(type, { input = {}, result = {}, status = "success", star
       durationMs,
       clientId: state.clientId,
       input,
-      result
+      result,
+      error
     })
   })
     .then(() => refreshTaskLogs({ silent: true }))
     .catch(() => {});
 }
 
-function startActiveTask({ type, label, total = 1, userPrompt = "", referenceCount = 0, workflowId = "", parentImageId = "", inputImageType = "", renderRegion = "", endpoint = "" } = {}) {
+const recentClientErrorLogs = new Map();
+
+function logUnexpectedClientError(source, error, details = {}) {
+  if (isTaskCanceledError(error)) return;
+  const message = String(error?.message || error || "网页发生未知异常").slice(0, 1200);
+  const key = `${source}:${message}`;
+  const now = Date.now();
+  if (now - Number(recentClientErrorLogs.get(key) || 0) < 30000) return;
+  recentClientErrorLogs.set(key, now);
+  logClientTask("client-error", {
+    status: "failed",
+    input: {
+      mode: state.mode || "",
+      userPrompt: els.mainPrompt?.value || ""
+    },
+    error: {
+      status: Number(error?.status || 0) || null,
+      message,
+      details: {
+        source,
+        page: window.location.pathname,
+        stack: String(error?.stack || "").slice(0, 8000),
+        ...details
+      }
+    }
+  });
+}
+
+window.addEventListener("error", (event) => {
+  logUnexpectedClientError("window.error", event.error || event.message, {
+    file: event.filename || "",
+    line: event.lineno || 0,
+    column: event.colno || 0
+  });
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  logUnexpectedClientError("unhandledrejection", event.reason);
+});
+
+async function exportFailureLogs(button = els.exportFailureLogsButton) {
+  setBusy(button, true, "导出中");
+  try {
+    const response = await fetch(taskLogScopedApiPath("/api/task-logs/export?days=30"), { cache: "no-store" });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || "失败日志导出失败");
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get("content-disposition") || "";
+    const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1] || "";
+    const fileName = encodedName ? decodeURIComponent(encodedName) : `老鬼AI-失败日志-${new Date().toISOString().slice(0, 10)}.md`;
+    downloadBlob(blob, fileName);
+    toast("失败日志已导出");
+  } catch (error) {
+    toast(error.message || "失败日志导出失败");
+  } finally {
+    setBusy(button, false);
+  }
+}
+
+function startActiveTask({ type, label, total = 1, userPrompt = "", referenceCount = 0, workflowId = "", parentImageId = "", inputImageType = "", renderRegion = "", endpoint = "", batchId = "" } = {}) {
   if (state.taskTimer) clearInterval(state.taskTimer);
   state.activeTask = {
     id: `task-${Date.now()}`,
@@ -5738,6 +5871,7 @@ function startActiveTask({ type, label, total = 1, userPrompt = "", referenceCou
     current: 0,
     success: 0,
     failed: 0,
+    canceled: 0,
     retries: 0,
     startedAt: Date.now(),
     elapsedMs: 0,
@@ -5749,6 +5883,7 @@ function startActiveTask({ type, label, total = 1, userPrompt = "", referenceCou
     parentImageId,
     inputImageType,
     renderRegion,
+    batchId,
     finalPrompt: "",
     error: "",
     outputs: [],
@@ -5814,6 +5949,8 @@ function inferTaskPhase(task) {
   if (!task) return "待命";
   if (task.status === "success") return "完成";
   if (task.status === "failed") return "失败";
+  if (task.status === "partial") return "部分完成";
+  if (task.status === "canceled") return "已取消";
   if (task.retries > 0) return "端点重试";
   if (task.current > 0) return "生图中";
   return "准备中";
@@ -5821,6 +5958,7 @@ function inferTaskPhase(task) {
 
 function renderTaskProgressPanel() {
   if (!els.taskProgressPanel) return;
+  renderGenerationStopButtons();
   const task = state.activeTask;
   if (!task) {
     if (els.workspaceStatusButton) {
@@ -5843,7 +5981,7 @@ function renderTaskProgressPanel() {
     return;
   }
 
-  const done = Math.min(task.total, task.success + task.failed);
+  const done = Math.min(task.total, task.success + task.failed + (task.canceled || 0));
   const percent = Math.round((done / Math.max(1, task.total)) * 100);
   if (els.workspaceStatusButton) {
     const endpoint = shortEndpoint(task.endpoint || getActiveImageEndpoint() || "--");
@@ -5852,15 +5990,27 @@ function renderTaskProgressPanel() {
       ? `生成中 ${done}/${task.total} · ${endpoint} · ${elapsed}`
       : task.status === "success"
         ? `已完成 ${done}/${task.total} · ${endpoint} · ${elapsed}`
-        : `有失败 ${done}/${task.total} · ${endpoint}`;
+        : task.status === "canceled"
+          ? `已取消 ${done}/${task.total} · ${endpoint}`
+          : task.status === "partial"
+            ? `部分完成 ${done}/${task.total} · ${endpoint}`
+            : `有失败 ${done}/${task.total} · ${endpoint}`;
     els.workspaceStatusButton.innerHTML = `<svg><use href="#icon-status"></use></svg>`;
     els.workspaceStatusButton.setAttribute("aria-label", statusLabel);
     els.workspaceStatusButton.title = `${task.label} · ${done}/${task.total} · ${endpoint} · ${elapsed}`;
-    els.workspaceStatusButton.className = `icon-button icon-only ${state.statusPanelOpen ? "active" : ""} ${task.status === "failed" ? "error" : task.status === "success" ? "ready" : ""}`;
+    els.workspaceStatusButton.className = `icon-button icon-only ${state.statusPanelOpen ? "active" : ""} ${["failed", "partial"].includes(task.status) ? "error" : task.status === "success" ? "ready" : ""}`;
   }
   els.taskProgressTitle.textContent = task.label;
-  els.taskProgressStatus.textContent = task.status === "running" ? "进行中" : task.status === "success" ? "已完成" : "有失败";
-  els.taskProgressStatus.className = `status-pill ${task.status === "failed" ? "error" : task.status === "success" ? "ready" : ""}`;
+  els.taskProgressStatus.textContent = task.status === "running"
+    ? "进行中"
+    : task.status === "success"
+      ? "已完成"
+      : task.status === "canceled"
+        ? "已取消"
+        : task.status === "partial"
+          ? "部分完成"
+          : "有失败";
+  els.taskProgressStatus.className = `status-pill ${["failed", "partial"].includes(task.status) ? "error" : task.status === "success" ? "ready" : ""}`;
   els.taskProgressBar.style.width = `${percent}%`;
   els.taskProgressCount.textContent = `${done}/${task.total}`;
   if (els.taskProgressPhase) els.taskProgressPhase.textContent = task.phase || inferTaskPhase(task);
@@ -5881,7 +6031,7 @@ function renderTaskProgressPanel() {
 
 function renderTaskFailureReview(task) {
   if (!els.taskProgressReview) return;
-  if (!task || task.status !== "failed") {
+  if (!task || !["failed", "partial"].includes(task.status)) {
     els.taskProgressReview.hidden = true;
     els.taskProgressReview.innerHTML = "";
     return;
@@ -6086,12 +6236,14 @@ async function generateImage(directionId) {
 
   const useThinkingMode = Boolean(state.thinkingModeEnabled);
   state.loadingImages.add(directionId);
+  const batch = beginGenerationBatch(1);
   startActiveTask({
     type: "generate-image",
     label: `方向出图 · ${direction.name}`,
     total: 1,
     userPrompt: direction.image_prompt || currentCanvasUserPrompt(),
-    referenceCount: 0
+    referenceCount: 0,
+    batchId: batch.id
   });
   state.thinking = {
     status: "active",
@@ -6110,8 +6262,11 @@ async function generateImage(directionId) {
       userPrompt: direction.image_prompt || currentCanvasUserPrompt(),
       size: selectedGenerationSize(),
       quality: selectedGenerationQuality(),
-      promptOptimizationEnabled: useThinkingMode
-    });
+      promptOptimizationEnabled: useThinkingMode,
+      batchId: batch.id,
+      batchIndex: 1,
+      batchCount: 1
+    }, { batch, signal: batch.controller.signal });
     direction.image = data.image;
     updateActiveTask({
       success: 1,
@@ -6133,9 +6288,11 @@ async function generateImage(directionId) {
     completeActiveTask("success", "方向出图完成");
     toast(`视觉已生成：${direction.name}`);
   } catch (error) {
+    const canceled = isTaskCanceledError(error);
     updateActiveTask({
-      status: "failed",
-      failed: 1,
+      status: canceled ? "canceled" : "failed",
+      failed: canceled ? 0 : 1,
+      canceled: canceled ? 1 : 0,
       error: error.message,
       event: `方向出图失败：${error.message}`
     });
@@ -6144,9 +6301,10 @@ async function generateImage(directionId) {
       target: workflowButtonMeanings[normalizeClientMode(state.mode)]?.label || "现场图转效果图",
       text: `生成未完成：${error.message}`
     };
-    completeActiveTask("failed");
-    toast(error.message);
+    completeActiveTask(canceled ? "canceled" : "failed");
+    toast(canceled ? "已停止本轮生成" : error.message);
   } finally {
+    finishGenerationBatch(batch);
     state.loadingImages.delete(directionId);
     render();
   }
@@ -7214,6 +7372,7 @@ async function renderFromImages(options = {}) {
 
   const useThinkingMode = Boolean(state.thinkingModeEnabled);
   const busyButton = options.busyButton || els.renderButton;
+  const batch = beginGenerationBatch(outputCount);
   startActiveTask({
     type: "render-from-images",
     label: outputCount > 1 ? `${primaryActionLabel(mode)} · ${outputCount} 张` : primaryActionLabel(mode),
@@ -7224,7 +7383,8 @@ async function renderFromImages(options = {}) {
     parentImageId,
     inputImageType,
     renderRegion: regionInfo?.label || "",
-    endpoint: generationEndpointLabel(mode)
+    endpoint: generationEndpointLabel(mode),
+    batchId: batch.id
   });
   setBusy(busyButton, true, "生成中");
   state.thinking = {
@@ -7257,7 +7417,8 @@ async function renderFromImages(options = {}) {
       ? "正在按纸张拖拽角度生成效果图"
     : outputCount > 1 ? `${pipelineLabel}正在生成 ${outputCount} 张${config.resultTitle}` : `${pipelineLabel}正在生成${config.resultTitle}`);
   try {
-    for (let index = 0; index < outputCount; index += 1) {
+    const indexes = Array.from({ length: outputCount }, (_, index) => index);
+    const batchResults = await runSettledTaskBatch(indexes, IMAGE_BATCH_PARALLEL_LIMIT, async (_item, index, signal) => {
       updateActiveTask({
         current: index + 1,
         status: "running",
@@ -7294,8 +7455,11 @@ async function renderFromImages(options = {}) {
         renderRegion: regionInfo,
         size: outputSize,
         quality: outputQuality,
-        promptOptimizationEnabled: useThinkingMode
-      });
+        promptOptimizationEnabled: useThinkingMode,
+        batchId: batch.id,
+        batchIndex: index + 1,
+        batchCount: outputCount
+      }, { batch, signal });
       const record = {
         ...data.render,
         id: `render-${Date.now()}-${index}`,
@@ -7358,11 +7522,35 @@ async function renderFromImages(options = {}) {
       };
       renderGeneratedResult();
       renderWorkflowCanvas();
-    }
+      return record;
+    }, { signal: batch.controller.signal });
+    const summary = summarizeTaskBatch(batchResults);
+    const firstError = batchResults.find((result) => result.status === "failed")?.reason;
+    const finalStatus = summary.canceled
+      ? "canceled"
+      : summary.failed
+        ? summary.success ? "partial" : "failed"
+        : "success";
+    updateActiveTask({
+      status: finalStatus,
+      success: summary.success,
+      failed: summary.failed,
+      canceled: summary.canceled,
+      error: firstError?.message || "",
+      event: `本批次完成：成功 ${summary.success} 张，失败 ${summary.failed} 张，取消 ${summary.canceled} 张`
+    });
     renderGeneratedResult();
     renderWorkflowCanvas();
-    completeActiveTask("success", outputCount > 1 ? `已完成 ${outputCount} 张输出` : "输出完成");
-    toast(outputCount > 1 ? `已生成 ${outputCount} 张${config.resultTitle}` : `${config.resultTitle}已生成`);
+    completeActiveTask(finalStatus);
+    if (summary.failed || summary.canceled) {
+      logClientTask("render-batch", {
+        status: summary.failed ? "failed" : "canceled",
+        input: { mode, batchId: batch.id, batchCount: outputCount, referenceCount: referenceImages.length, userPrompt: requestUserPrompt },
+        result: { successCount: summary.success, failedCount: summary.failed, canceledCount: summary.canceled },
+        error: { status: summary.canceled && !summary.failed ? 499 : 500, message: firstError?.message || "用户停止本轮生成" }
+      });
+    }
+    toast(`本批次：成功 ${summary.success} 张，失败 ${summary.failed} 张，取消 ${summary.canceled} 张`);
   } catch (error) {
     updateActiveTask({
       status: "failed",
@@ -7378,6 +7566,7 @@ async function renderFromImages(options = {}) {
     completeActiveTask("failed");
     toast(error.message);
   } finally {
+    finishGenerationBatch(batch);
     setBusy(busyButton, false);
     renderWorkflowCanvas();
   }
@@ -7455,12 +7644,14 @@ async function generateDesignSeries(options = {}) {
   const useThinkingMode = Boolean(state.thinkingModeEnabled);
   const busyButton = options.busyButton || els.renderButton;
   const outputCount = clampImageCount(options.count || state.generation.count, "designseries", { allowSingle: options.allowSingle });
+  const batch = beginGenerationBatch(outputCount);
   startActiveTask({
     type: "design-series",
     label: `生成设计系列 · ${outputCount} 张`,
     total: outputCount,
     userPrompt: currentCanvasUserPrompt(),
-    referenceCount: referenceImages.length
+    referenceCount: referenceImages.length,
+    batchId: batch.id
   });
   setBusy(busyButton, true, "生成中");
   state.thinking = {
@@ -7493,13 +7684,8 @@ async function generateDesignSeries(options = {}) {
     const existingSeriesResults = [...state.designSeriesResults];
     const existingRenders = [...state.renders];
     const batchRecords = new Array(outputCount);
-    const contiguousBatchCount = () => {
-      let count = 0;
-      while (count < batchRecords.length && batchRecords[count]) count += 1;
-      return count;
-    };
     const publishOrderedBatch = () => {
-      const visibleRecords = batchRecords.slice(0, contiguousBatchCount());
+      const visibleRecords = batchRecords.filter(Boolean);
       state.designSeriesResults = [...existingSeriesResults, ...visibleRecords];
       state.renders = [...existingRenders, ...visibleRecords];
       const visibleLatest = visibleRecords.at(-1);
@@ -7525,7 +7711,7 @@ async function generateDesignSeries(options = {}) {
           ].filter(Boolean).join("\n")
         : baseIntent;
     };
-    const generateSeriesItem = async (index) => {
+    const generateSeriesItem = async (index, signal) => {
       const analysisForRequest = lockedSeriesAnalysis ? cloneValue(lockedSeriesAnalysis) : null;
       updateActiveTask({
         current: index + 1,
@@ -7544,8 +7730,11 @@ async function generateDesignSeries(options = {}) {
         seriesCount: outputCount,
         size: outputSize,
         quality: outputQuality,
-        promptOptimizationEnabled: useThinkingMode
-      });
+        promptOptimizationEnabled: useThinkingMode,
+        batchId: batch.id,
+        batchIndex: index + 1,
+        batchCount: outputCount
+      }, { batch, signal });
       reusableAnalysis = enforceClientDesignSeriesProjectType(data.analysis);
       if (!lockedSeriesAnalysis && reusableAnalysis) {
         lockedSeriesAnalysis = cloneValue(reusableAnalysis);
@@ -7586,12 +7775,20 @@ async function generateDesignSeries(options = {}) {
       return record;
     };
 
-    if (!lockedSeriesAnalysis) {
-      await generateSeriesItem(0);
-    }
+    const firstResults = lockedSeriesAnalysis
+      ? []
+      : await runSettledTaskBatch([0], 1, (index, _unused, signal) => generateSeriesItem(index, signal), { signal: batch.controller.signal });
     const remainingIndexes = Array.from({ length: outputCount }, (_, index) => index)
-      .filter((index) => !batchRecords[index]);
-    await runWithConcurrency(remainingIndexes, DESIGN_SERIES_PARALLEL_LIMIT, (index) => generateSeriesItem(index));
+      .filter((index) => index !== 0 || lockedSeriesAnalysis);
+    const remainingResults = await runSettledTaskBatch(
+      remainingIndexes,
+      DESIGN_SERIES_PARALLEL_LIMIT,
+      (index, _unused, signal) => generateSeriesItem(index, signal),
+      { signal: batch.controller.signal }
+    );
+    const batchResults = lockedSeriesAnalysis ? remainingResults : [...firstResults, ...remainingResults];
+    const summary = summarizeTaskBatch(batchResults);
+    const firstError = batchResults.find((result) => result.status === "failed")?.reason;
     publishOrderedBatch();
     state.thinking = {
       status: "done",
@@ -7603,8 +7800,29 @@ async function generateDesignSeries(options = {}) {
     renderGeneratedResult();
     renderDesignSeriesAnalysisView();
     renderWorkflowCanvas();
-    completeActiveTask("success", outputCount > 1 ? `已完成 ${outputCount} 张设计系列图` : "设计系列图完成");
-    toast(outputCount > 1 ? `已生成 ${outputCount} 张设计系列图` : "设计系列已生成");
+    const finalStatus = summary.canceled
+      ? "canceled"
+      : summary.failed
+        ? summary.success ? "partial" : "failed"
+        : "success";
+    updateActiveTask({
+      status: finalStatus,
+      success: summary.success,
+      failed: summary.failed,
+      canceled: summary.canceled,
+      error: firstError?.message || "",
+      event: `本批次完成：成功 ${summary.success} 张，失败 ${summary.failed} 张，取消 ${summary.canceled} 张`
+    });
+    completeActiveTask(finalStatus);
+    if (summary.failed || summary.canceled) {
+      logClientTask("design-series-batch", {
+        status: summary.failed ? "failed" : "canceled",
+        input: { mode: "designseries", batchId: batch.id, batchCount: outputCount, referenceCount: referenceImages.length, userPrompt: taskUserPrompt },
+        result: { successCount: summary.success, failedCount: summary.failed, canceledCount: summary.canceled },
+        error: { status: summary.canceled && !summary.failed ? 499 : 500, message: firstError?.message || "用户停止本轮生成" }
+      });
+    }
+    toast(`本批次：成功 ${summary.success} 张，失败 ${summary.failed} 张，取消 ${summary.canceled} 张`);
   } catch (error) {
     updateActiveTask({
       status: "failed",
@@ -7620,6 +7838,7 @@ async function generateDesignSeries(options = {}) {
     completeActiveTask("failed");
     toast(error.message);
   } finally {
+    finishGenerationBatch(batch);
     setBusy(busyButton, false);
     renderWorkflowCanvas();
   }
@@ -19495,6 +19714,9 @@ els.floatingGenerateButton?.addEventListener("click", () => {
   applyCanvasListCollapsed(true);
   runPrimaryAction({ busyButton: els.floatingGenerateButton });
 });
+[els.canvasStopGenerationButton, els.floatingStopGenerationButton, els.taskStopGenerationButton].forEach((button) => {
+  button?.addEventListener("click", () => stopActiveGenerationBatch());
+});
 els.thinkingModeButton?.addEventListener("click", toggleThinkingMode);
 els.floatingThinkingModeButton?.addEventListener("click", toggleThinkingMode);
 els.continueEditButton.addEventListener("click", continueEditFromLatest);
@@ -19818,6 +20040,7 @@ els.zoomInButton.addEventListener("click", () => {
   zoomCanvas(1 + CANVAS_BUTTON_ZOOM_STEP);
 });
 els.refreshTaskLogsButton?.addEventListener("click", () => refreshTaskLogs());
+els.exportFailureLogsButton?.addEventListener("click", () => exportFailureLogs());
 els.taskLogFilterButtons.forEach((button) => {
   button.addEventListener("click", () => {
     state.taskLogFilter = button.dataset.taskLogFilter || "all";

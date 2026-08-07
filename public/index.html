@@ -93,6 +93,9 @@
       <symbol id="icon-play" viewBox="0 0 24 24">
         <path d="M8 5v14l11-7-11-7z" />
       </symbol>
+      <symbol id="icon-stop" viewBox="0 0 24 24">
+        <rect x="6" y="6" width="12" height="12" rx="1.5" />
+      </symbol>
       <symbol id="icon-continue" viewBox="0 0 24 24">
         <path d="M5 12h13" />
         <path d="M13 6l6 6-6 6" />
@@ -598,7 +601,12 @@
                   <p class="eyebrow">Task Progress</p>
                   <h2 id="taskProgressTitle">待命</h2>
                 </div>
-                <span id="taskProgressStatus" class="status-pill">空闲</span>
+                <div class="task-progress-top-actions">
+                  <button id="taskStopGenerationButton" class="secondary-button danger-button icon-only generation-stop-button" type="button" title="停止本轮生成" aria-label="停止本轮生成" hidden>
+                    <svg><use href="#icon-stop"></use></svg>
+                  </button>
+                  <span id="taskProgressStatus" class="status-pill">空闲</span>
+                </div>
               </div>
               <div class="task-progress-bar" aria-hidden="true">
                 <span id="taskProgressBar"></span>
@@ -618,6 +626,20 @@
                 <pre id="taskProgressPrompt">任务完成后显示。</pre>
               </details>
             </section>
+            <details class="task-log-drawer" open>
+              <summary><span>任务日志</span><small>失败与取消记录</small></summary>
+              <div class="task-log-head">
+                <span>最近任务记录</span>
+                <div class="task-log-controls">
+                  <button class="text-button active" type="button" data-task-log-filter="all" aria-pressed="true">全部</button>
+                  <button class="text-button" type="button" data-task-log-filter="failed" aria-pressed="false">失败</button>
+                  <button class="text-button" type="button" data-task-log-filter="canceled" aria-pressed="false">已取消</button>
+                  <button id="exportFailureLogsButton" class="text-button icon-only" type="button" title="导出最近30天失败日志" aria-label="导出最近30天失败日志"><svg><use href="#icon-export"></use></svg></button>
+                  <button id="refreshTaskLogsButton" class="text-button icon-only" type="button" title="刷新任务日志" aria-label="刷新任务日志"><svg><use href="#icon-refresh"></use></svg></button>
+                </div>
+              </div>
+              <div id="taskLogList" class="task-log-list"><p class="muted">正在读取任务日志。</p></div>
+            </details>
           </section>
           <div id="summaryBlock" class="summary-block">
             <p>输入项目条件后生成设计方向。</p>
@@ -708,6 +730,9 @@
                 </button>
                 <button id="floatingGenerateButton" class="primary-button icon-only" type="button" title="生成图片" aria-label="生成图片">
                   <svg><use href="#icon-spark"></use></svg>
+                </button>
+                <button id="floatingStopGenerationButton" class="secondary-button danger-button icon-only generation-stop-button" type="button" title="停止本轮生成" aria-label="停止本轮生成" hidden>
+                  <svg><use href="#icon-stop"></use></svg>
                 </button>
                 <button id="floatingContinueEditButton" class="secondary-button icon-only" type="button" title="继续最新图" aria-label="继续最新图" disabled>
                   <svg><use href="#icon-continue"></use></svg>
@@ -985,6 +1010,9 @@
                 </button>
                 <button id="canvasGenerateButton" class="primary-button" type="button" title="生成图片" aria-label="生成图片">
                   生成图片
+                </button>
+                <button id="canvasStopGenerationButton" class="secondary-button danger-button icon-only generation-stop-button" type="button" title="停止本轮生成" aria-label="停止本轮生成" hidden>
+                  <svg><use href="#icon-stop"></use></svg>
                 </button>
                 <button id="continueEditButton" class="secondary-button icon-only" type="button" title="基于最新图继续编辑" aria-label="基于最新图继续编辑" hidden disabled>
                   <svg><use href="#icon-image"></use></svg>

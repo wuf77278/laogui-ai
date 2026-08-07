@@ -8,6 +8,7 @@ import { isIP } from "node:net";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { gzipSync, inflateSync } from "node:zlib";
+import { buildFailureLogMarkdown } from "./task-diagnostics.mjs";
 import {
   communityPromptBlueprintLines,
   communityPromptCompactRules,
@@ -25,6 +26,13 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const publicDir = path.join(__dirname, "public");
+const appVersion = (() => {
+  try {
+    return JSON.parse(readFileSync(path.join(__dirname, "package.json"), "utf8")).version || "未知";
+  } catch {
+    return "未知";
+  }
+})();
 
 loadDotEnv(path.join(__dirname, ".env"));
 
@@ -2021,25 +2029,24 @@ async function probeProviderConnection(kind, provider, { timeoutMs = 12000 } = {
   }
 }
 
-async function openaiResponsesImageStream(payload, { timeoutMs = 420000, provider = "image" } = {}) {
+async function openaiResponsesImageStream(payload, { timeoutMs = 420000, provider = "image", signal = null } = {}) {
   const source = providerFor(provider);
-  return openaiResponsesImageStreamFromSource(payload, { timeoutMs, source });
+  return openaiResponsesImageStreamFromSource(payload, { timeoutMs, source, signal });
 }
 
-async function openaiResponsesImageStreamWithProviderPool(payload, { timeoutMs = 420000, provider = "image" } = {}) {
-  if (provider !== "image") return openaiResponsesImageStream(payload, { timeoutMs, provider });
-  return tryImageProviderPool((source) => openaiResponsesImageStreamFromSource(payload, { timeoutMs, source }));
+async function openaiResponsesImageStreamWithProviderPool(payload, { timeoutMs = 420000, provider = "image", signal = null } = {}) {
+  if (provider !== "image") return openaiResponsesImageStream(payload, { timeoutMs, provider, signal });
+  return tryImageProviderPool((source) => openaiResponsesImageStreamFromSource(payload, { timeoutMs, source, signal }));
 }
 
-async function openaiResponsesImageStreamFromSource(payload, { timeoutMs = 420000, source } = {}) {
+async function openaiResponsesImageStreamFromSource(payload, { timeoutMs = 420000, source, signal = null } = {}) {
   if (!source.apiKey) {
     const error = new Error("Missing image provider API key");
     error.status = 503;
     throw error;
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const linked = linkedAbortController(signal, timeoutMs);
   try {
     const response = await fetch(providerUrl(source, providerResponsesPath(source)), {
       method: "POST",
@@ -2049,7 +2056,7 @@ async function openaiResponsesImageStreamFromSource(payload, { timeoutMs = 42000
         accept: "text/event-stream"
       },
       body: JSON.stringify({ ...payload, stream: true }),
-      signal: controller.signal
+      signal: linked.signal
     });
 
     if (!response.ok) {
@@ -2093,11 +2100,11 @@ async function openaiResponsesImageStreamFromSource(payload, { timeoutMs = 42000
       actualParams: pickActualImageParams(Array.isArray(payload.tools) ? payload.tools[0] : null)
     };
   } finally {
-    clearTimeout(timer);
+    linked.cleanup();
   }
 }
 
-async function openaiResponsesImageDirect({ prompt, inputImages, size, quality, useProviderPool = true, source = null }) {
+async function openaiResponsesImageDirect({ prompt, inputImages, size, quality, useProviderPool = true, source = null, signal = null }) {
   const providerSource = source || activeImageProviderSource();
   const imageModel = providerSource?.model || config.imageModel;
   const content = [
@@ -2137,11 +2144,12 @@ async function openaiResponsesImageDirect({ prompt, inputImages, size, quality, 
     instructions: "You are a tool runner. Pass the user prompt to image_generation VERBATIM. DO NOT rewrite, expand, polish, or revise it in any way. Use the exact text the user gave."
   };
   if (useProviderPool) {
-    return openaiResponsesImageStreamWithProviderPool(payload, { timeoutMs: 420000, provider: "image" });
+    return openaiResponsesImageStreamWithProviderPool(payload, { timeoutMs: 420000, provider: "image", signal });
   }
   return openaiResponsesImageStreamFromSource(payload, {
     timeoutMs: 420000,
-    source: providerSource
+    source: providerSource,
+    signal
   });
 }
 
@@ -2309,7 +2317,7 @@ async function createManifestMultipartBody(mapping, context) {
   return formData;
 }
 
-async function fetchImageApiJson({ source, mapping, context, timeoutMs, defaultPayload = null, defaultPath = "" }) {
+async function fetchImageApiJson({ source, mapping, context, timeoutMs, defaultPayload = null, defaultPath = "", signal = null }) {
   if (!source.apiKey) {
     const error = new Error("Missing image provider API key");
     error.status = 503;
@@ -2333,15 +2341,14 @@ async function fetchImageApiJson({ source, mapping, context, timeoutMs, defaultP
     }
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const linked = linkedAbortController(signal, timeoutMs);
   try {
     const response = await fetch(providerUrl(source, pathname), {
       method,
       headers,
       body,
       cache: "no-store",
-      signal: controller.signal
+      signal: linked.signal
     });
 
     if (!response.ok) {
@@ -2355,11 +2362,11 @@ async function fetchImageApiJson({ source, mapping, context, timeoutMs, defaultP
     const payload = await response.json();
     const taskId = mapping?.taskIdPath ? getByPath(payload, mapping.taskIdPath) : "";
     if (taskId && source.providerManifest?.poll) {
-      return pollManifestImageTask(source, source.providerManifest.poll, String(taskId), controller.signal);
+      return pollManifestImageTask(source, source.providerManifest.poll, String(taskId), linked.signal);
     }
     return payload;
   } finally {
-    clearTimeout(timer);
+    linked.cleanup();
   }
 }
 
@@ -2412,23 +2419,23 @@ async function pollManifestImageTask(source, poll, taskId, signal) {
   throw error;
 }
 
-async function openaiImagesGenerationDirect({ prompt, size, quality }) {
-  return openaiCompatibleImagesDirect({ prompt, inputImages: [], size, quality });
+async function openaiImagesGenerationDirect({ prompt, size, quality, signal = null }) {
+  return openaiCompatibleImagesDirect({ prompt, inputImages: [], size, quality, signal });
 }
 
-async function openaiCompatibleImagesDirect({ prompt, inputImages = [], size, quality }) {
+async function openaiCompatibleImagesDirect({ prompt, inputImages = [], size, quality, signal = null }) {
   return tryImageProviderPool((source) => openaiCompatibleImagesFromSource({
     prompt,
     inputImages,
     size,
     quality
-  }, { timeoutMs: 420000, source }));
+  }, { timeoutMs: 420000, source, signal }));
 }
 
-async function openaiCompatibleImagesFromSource({ prompt, inputImages = [], size, quality }, { timeoutMs = 420000, source } = {}) {
+async function openaiCompatibleImagesFromSource({ prompt, inputImages = [], size, quality }, { timeoutMs = 420000, source, signal = null } = {}) {
   const validInputImages = inputImages.filter((image) => image?.dataUrl);
   if (validInputImages.length) {
-    return openaiImagesEditFromSource({ prompt, inputImages: validInputImages, size, quality }, { timeoutMs, source });
+    return openaiImagesEditFromSource({ prompt, inputImages: validInputImages, size, quality }, { timeoutMs, source, signal });
   }
 
   const context = imageApiRequestContext({ prompt, inputImages: [], size, quality }, source);
@@ -2441,10 +2448,10 @@ async function openaiCompatibleImagesFromSource({ prompt, inputImages = [], size
     moderation: "auto",
     output_format: "png"
   };
-  return openaiImagesGenerationFromSource(payload, { timeoutMs, source, context });
+  return openaiImagesGenerationFromSource(payload, { timeoutMs, source, context, signal });
 }
 
-async function openaiImagesGenerationFromSource(payload, { timeoutMs = 420000, source, context = null } = {}) {
+async function openaiImagesGenerationFromSource(payload, { timeoutMs = 420000, source, context = null, signal = null } = {}) {
   const mapping = source.providerManifest?.submit || null;
   const body = await fetchImageApiJson({
     source,
@@ -2458,6 +2465,7 @@ async function openaiImagesGenerationFromSource(payload, { timeoutMs = 420000, s
       n: payload.n || 1
     }, source),
     timeoutMs,
+    signal,
     defaultPayload: payload,
     defaultPath: providerImageApiPath(source, "generation")
   });
@@ -2470,7 +2478,7 @@ async function openaiImagesGenerationFromSource(payload, { timeoutMs = 420000, s
   };
 }
 
-async function openaiImagesEditFromSource({ prompt, inputImages, size, quality }, { timeoutMs = 420000, source } = {}) {
+async function openaiImagesEditFromSource({ prompt, inputImages, size, quality }, { timeoutMs = 420000, source, signal = null } = {}) {
   const context = imageApiRequestContext({ prompt, inputImages, size, quality }, source);
   const mapping = source.providerManifest?.editSubmit || null;
   const fallbackMapping = mapping || {
@@ -2486,6 +2494,7 @@ async function openaiImagesEditFromSource({ prompt, inputImages, size, quality }
     mapping: fallbackMapping,
     context,
     timeoutMs,
+    signal,
     defaultPath: providerImageApiPath(source, "edit")
   });
   const resultMapping = fallbackMapping.taskIdPath && source.providerManifest?.poll ? source.providerManifest.poll.result : fallbackMapping.result;
@@ -5165,10 +5174,12 @@ function runCommand(command, args = [], options = {}) {
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let forceTimer = null;
     const finish = (result) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
       resolve({
         command: commandPreview(command, args),
         stdout: stdout.slice(-12000),
@@ -5180,6 +5191,22 @@ function runCommand(command, args = [], options = {}) {
       child.kill("SIGTERM");
       finish({ ok: false, timedOut: true, code: null, error: `Command timed out after ${timeoutMs}ms` });
     }, timeoutMs);
+    const onAbort = () => {
+      if (settled) return;
+      try {
+        child.kill("SIGTERM");
+      } catch {}
+      forceTimer = setTimeout(() => {
+        if (isChildProcessRunning(child)) {
+          try {
+            child.kill("SIGKILL");
+          } catch {}
+        }
+      }, 900);
+      finish({ ok: false, canceled: true, code: null, error: "用户停止生成" });
+    };
+    if (options.signal?.aborted) onAbort();
+    else options.signal?.addEventListener("abort", onAbort, { once: true });
     child.stdout?.on("data", (chunk) => {
       stdout += chunk.toString();
     });
@@ -5489,7 +5516,7 @@ async function writeImageStudioFhlMask(maskImage, outputDir) {
   return filePath;
 }
 
-async function runImageStudioEngine({ prompt, inputImages = [], size = "auto", quality = "medium", sourceOverride = null, imageModelOverride = "", textModelOverride = "", fastMode = false } = {}) {
+async function runImageStudioEngine({ prompt, inputImages = [], size = "auto", quality = "medium", sourceOverride = null, imageModelOverride = "", textModelOverride = "", fastMode = false, signal = null } = {}) {
   const status = imageStudioEngineStatus();
   if (!status.enabled || !status.available) {
     const error = new Error(status.available
@@ -5543,8 +5570,10 @@ async function runImageStudioEngine({ prompt, inputImages = [], size = "auto", q
 
   const result = await runCommand(status.cliPath, args, {
     cwd: outputDir,
-    timeoutMs: (status.timeoutSeconds + 30) * 1000
+    timeoutMs: (status.timeoutSeconds + 30) * 1000,
+    signal
   });
+  if (result.canceled) throw canceledTaskError();
   const combinedOutput = [result.stdout, result.stderr].filter(Boolean).join("\n");
   const parsedImagePath = imageStudioCliOutputLine(combinedOutput, "图片已保存")
     || imageStudioFhlResultLine(combinedOutput, "RESULT_IMAGE");
@@ -5618,7 +5647,7 @@ function redactImageStudioCommand(command = "") {
   return String(command || "").replace(/(--api-key\s+)(?:"[^"]+"|\S+)/g, "$1<redacted>");
 }
 
-async function runImageStudioFhlSkill({ prompt, inputImages = [], maskImage = null, size = "auto", quality = "medium", providerOverride = "" } = {}) {
+async function runImageStudioFhlSkill({ prompt, inputImages = [], maskImage = null, size = "auto", quality = "medium", providerOverride = "", signal = null } = {}) {
   const status = imageStudioFhlSkillStatus();
   if (!status.enabled) {
     const error = new Error(status.available
@@ -5656,8 +5685,10 @@ async function runImageStudioFhlSkill({ prompt, inputImages = [], maskImage = nu
 
   const result = await runCommand("python3", args, {
     cwd: outputDir,
-    timeoutMs: (status.timeoutSeconds + 30) * 1000
+    timeoutMs: (status.timeoutSeconds + 30) * 1000,
+    signal
   });
+  if (result.canceled) throw canceledTaskError();
   const combinedOutput = [result.stdout, result.stderr].filter(Boolean).join("\n");
   const resultImage = imageStudioFhlResultLine(combinedOutput, "RESULT_IMAGE");
   const resultProvider = imageStudioFhlResultLine(combinedOutput, "RESULT_PROVIDER") || provider;
@@ -7464,7 +7495,7 @@ function promptOptimizationRequested(body = {}) {
   return body.promptOptimizationEnabled === true || body.thinkingEnabled === true;
 }
 
-async function generateImage(body) {
+async function generateImage(body, { signal = null } = {}) {
   const direction = body.direction || {};
   const brief = body.brief || {};
   const imagePrompt = String(body.imagePrompt || direction.image_prompt || "").trim();
@@ -7505,7 +7536,8 @@ async function generateImage(body) {
     quality: body.quality || "low",
     title: direction.name || brief.projectName || "space concept",
     mode: "plan-render",
-    promptOptimizationEnabled
+    promptOptimizationEnabled,
+    signal
   });
 
   return saveGeneratedImage({
@@ -7539,7 +7571,7 @@ async function generateImage(body) {
   });
 }
 
-async function renderFromUploadedImages(body) {
+async function renderFromUploadedImages(body, { signal = null } = {}) {
   const requestedMode = normalizeRenderMode(body.mode);
   const allowedRenderModes = new Set([
     "custom",
@@ -7639,7 +7671,8 @@ async function renderFromUploadedImages(body) {
         viewAngleReferenceFinalPromptFooter(viewAngleReference, mode),
         PLAN_WORKFLOW_RECOMMENDATION
       ].filter(Boolean).join("\n"),
-      promptOptimizationEnabled
+      promptOptimizationEnabled,
+      signal
     });
     const colorRecord = await saveGeneratedImage({
       buffer: coloredGenerated.buffer,
@@ -7792,7 +7825,8 @@ async function renderFromUploadedImages(body) {
         "The final image should behave like the colored plan has been re-expressed as an axonometric model from the dragged camera angle."
       ].join("\n") : ""
     ].filter(Boolean).join("\n\n"),
-    promptOptimizationEnabled
+    promptOptimizationEnabled,
+    signal
   });
 
   const pipeline = coloredPlanRecord ? {
@@ -8645,7 +8679,7 @@ function designSeriesFinalPromptLock({ index = 1, count = 4, sceneBrief = {} } =
   ].join("\n");
 }
 
-async function generateDesignSeries(body) {
+async function generateDesignSeries(body, { signal = null } = {}) {
   const references = activeReferenceImagesFromBody(body);
   if (!references.length) {
     const error = new Error("Please upload at least one reference image");
@@ -8761,7 +8795,8 @@ async function generateDesignSeries(body) {
       designSeriesProjectTypeGuard(detectedProjectType),
       designSeriesFinalPromptLock({ index: seriesIndex, count: seriesCount, sceneBrief })
     ].join("\n\n"),
-    promptOptimizationEnabled: shouldOptimizePrompt
+    promptOptimizationEnabled: shouldOptimizePrompt,
+    signal
   });
 
   const render = await saveGeneratedImage({
@@ -8803,7 +8838,7 @@ async function generateDesignSeries(body) {
   return { analysis, render };
 }
 
-async function thinkThenGenerateImage({ prompt, inputImages, size, quality, title, mode = "plan-render", preferReferenceEdit = true, finalPromptFooter = "", promptOptimizationEnabled = true }) {
+async function thinkThenGenerateImage({ prompt, inputImages, size, quality, title, mode = "plan-render", preferReferenceEdit = true, finalPromptFooter = "", promptOptimizationEnabled = true, signal = null }) {
   const requestedSize = normalizeImageSize(size);
   const normalizedMode = normalizeRenderMode(mode);
   const promptGuard = buildFinalPromptGuard({
@@ -8833,7 +8868,8 @@ async function thinkThenGenerateImage({ prompt, inputImages, size, quality, titl
       quality,
       preferReferenceEdit,
       mode: normalizedMode,
-      fastMode: true
+      fastMode: true,
+      signal
     });
 
     return {
@@ -8873,7 +8909,8 @@ async function thinkThenGenerateImage({ prompt, inputImages, size, quality, titl
     size: requestedSize,
     quality,
     preferReferenceEdit,
-    mode: normalizedMode
+    mode: normalizedMode,
+    signal
   });
 
   return {
@@ -9165,7 +9202,7 @@ function compactOptimizedImagePrompt(prompt) {
   return `${text.slice(0, headLength)}${marker}${text.slice(-tailLength)}`;
 }
 
-async function generateImageWithImageProvider({ prompt, inputImages, size, quality, preferReferenceEdit = true, mode = "", fastMode = false }) {
+async function generateImageWithImageProvider({ prompt, inputImages, size, quality, preferReferenceEdit = true, mode = "", fastMode = false, signal = null }) {
   const attempts = [];
   const attemptEvents = [];
   const standardSize = closestStandardImageSize(size);
@@ -9193,7 +9230,8 @@ async function generateImageWithImageProvider({ prompt, inputImages, size, quali
         prompt,
         inputImages,
         size,
-        quality
+        quality,
+        signal
       })
     });
   }
@@ -9206,7 +9244,8 @@ async function generateImageWithImageProvider({ prompt, inputImages, size, quali
         inputImages,
         size,
         quality,
-        fastMode
+        fastMode,
+        signal
       })
     });
     // 不再因任意错误盲目换尺寸再生一次。
@@ -9221,7 +9260,7 @@ async function generateImageWithImageProvider({ prompt, inputImages, size, quali
         inputImages: preferReferenceEdit ? inputImages : [],
         size,
         quality
-      }, { timeoutMs: 420000, source })
+      }, { timeoutMs: 420000, source, signal })
     });
   }
   if (useNativeAdapter && nativeApiMode !== "images") {
@@ -9234,7 +9273,8 @@ async function generateImageWithImageProvider({ prompt, inputImages, size, quali
         size,
         quality,
         useProviderPool: false,
-        source
+        source,
+        signal
       })
     });
   }
@@ -9246,7 +9286,8 @@ async function generateImageWithImageProvider({ prompt, inputImages, size, quali
         prompt,
         inputImages,
         size,
-        quality
+        quality,
+        signal
       })
     });
   }
@@ -9261,7 +9302,8 @@ async function generateImageWithImageProvider({ prompt, inputImages, size, quali
             prompt,
             inputImages: preferReferenceEdit ? inputImages : [],
             size: candidateSize,
-            quality
+            quality,
+            signal
           });
         }
       });
@@ -9277,7 +9319,8 @@ async function generateImageWithImageProvider({ prompt, inputImages, size, quali
               inputImages,
               size: candidateSize,
               quality,
-              useProviderPool: false
+              useProviderPool: false,
+              signal
             });
           }
         });
@@ -9292,7 +9335,8 @@ async function generateImageWithImageProvider({ prompt, inputImages, size, quali
             inputImages,
             size: candidateSize,
             quality,
-            useProviderPool: false
+            useProviderPool: false,
+            signal
           });
         }
       });
@@ -9302,7 +9346,7 @@ async function generateImageWithImageProvider({ prompt, inputImages, size, quali
         name: `Legacy app image generation ${candidateSize}`,
         run: async () => {
           await refreshNativeImageEndpoints();
-          return openaiImagesGenerationDirect({ prompt, size: candidateSize, quality });
+          return openaiImagesGenerationDirect({ prompt, size: candidateSize, quality, signal });
         }
       });
     }
@@ -9323,6 +9367,7 @@ async function generateImageWithImageProvider({ prompt, inputImages, size, quali
 
   let lastError;
   for (const attempt of attempts) {
+    throwIfTaskCanceled(signal);
     console.log(`[image] trying ${attempt.name}`);
     const started = Date.now();
     const event = {
@@ -9366,6 +9411,7 @@ async function generateImageWithImageProvider({ prompt, inputImages, size, quali
         attempts: attemptEvents
       };
     } catch (error) {
+      if (isCanceledTaskError(error) || signal?.aborted) throw canceledTaskError();
       lastError = error;
       const providerAttempts = Array.isArray(error?.providerAttempts) ? error.providerAttempts : [];
       if (providerAttempts.length) {
@@ -11505,6 +11551,9 @@ function summarizeTaskInput(body = {}) {
     selection: body.selection || body.mask?.bounds || null,
     seriesIndex: body.seriesIndex || null,
     seriesCount: body.seriesCount || body.count || null,
+    batchId: body.batchId || null,
+    batchIndex: body.batchIndex || null,
+    batchCount: body.batchCount || null,
     primaryImage: summarizeImageForLog(body.primaryImage),
     referenceCount: references.length,
     referenceImages: references.map(summarizeImageForLog),
@@ -12843,9 +12892,47 @@ function releaseImageGenerationSlot() {
   activeImageGenerationTasks = Math.max(0, activeImageGenerationTasks - 1);
 }
 
-async function withImageGenerationSlot(label, run) {
+function canceledTaskError(message = "用户停止生成") {
+  const error = new Error(message);
+  error.name = "AbortError";
+  error.status = 499;
+  error.canceled = true;
+  return error;
+}
+
+function isCanceledTaskError(error) {
+  return Boolean(error?.canceled || error?.name === "AbortError" || Number(error?.status || 0) === 499);
+}
+
+function throwIfTaskCanceled(signal) {
+  if (signal?.aborted) throw canceledTaskError();
+}
+
+function linkedAbortController(signal, timeoutMs) {
+  const controller = new AbortController();
+  const onAbort = () => controller.abort(canceledTaskError());
+  const timer = setTimeout(() => {
+    const error = new Error("图片接口请求超时");
+    error.name = "TimeoutError";
+    error.status = 504;
+    controller.abort(error);
+  }, Math.max(1, Number(timeoutMs) || 1));
+  if (signal?.aborted) onAbort();
+  else signal?.addEventListener("abort", onAbort, { once: true });
+  return {
+    signal: controller.signal,
+    cleanup() {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    }
+  };
+}
+
+async function withImageGenerationSlot(label, run, { signal } = {}) {
   const queuedAt = Date.now();
   let queued = false;
+  let acquired = false;
+  throwIfTaskCanceled(signal);
   if (activeImageGenerationTasks >= config.imageGenerationConcurrency) {
     if (imageGenerationQueue.length >= config.imageGenerationQueueMaxPending) {
       const error = new Error("生图任务排队过多，请稍后再试。");
@@ -12854,11 +12941,22 @@ async function withImageGenerationSlot(label, run) {
       throw error;
     }
     queued = true;
-    await new Promise((resolve) => {
+    await new Promise((resolve, reject) => {
       let timeout = null;
-      const resume = () => {
+      const cleanup = () => {
         if (timeout) clearTimeout(timeout);
+        signal?.removeEventListener("abort", onAbort);
+      };
+      const resume = () => {
+        cleanup();
+        acquired = true;
         resolve();
+      };
+      const onAbort = () => {
+        const index = imageGenerationQueue.indexOf(resume);
+        if (index >= 0) imageGenerationQueue.splice(index, 1);
+        cleanup();
+        reject(canceledTaskError());
       };
       timeout = setTimeout(() => {
         const index = imageGenerationQueue.indexOf(resume);
@@ -12866,25 +12964,29 @@ async function withImageGenerationSlot(label, run) {
         const error = new Error("生图任务排队超时，请稍后重试。");
         error.status = 429;
         error.details = imageGenerationQueueState();
-        resolve(Promise.reject(error));
+        cleanup();
+        reject(error);
       }, config.imageGenerationQueueTimeoutMs);
+      signal?.addEventListener("abort", onAbort, { once: true });
       imageGenerationQueue.push(resume);
     });
   } else {
     activeImageGenerationTasks += 1;
+    acquired = true;
   }
   const waitedMs = Date.now() - queuedAt;
   if (queued && waitedMs > 250) {
     console.log(`[image-queue] ${label} waited ${waitedMs}ms; active=${activeImageGenerationTasks}/${config.imageGenerationConcurrency}`);
   }
   try {
-    return await run();
+    throwIfTaskCanceled(signal);
+    return await run(signal);
   } finally {
-    releaseImageGenerationSlot();
+    if (acquired) releaseImageGenerationSlot();
   }
 }
 
-async function runLoggedTask({ type, body, run, clientId = "local" }) {
+async function runLoggedTask({ type, body, run, clientId = "local", signal = null }) {
   const safeClientId = sanitizeClientId(clientId);
   const taskId = randomUUID();
   const startedAt = new Date();
@@ -12899,7 +13001,7 @@ async function runLoggedTask({ type, body, run, clientId = "local" }) {
   };
 
   try {
-    const result = await run();
+    const result = await run(signal);
     await appendTaskLog({
       ...base,
       status: "success",
@@ -12914,7 +13016,7 @@ async function runLoggedTask({ type, body, run, clientId = "local" }) {
     const retryCount = attempts.filter((attempt) => attempt?.status === "failed").length;
     await appendTaskLog({
       ...base,
-      status: "failed",
+      status: isCanceledTaskError(error) ? "canceled" : "failed",
       durationMs: Date.now() - started,
       completedAt: new Date().toISOString(),
       ...(attempts.length ? {
@@ -12927,8 +13029,8 @@ async function runLoggedTask({ type, body, run, clientId = "local" }) {
         }
       } : {}),
       error: {
-        status: error.status || 500,
-        message: error.message || "Server error",
+        status: isCanceledTaskError(error) ? 499 : error.status || 500,
+        message: isCanceledTaskError(error) ? "用户停止生成" : error.message || "Server error",
         details: error.details ? truncateLogText(JSON.stringify(error.details), 3000) : null,
         endpoint: error.endpoint || config.imageProvider.baseUrl,
         attempts,
@@ -12959,7 +13061,7 @@ function publicTaskEntry(entry) {
     ok: true,
     taskId: entry.taskId,
     status: entry.status,
-    done: entry.status === "success" || entry.status === "failed",
+    done: ["success", "failed", "canceled"].includes(entry.status),
     startedAt: entry.startedAtIso,
     completedAt: entry.completedAtIso || null,
     result: entry.result || null,
@@ -12972,7 +13074,7 @@ function rememberTaskStarted(clientId, taskId, type) {
   pruneTaskResults();
   const key = asyncTaskKey(clientId, taskId);
   const existing = taskResults.get(key);
-  if (existing && ["running", "success", "failed"].includes(existing.status)) return existing;
+  if (existing && ["running", "success", "failed", "canceled"].includes(existing.status)) return existing;
   const entry = {
     taskId,
     clientId: sanitizeClientId(clientId),
@@ -12992,6 +13094,7 @@ function rememberTaskStarted(clientId, taskId, type) {
 function rememberTaskSuccess(clientId, taskId, result) {
   if (!taskId) return;
   const entry = taskResults.get(asyncTaskKey(clientId, taskId)) || rememberTaskStarted(clientId, taskId, "task");
+  if (entry.status === "canceled") return;
   entry.status = "success";
   entry.result = result;
   entry.error = null;
@@ -13002,11 +13105,11 @@ function rememberTaskSuccess(clientId, taskId, result) {
 function rememberTaskFailure(clientId, taskId, error) {
   if (!taskId) return;
   const entry = taskResults.get(asyncTaskKey(clientId, taskId)) || rememberTaskStarted(clientId, taskId, "task");
-  entry.status = "failed";
+  entry.status = isCanceledTaskError(error) ? "canceled" : "failed";
   entry.result = null;
   entry.error = {
-    status: error.status || 500,
-    message: error.message || "Server error",
+    status: isCanceledTaskError(error) ? 499 : error.status || 500,
+    message: isCanceledTaskError(error) ? "用户停止生成" : error.message || "Server error",
     details: error.details || null
   };
   entry.updatedAt = Date.now();
@@ -13014,7 +13117,7 @@ function rememberTaskFailure(clientId, taskId, error) {
 }
 
 async function runRecoverableTask({ type, body, clientId, taskId, run }) {
-  if (!taskId) return run();
+  if (!taskId) return run(null);
   const entry = rememberTaskStarted(clientId, taskId, type);
   if (entry?.status === "success") return entry.result;
   if (entry?.status === "failed") {
@@ -13023,12 +13126,15 @@ async function runRecoverableTask({ type, body, clientId, taskId, run }) {
     error.details = entry.error?.details || null;
     throw error;
   }
+  if (entry?.status === "canceled") throw canceledTaskError();
   if (entry?.promise) return entry.promise;
 
   let taskPromise;
   taskPromise = (async () => {
     try {
-      const result = await run();
+      const controller = new AbortController();
+      entry.controller = controller;
+      const result = await run(controller.signal);
       rememberTaskSuccess(clientId, taskId, result);
       return result;
     } catch (error) {
@@ -13037,10 +13143,25 @@ async function runRecoverableTask({ type, body, clientId, taskId, run }) {
     } finally {
       const latest = taskResults.get(asyncTaskKey(clientId, taskId));
       if (latest?.promise === taskPromise) delete latest.promise;
+      if (latest?.controller === entry.controller) delete latest.controller;
     }
   })();
   entry.promise = taskPromise;
   return taskPromise;
+}
+
+function cancelRecoverableTask(clientId, taskId) {
+  const entry = taskResults.get(asyncTaskKey(clientId, taskId));
+  if (!entry) return { canceled: false, status: "missing" };
+  if (["success", "failed", "canceled"].includes(entry.status)) {
+    return { canceled: entry.status === "canceled", status: entry.status };
+  }
+  entry.status = "canceled";
+  entry.error = { status: 499, message: "用户停止生成", details: null };
+  entry.updatedAt = Date.now();
+  entry.completedAtIso = new Date().toISOString();
+  entry.controller?.abort();
+  return { canceled: true, status: "canceled" };
 }
 
 function publicApiRoutes() {
@@ -14302,6 +14423,25 @@ async function handleApi(req, res) {
       return;
     }
 
+    if (req.method === "GET" && url.pathname === "/api/task-logs/export") {
+      const days = clampNumber(Number(url.searchParams.get("days") || 30), 1, 365);
+      const clientId = await clientIdFromRequest(req, url);
+      const logs = await readTaskLogs(10000, clientId);
+      const markdown = buildFailureLogMarkdown(logs, {
+        days,
+        version: appVersion,
+        platform: `${process.platform}-${process.arch} · Node ${process.version}`
+      });
+      const date = new Date().toISOString().slice(0, 10);
+      const fileName = encodeURIComponent(`老鬼AI-失败日志-${date}.md`);
+      sendBuffered(res, 200, markdown, {
+        "content-type": "text/markdown; charset=utf-8",
+        "content-disposition": `attachment; filename*=UTF-8''${fileName}`,
+        "cache-control": "no-store"
+      });
+      return;
+    }
+
     if (req.method === "GET" && req.url?.startsWith("/api/task-logs")) {
       const url = new URL(req.url, `http://${req.headers.host}`);
       const limit = clampNumber(Number(url.searchParams.get("limit") || 80), 1, 200);
@@ -14423,6 +14563,16 @@ async function handleApi(req, res) {
         durationMs: Number(body.durationMs || 0),
         input: summarizeTaskInput(body.input || {}),
         result: summarizeTaskResult(body.result || {}),
+        ...(body.error ? {
+          error: {
+            status: Number(body.error.status || (body.status === "canceled" ? 499 : 500)),
+            message: truncateLogText(body.error.message || "客户端任务失败", 2000),
+            details: body.error.details ? truncateLogText(JSON.stringify(body.error.details), 3000) : null,
+            endpoint: body.error.endpoint || config.imageProvider.baseUrl,
+            attempts: summarizeTaskAttempts(body.error.attempts),
+            retryCount: Number(body.error.retryCount || 0)
+          }
+        } : {}),
         activeImageBaseUrl: config.imageProvider.baseUrl,
         clientLogged: true
       };
@@ -14466,11 +14616,12 @@ async function handleApi(req, res) {
         body,
         clientId,
         taskId,
-        run: () => runLoggedTask({
+        run: (signal) => runLoggedTask({
           type: "generate-image",
           body,
           clientId,
-          run: () => withImageGenerationSlot("generate-image", () => generateImage(body))
+          signal,
+          run: (taskSignal) => withImageGenerationSlot("generate-image", (slotSignal) => generateImage(body, { signal: slotSignal }), { signal: taskSignal })
         })
       });
       sendJson(res, 200, { ok: true, image });
@@ -14486,11 +14637,12 @@ async function handleApi(req, res) {
         body,
         clientId,
         taskId,
-        run: () => runLoggedTask({
+        run: (signal) => runLoggedTask({
           type: "render-from-images",
           body,
           clientId,
-          run: () => withImageGenerationSlot("render-from-images", () => renderFromUploadedImages(body))
+          signal,
+          run: (taskSignal) => withImageGenerationSlot("render-from-images", (slotSignal) => renderFromUploadedImages(body, { signal: slotSignal }), { signal: taskSignal })
         })
       });
       sendJson(res, 200, { ok: true, render });
@@ -14584,14 +14736,27 @@ async function handleApi(req, res) {
         body,
         clientId,
         taskId,
-        run: () => runLoggedTask({
+        run: (signal) => runLoggedTask({
           type: "design-series",
           body,
           clientId,
-          run: () => withImageGenerationSlot("design-series", () => generateDesignSeries(body))
+          signal,
+          run: (taskSignal) => withImageGenerationSlot("design-series", (slotSignal) => generateDesignSeries(body, { signal: slotSignal }), { signal: taskSignal })
         })
       });
       sendJson(res, 200, { ok: true, ...series });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/task-cancel") {
+      const clientId = await clientIdFromRequest(req, url);
+      const body = await readJson(req);
+      const taskId = taskIdFromBodyOrUrl(body, url);
+      if (!taskId) {
+        sendJson(res, 400, { ok: false, error: "Missing taskId" });
+        return;
+      }
+      sendJson(res, 200, { ok: true, clientId, taskId, ...cancelRecoverableTask(clientId, taskId) });
       return;
     }
 

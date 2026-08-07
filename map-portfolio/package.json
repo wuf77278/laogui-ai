@@ -1,0 +1,43 @@
+{
+  "name": "design-footprints-map",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server/server.mjs",
+    "build": "tsc -b && vite build",
+    "preview": "NODE_ENV=production node server/server.mjs",
+    "typecheck": "tsc -b --pretty false",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "check": "npm run typecheck && npm run test && npm run build"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "cesium": "1.143.0",
+    "express": "latest",
+    "lucide-react": "latest",
+    "multer": "latest",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "topojson-client": "^3.1.0",
+    "vite": "8.2.0",
+    "vite-plugin-static-copy": "latest",
+    "world-atlas": "^2.0.2"
+  },
+  "devDependencies": {
+    "@playwright/test": "latest",
+    "@testing-library/jest-dom": "latest",
+    "@testing-library/react": "latest",
+    "@types/express": "latest",
+    "@types/geojson": "^7946.0.16",
+    "@types/multer": "latest",
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "@types/topojson-client": "^3.1.5",
+    "jsdom": "latest",
+    "typescript": "latest",
+    "vitest": "latest"
+  }
+}

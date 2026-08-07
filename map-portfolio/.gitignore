@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+public/uploads/*
+!public/uploads/.gitkeep
+output/playwright/
+test-results/
+playwright-report/
+*.tsbuildinfo

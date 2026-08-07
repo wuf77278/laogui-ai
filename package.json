@@ -1,6 +1,6 @@
 {
   "name": "laogui-ai",
-  "version": "2.3.6",
+  "version": "2.3.7",
   "description": "面向建筑、室内、民宿和商业空间设计师的本地 AI 创意工作台",
   "private": true,
   "license": "MIT",
@@ -44,7 +44,7 @@
     "check": "node --check server.mjs && node --check public/app.js && node --check public/ai-edit/editor.js && node --check public/ai-edit/region-engine.js && node --check public/deep-edit/editor.js && node --check public/deep-edit/image-ops.worker.js && node --check public/deep-edit/mask-engine.js && node --check public/deep-edit/layer-engine.js && node --check public/deep-edit/project-store.js && node --check electron/main.cjs && node --check electron/preload.cjs && node --check scripts/doctor.mjs && node --check scripts/sync-vendor.mjs && npm run check:vendor",
     "test": "node --test test/*.test.mjs",
     "doctor": "node scripts/doctor.mjs",
-    "mobile:config": "node scripts/generate-mobile-provider-config.mjs",
+    "mobile:config": "node scripts/sync-mobile-shared.mjs",
     "mobile:sync": "npm run mobile:config && npx cap sync android",
     "mobile:open": "npx cap open android",
     "mobile:build": "node scripts/build-android.mjs"
@@ -131,6 +131,7 @@
   },
   "dependencies": {
     "@capacitor/android": "^8.4.2",
+    "@capacitor/app": "^8.1.1",
     "@capacitor/camera": "^8.2.1",
     "@capacitor/core": "^8.4.2",
     "@capacitor/filesystem": "^8.1.2",

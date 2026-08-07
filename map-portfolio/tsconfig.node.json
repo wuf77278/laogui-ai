@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "skipLibCheck": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "types": ["node", "vitest/config"],
+    "noEmit": true
+  },
+  "include": ["vite.config.ts", "playwright.config.ts"]
+}

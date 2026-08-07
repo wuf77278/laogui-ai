@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#061016" />
+    <title>设计行迹 · 中国设计地图</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="map-stage" aria-label="中国三维设计地图">
+        <div id="mapCanvas" class="map-canvas"></div>
+        <div class="atmosphere atmosphere-one"></div>
+        <div class="atmosphere atmosphere-two"></div>
+
+        <header class="brand-lockup">
+          <span class="eyebrow"><i></i> DESIGN INTELLIGENCE</span>
+          <h1>设计行迹</h1>
+          <p>把做过的项目，点亮在中国山河之间。</p>
+        </header>
+
+        <aside class="mode-panel glass-panel" aria-label="地图模式">
+          <div class="panel-heading"><span>显示模式</span><button class="hint-button" title="切换地图数据层">?</button></div>
+          <div class="mode-list">
+            <button class="mode-button active" data-mode="projects">
+              <span class="mode-icon project-icon">✦</span><span><strong>我的作品</strong><small>设计项目分布</small></span><b></b>
+            </button>
+            <button class="mode-button" data-mode="tourism">
+              <span class="mode-icon tourism-icon">▥</span><span><strong>旅游热度</strong><small>景区人流强度</small></span><b></b>
+            </button>
+            <button class="mode-button" data-mode="hotels">
+              <span class="mode-icon hotel-icon">▥</span><span><strong>酒店价格</strong><small>附近每晚均价</small></span><b></b>
+            </button>
+          </div>
+        </aside>
+
+        <aside class="legend-panel glass-panel" aria-label="图例">
+          <div class="legend-title">图例</div>
+          <div class="legend-row"><i class="legend-dot project-dot"></i><span>设计项目</span></div>
+          <div class="legend-row"><i class="legend-bar tourism-bar"></i><span>旅游热度</span></div>
+          <div class="legend-row"><i class="legend-bar hotel-bar"></i><span>酒店价格</span></div>
+          <div class="legend-scale"><span>低</span><i></i><span>高</span></div>
+        </aside>
+
+        <section class="project-card glass-panel" id="projectCard" aria-live="polite">
+          <div class="card-topline"><span><i></i> 当前项目</span><button id="closeCard" title="关闭详情">×</button></div>
+          <div class="project-image" id="projectImage"><span>PROJECT IMAGE</span></div>
+          <div class="image-dots"><i class="active"></i><i></i><i></i><i></i><i></i></div>
+          <h2 id="projectName">山地庭院</h2>
+          <div class="project-type" id="projectType">文化旅居 / 民宿</div>
+          <dl class="project-meta">
+            <div><dt>位置</dt><dd id="projectLocation">四川 · 西昌</dd></div>
+            <div><dt>年份</dt><dd id="projectYear">2021</dd></div>
+            <div><dt>面积</dt><dd id="projectArea">8,420 m²</dd></div>
+          </dl>
+          <p id="projectDescription">让建筑顺着山势展开，借一座庭院把风、光与人的日常重新连在一起。</p>
+          <button class="outline-button" id="viewProject">查看项目 <span>→</span></button>
+        </section>
+
+        <div class="map-controls glass-panel" aria-label="地图控制">
+          <button id="resetView" title="回到中国全景">⌾</button><span></span><button id="zoomIn" title="放大">+</button><button id="zoomOut" title="缩小">−</button><button id="fullscreen" title="全屏">⛶</button>
+        </div>
+
+        <section class="timeline glass-panel" aria-label="项目年份">
+          <button id="playTimeline" title="播放时间线">▶</button>
+          <div class="years"><span>2016</span><span>2018</span><span>2020</span><span class="selected">2021</span><span>2023</span><span>2026</span></div>
+          <input id="yearRange" type="range" min="2016" max="2026" value="2021" aria-label="选择年份" />
+        </section>
+        <div class="map-note">示意数据 · 地图原型阶段</div>
+      </section>
+    </main>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

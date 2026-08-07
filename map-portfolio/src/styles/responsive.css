@@ -1,0 +1,30 @@
+@media (max-width: 1100px) {
+  .project-panel { width: 310px; }
+  .map-controls { right: 344px; }
+  .timeline { right: 344px; }
+  .project-content .description { display: none; }
+}
+
+@media (max-width: 900px) {
+  body { overflow: auto; }
+  .map-app { min-height: 780px; }
+  .topbar { grid-template-columns: 1fr auto; }.topbar-status { display: none; }
+  .filter-panel { top: 96px; bottom: auto; width: 250px; height: 412px; }
+  .project-panel { top: 96px; right: 14px; bottom: auto; width: calc(100vw - 300px); height: 412px; display: grid; grid-template-columns: minmax(150px,.9fr) 1.1fr; }
+  .project-cover { height: 100%; }.project-content { overflow: auto; }.project-content h2 { font-size: 20px; }.project-content .description { display: block; }
+  .map-controls { right: 14px; bottom: 92px; }
+  .timeline { left: 14px; right: 14px; bottom: 14px; min-width: 0; }
+  .map-attribution-note { display: none; }
+}
+
+@media (max-width: 640px) {
+  .map-app { min-height: 900px; height: 100dvh; }
+  .topbar { left: 10px; right: 10px; top: 10px; height: 58px; padding: 0 10px; }.brand-mark { width: 30px; height: 30px; }.brand h1 { font-size: 16px; }.brand p { display: none; }.icon-text-button span { display: none; }.icon-text-button { width: 34px; padding: 0; justify-content: center; }
+  .terrain-badge { top: 76px; white-space: nowrap; }
+  .filter-panel { left: 10px; right: 10px; top: auto; bottom: 84px; width: auto; height: 290px; padding: 13px; }.filter-grid, .select-row, .featured-toggle { display: none !important; }.project-list { display: flex; overflow-x: auto; overflow-y: hidden; gap: 6px; }.project-list-item { min-width: 180px; width: 180px; border: 1px solid var(--line); padding: 8px; }.result-heading { margin-top: 2px; }
+  .project-panel { left: 10px; right: 10px; top: 76px; width: auto; height: 250px; grid-template-columns: 38% 62%; }.project-cover { min-width: 0; }.project-content { padding: 13px; }.project-content h2 { margin-top: 5px; font-size: 17px; }.project-kicker { font-size: 8px; }.location { font-size: 9px; }.project-content dl { margin-top: 12px; padding: 9px 0; }.project-content .summary, .project-content .description { display: none; }.project-actions { grid-template-columns: 1fr; margin-top: 10px; }.detail-button { display: none !important; }
+  .map-controls { right: 10px; bottom: 384px; }
+  .timeline { left: 10px; right: 10px; bottom: 10px; height: 62px; grid-template-columns: 34px minmax(0,1fr) 32px; gap: 7px; }.timeline select { display: none; }.year-labels button:nth-child(even) { display: none; }
+  .loading-state { min-width: 0; width: calc(100vw - 32px); }
+  .admin-app { padding: 20px 14px; }.admin-header { align-items: flex-start; flex-direction: column; }.admin-actions { justify-content: start; }.admin-list-head { align-items: stretch; flex-direction: column; gap: 10px; }.admin-search { width: 100%; }.form-layout { grid-template-columns: 1fr; }.cover-upload { max-width: 230px; }.form-fields { grid-template-columns: 1fr; }.form-fields .wide { grid-column: auto; }.modal-backdrop { padding: 8px; }.project-form-dialog form { padding: 14px; }
+}

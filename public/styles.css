@@ -3508,6 +3508,30 @@ body[data-theme="day"].workspace-active .reference-edit-button {
   background: var(--accent-soft);
 }
 
+.generation-stop-button {
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  padding: 0;
+  border-color: rgba(176, 66, 66, 0.38);
+  color: var(--danger);
+}
+
+.generation-stop-button svg {
+  width: 18px;
+  height: 18px;
+}
+
+.task-progress-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.task-log-item.canceled {
+  border-left-color: #aa7b2d !important;
+}
+
 .canvas-actions .text-button.active {
   color: var(--ink);
   background: var(--accent-soft);

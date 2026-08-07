@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { generateMobileProviderConfig } from "./generate-mobile-provider-config.mjs";
+import "./sync-mobile-shared.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const javaCandidates = [
@@ -29,7 +29,6 @@ function run(command, args, cwd) {
   if (result.status !== 0) process.exit(result.status || 1);
 }
 
-generateMobileProviderConfig();
 run(path.join(root, "node_modules", ".bin", "cap"), ["sync", "android"], root);
 run(path.join(root, "android", "gradlew"), ["assembleDebug"], path.join(root, "android"));
 console.log(`安卓安装包：${path.join(root, "android", "app", "build", "outputs", "apk", "debug", "app-debug.apk")}`);
