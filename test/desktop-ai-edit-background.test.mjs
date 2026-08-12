@@ -23,6 +23,18 @@ test("AI 编辑支持转到后台并聚合任务日志", () => {
   assert.match(server, /body\.suppressTaskLog === true/);
 });
 
+test("AI 编辑后台入口醒目且顶部实时显示任务进度", () => {
+  assert.match(editor, /ai-background-task-button/);
+  assert.match(editor, /ai-stop-task-button/);
+  assert.match(editor, /classList\.toggle\("ai-task-running"/);
+  assert.match(editor, /顶部“任务状态”查看进度/);
+  assert.doesNotMatch(editor, /validJobs\(\)/);
+  assert.match(app, /function syncAiEditActiveTask/);
+  assert.match(app, /workspace-task-status-label/);
+  assert.match(styles, /workspace-task-status-button\.has-task\.running/);
+  assert.match(styles, /ai-stop-task-button:not\(\[hidden\]\)/);
+});
+
 test("AI 编辑结果在无限画布显示来源标记", () => {
   assert.match(app, /sourceBadge:[^\n]+"AI 编辑"/);
   assert.match(app, /canvas-image-source-badge/);

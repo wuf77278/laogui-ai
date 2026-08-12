@@ -25042,6 +25042,168 @@ body[data-theme].workspace-active #workspaceStatusPanel .task-progress-panel {
   -webkit-backdrop-filter: blur(20px) saturate(1.12) !important;
 }
 
+/* AI 编辑后台任务：强化入口，并把实时进度带回无限画布顶部。 */
+.ai-edit-workspace .ai-background-task-button:not([hidden]) {
+  flex: 0 0 158px;
+  width: 158px;
+  min-width: 158px;
+  min-height: 46px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  color: #211807;
+  border-color: #f0c978;
+  background: linear-gradient(180deg, #f3d98e, #cfa646);
+  box-shadow: 0 0 0 2px rgba(240, 201, 120, 0.18), 0 8px 22px rgba(0, 0, 0, 0.28);
+}
+
+.ai-edit-workspace .deep-workspace-head.ai-task-running .deep-head-actions > button:not([data-ai-command="background"]):not([data-ai-command="stop"]) {
+  display: none;
+}
+
+.ai-edit-workspace .deep-workspace-head.ai-task-running .deep-head-actions {
+  flex: 0 0 auto;
+  min-width: 0;
+  gap: 10px;
+}
+
+.ai-edit-workspace .ai-stop-task-button:not([hidden]) {
+  flex: 0 0 142px;
+  width: 142px;
+  min-width: 142px;
+  min-height: 46px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  color: #fff8f5;
+  border-color: #dc6a5e;
+  background: linear-gradient(180deg, #bd5147, #8f2f28);
+  box-shadow: 0 0 0 2px rgba(198, 72, 61, 0.16), 0 8px 22px rgba(0, 0, 0, 0.3);
+}
+
+.ai-edit-workspace .ai-stop-task-button:not([hidden]):hover {
+  color: #fff;
+  border-color: #ff9c91;
+  background: linear-gradient(180deg, #d65f54, #a7372f);
+}
+
+.ai-edit-workspace .ai-stop-task-button > span {
+  display: grid;
+  gap: 1px;
+  text-align: left;
+  line-height: 1.05;
+}
+
+.ai-edit-workspace .ai-stop-task-button strong {
+  font-size: 13px;
+  font-weight: 820;
+}
+
+.ai-edit-workspace .ai-stop-task-button small {
+  font-size: 10px;
+  font-weight: 650;
+  opacity: 0.78;
+}
+
+.ai-edit-workspace .ai-background-task-button svg,
+.ai-edit-workspace .ai-stop-task-button svg {
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+}
+
+@media (max-width: 760px) {
+  .ai-edit-workspace .deep-workspace-head.ai-task-running {
+    gap: 8px;
+  }
+
+  .ai-edit-workspace .deep-workspace-head.ai-task-running > [data-ai-command="close"],
+  .ai-edit-workspace .deep-workspace-head.ai-task-running .deep-workspace-title {
+    display: none;
+  }
+
+  .ai-edit-workspace .deep-workspace-head.ai-task-running .deep-head-actions {
+    width: 100%;
+  }
+
+  .ai-edit-workspace .ai-background-task-button:not([hidden]),
+  .ai-edit-workspace .ai-stop-task-button:not([hidden]) {
+    flex: 1 1 0;
+    width: auto;
+    min-width: 0;
+  }
+}
+
+.ai-edit-workspace .ai-background-task-button:not([hidden]):hover {
+  color: #171005;
+  border-color: #ffe5a5;
+  background: linear-gradient(180deg, #ffe5a5, #dcb553);
+}
+
+.ai-edit-workspace .ai-background-task-button > span {
+  display: grid;
+  gap: 1px;
+  text-align: left;
+  line-height: 1.05;
+}
+
+.ai-edit-workspace .ai-background-task-button strong {
+  font-size: 13px;
+  font-weight: 820;
+}
+
+.ai-edit-workspace .ai-background-task-button small {
+  font-size: 10px;
+  font-weight: 650;
+  opacity: 0.72;
+}
+
+.workspace-task-status-button.has-task {
+  width: auto !important;
+  min-width: 112px !important;
+  max-width: 172px;
+  padding: 0 12px !important;
+  gap: 7px;
+  border-color: rgba(196, 154, 60, 0.58) !important;
+  background: rgba(196, 154, 60, 0.16) !important;
+}
+
+.workspace-task-status-button.has-task.running {
+  box-shadow: inset 3px 0 0 #c49a3c, 0 6px 16px rgba(38, 30, 14, 0.12) !important;
+}
+
+.workspace-task-status-button.has-task.running svg {
+  color: #9b6d12;
+  animation: workspace-task-pulse 1.4s ease-in-out infinite;
+}
+
+.workspace-task-status-label {
+  min-width: 0;
+  overflow: hidden;
+  color: inherit;
+  font-size: 12px;
+  font-weight: 760;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body[data-theme="night"] .workspace-task-status-button.has-task {
+  color: #f5e6bb !important;
+  border-color: rgba(240, 201, 120, 0.5) !important;
+  background: rgba(196, 154, 60, 0.18) !important;
+}
+
+@keyframes workspace-task-pulse {
+  50% { opacity: 0.42; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-task-status-button.has-task.running svg { animation: none; }
+}
+
 body[data-theme="night"].workspace-active #workspaceStatusPanel .task-progress-panel {
   border-color: rgba(239, 244, 252, 0.14) !important;
   background:

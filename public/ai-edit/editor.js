@@ -174,7 +174,8 @@ export function createAiEditor({ onEditRegion, onCommit, onTaskEvent, onCancel, 
     backgrounded: false,
     cancelRequested: false,
     loadError: "",
-    taskId: ""
+    taskId: "",
+    taskStartedAt: ""
   };
   let overlay = null;
   let brushCloseTimer = null;
@@ -207,8 +208,8 @@ export function createAiEditor({ onEditRegion, onCommit, onTaskEvent, onCancel, 
             <button class="text-button ai-zoom-readout" type="button" data-ai-command="fit">100%</button>
             <button class="text-button" type="button" data-ai-command="zoom-in" title="放大">＋</button>
             <button class="primary-button" type="button" data-ai-command="submit">${icon("icon-spark")}<span data-ai-submit-label>开始 AI 编辑</span></button>
-            <button class="secondary-button" type="button" data-ai-command="background" hidden>${icon("icon-home")}<span>转到后台</span></button>
-            <button class="secondary-button danger-button" type="button" data-ai-command="stop" hidden><span>停止任务</span></button>
+            <button class="secondary-button ai-background-task-button" type="button" data-ai-command="background" hidden title="返回无限画布，AI 编辑继续运行">${icon("icon-home")}<span><strong>转到后台</strong><small>任务继续运行</small></span></button>
+            <button class="secondary-button danger-button ai-stop-task-button" type="button" data-ai-command="stop" hidden title="立即终止本次 AI 编辑">${icon("icon-stop")}<span><strong>终止任务</strong><small>停止本次编辑</small></span></button>
           </div>
         </header>
         <div class="deep-workspace-body ai-edit-body">
@@ -329,6 +330,7 @@ export function createAiEditor({ onEditRegion, onCommit, onTaskEvent, onCancel, 
 
   function setBusy(busy, text = "处理中") {
     state.busy = busy;
+    overlay?.querySelector(".deep-workspace-head")?.classList.toggle("ai-task-running", Boolean(busy && state.taskId));
     const layer = overlay?.querySelector("[data-ai-busy]");
     if (layer) layer.hidden = !busy;
     const label = overlay?.querySelector("[data-ai-busy-text]");
@@ -766,6 +768,7 @@ export function createAiEditor({ onEditRegion, onCommit, onTaskEvent, onCancel, 
     state.cancelRequested = false;
     state.previewCanvas = null;
     const taskStartedAt = new Date().toISOString();
+    state.taskStartedAt = taskStartedAt;
     await emitTaskEvent({
       taskId: state.taskId,
       status: "running",
@@ -889,12 +892,21 @@ export function createAiEditor({ onEditRegion, onCommit, onTaskEvent, onCancel, 
     else if (command === "background") {
       state.backgrounded = true;
       close({ force: true, keepTask: true });
-      notify("AI 编辑已转到后台，可在任务日志查看进度");
+      await emitTaskEvent({
+        taskId: state.taskId,
+        status: "running",
+        startedAt: state.taskStartedAt,
+        progress: state.status.match(/（(\d+\/\d+)）/)?.[1] || "",
+        message: "AI 编辑已转到后台继续运行",
+        selected: state.selected,
+        regionCount: numberedRegionJobs(state.regions).length
+      });
+      notify("AI 编辑已转到后台，可在顶部“任务状态”查看进度");
     }
     else if (command === "stop") {
       state.cancelRequested = true;
       setBusy(true, "正在停止 AI 编辑任务");
-      await onCancel?.({ taskId: state.taskId, regionCount: validJobs().length });
+      await onCancel?.({ taskId: state.taskId, regionCount: numberedRegionJobs(state.regions).length });
     }
     else if (command === "retry-image") await loadSelectedImage();
     else if (command === "toggle-prompt-optimization") {
@@ -1019,6 +1031,7 @@ export function createAiEditor({ onEditRegion, onCommit, onTaskEvent, onCancel, 
     state.cancelRequested = false;
     state.loadError = "";
     state.taskId = "";
+    state.taskStartedAt = "";
     state.status = "正在载入图片";
     setError("");
     overlay.hidden = false;

@@ -5999,6 +5999,46 @@ function completeActiveTask(status = "success", eventText = "") {
   renderTaskProgressPanel();
 }
 
+function syncAiEditActiveTask(event = {}) {
+  if (!event.taskId) return;
+  const total = Math.max(1, Number(event.regionCount) || Number(String(event.progress || "").split("/")[1]) || 1);
+  const status = ["running", "success", "failed", "canceled"].includes(event.status) ? event.status : "running";
+  const sameTask = state.activeTask?.type === "ai-edit" && state.activeTask.id === event.taskId;
+  const reportedCurrent = Number(String(event.progress || "").split("/")[0]);
+  const current = Number.isFinite(reportedCurrent)
+    ? Math.max(0, Math.min(total, reportedCurrent))
+    : Math.max(0, Math.min(total, sameTask ? state.activeTask.current || 0 : 0));
+  if (!sameTask) {
+    startActiveTask({
+      type: "ai-edit",
+      label: "AI 编辑",
+      total,
+      parentImageId: event.selected?.outputId || event.selected?.id || ""
+    });
+    state.activeTask.id = event.taskId;
+    const startedAt = new Date(event.startedAt || "").getTime();
+    if (Number.isFinite(startedAt)) state.activeTask.startedAt = startedAt;
+  }
+  const phase = status === "running"
+    ? (event.message?.includes("后台") ? "后台运行中" : event.message || "AI 编辑中")
+    : status === "success" ? "完成" : status === "canceled" ? "已取消" : "失败";
+  updateActiveTask({
+    status,
+    total,
+    current,
+    success: status === "success" ? total : state.activeTask.success,
+    failed: status === "failed" ? 1 : 0,
+    canceled: status === "canceled" ? 1 : 0,
+    phase,
+    error: status === "failed" ? event.error?.message || event.message || "AI 编辑失败" : "",
+    event: event.message || (status === "running" ? `AI 编辑进行中 · ${current}/${total}` : "")
+  });
+  if (status !== "running" && state.taskTimer) {
+    clearInterval(state.taskTimer);
+    state.taskTimer = null;
+  }
+}
+
 function pushTaskEvent(text) {
   if (!state.activeTask || !text) return;
   state.activeTask.events.push({
@@ -6040,10 +6080,10 @@ function renderTaskProgressPanel() {
   const task = state.activeTask;
   if (!task) {
     if (els.workspaceStatusButton) {
-      els.workspaceStatusButton.innerHTML = `<svg><use href="#icon-status"></use></svg>`;
+      els.workspaceStatusButton.innerHTML = `<svg><use href="#icon-status"></use></svg><span class="workspace-task-status-label" hidden>任务状态</span>`;
       els.workspaceStatusButton.title = "状态：空闲";
       els.workspaceStatusButton.setAttribute("aria-label", "状态：空闲");
-      els.workspaceStatusButton.className = `icon-button icon-only ${state.statusPanelOpen ? "active" : ""}`;
+      els.workspaceStatusButton.className = `icon-button icon-only workspace-task-status-button ${state.statusPanelOpen ? "active" : ""}`;
     }
     els.taskProgressTitle.textContent = "待命";
     els.taskProgressStatus.textContent = "空闲";
@@ -6059,7 +6099,8 @@ function renderTaskProgressPanel() {
     return;
   }
 
-  const done = Math.min(task.total, task.success + task.failed + (task.canceled || 0));
+  const completed = Math.min(task.total, task.success + task.failed + (task.canceled || 0));
+  const done = task.status === "running" ? Math.max(completed, Math.min(task.total, task.current || 0)) : completed;
   const percent = Math.round((done / Math.max(1, task.total)) * 100);
   if (els.workspaceStatusButton) {
     const endpoint = shortEndpoint(task.endpoint || getActiveImageEndpoint() || "--");
@@ -6073,10 +6114,13 @@ function renderTaskProgressPanel() {
           : task.status === "partial"
             ? `部分完成 ${done}/${task.total} · ${endpoint}`
             : `有失败 ${done}/${task.total} · ${endpoint}`;
-    els.workspaceStatusButton.innerHTML = `<svg><use href="#icon-status"></use></svg>`;
+    const compactStatus = task.status === "running"
+      ? `${task.type === "ai-edit" ? "AI 编辑" : "任务"} ${done}/${task.total}`
+      : task.status === "success" ? "任务完成" : task.status === "canceled" ? "任务已取消" : "任务异常";
+    els.workspaceStatusButton.innerHTML = `<svg><use href="#icon-status"></use></svg><span class="workspace-task-status-label">${escapeHtml(compactStatus)}</span>`;
     els.workspaceStatusButton.setAttribute("aria-label", statusLabel);
     els.workspaceStatusButton.title = `${task.label} · ${done}/${task.total} · ${endpoint} · ${elapsed}`;
-    els.workspaceStatusButton.className = `icon-button icon-only ${state.statusPanelOpen ? "active" : ""} ${["failed", "partial"].includes(task.status) ? "error" : task.status === "success" ? "ready" : ""}`;
+    els.workspaceStatusButton.className = `icon-button workspace-task-status-button has-task ${task.status} ${task.type === "ai-edit" ? "ai-edit-task" : ""} ${state.statusPanelOpen ? "active" : ""} ${["failed", "partial"].includes(task.status) ? "error" : task.status === "success" ? "ready" : ""}`;
   }
   els.taskProgressTitle.textContent = task.label;
   els.taskProgressStatus.textContent = task.status === "running"
@@ -14295,6 +14339,7 @@ async function cancelNumberedAiEdit({ taskId, regionCount = 2 } = {}) {
 }
 
 async function recordAiEditTaskEvent(event = {}) {
+  syncAiEditActiveTask(event);
   const selected = event.selected || {};
   const parent = outputItemForSelectedImage(selected);
   const result = event.result || null;
