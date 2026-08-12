@@ -2,6 +2,7 @@ const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const path = require("node:path");
 const net = require("node:net");
+const fs = require("node:fs");
 const { pathToFileURL } = require("node:url");
 
 const ROOT_DIR = path.join(__dirname, "..");
@@ -27,6 +28,37 @@ let updateState = {
   progress: null,
   message: "点击“检查更新”后才会手动查询新版本。"
 };
+
+function desktopLogPath() {
+  return path.join(app.getPath("userData"), "data", "logs", "desktop-events.jsonl");
+}
+
+function writeDesktopEvent(action, { status = "success", level = "info", message = "", details = {} } = {}) {
+  try {
+    const filePath = desktopLogPath();
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const safeText = (value) => String(value || "")
+      .replace(/(authorization\s*[:=]\s*bearer\s+)[^\s"']+/gi, "$1已隐藏")
+      .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "已隐藏");
+    const safeValue = (value) => {
+      if (value == null || typeof value === "number" || typeof value === "boolean") return value;
+      if (typeof value === "string") return safeText(value);
+      if (Array.isArray(value)) return value.map(safeValue);
+      const output = {};
+      for (const [key, item] of Object.entries(value)) output[key] = /key|token|secret|authorization|cookie/i.test(key) ? "已隐藏" : safeValue(item);
+      return output;
+    };
+    fs.appendFileSync(filePath, `${JSON.stringify({
+      time: new Date().toISOString(),
+      layer: "desktop",
+      action,
+      status,
+      level,
+      message: safeText(message),
+      details: safeValue({ version: app.getVersion(), platform: `${process.platform}-${process.arch}`, ...details })
+    })}\n`);
+  } catch {}
+}
 
 if (process.platform === "win32") {
   app.setAppUserModelId("cn.laogui.ai");
@@ -136,6 +168,7 @@ async function startServer() {
   const dataDir = path.join(app.getPath("userData"), "data");
   serverReadyPromise = (async () => {
     serverPort = await findAvailablePort(DEFAULT_PORT);
+    writeDesktopEvent("service-port-selected", { message: `本地服务使用端口 ${serverPort}`, details: { port: serverPort, defaultPort: DEFAULT_PORT } });
     process.env.PORT = String(serverPort);
     process.env.LAOGUI_DATA_DIR = dataDir;
     serverModule = await import(pathToFileURL(SERVER_ENTRY).href);
@@ -169,6 +202,7 @@ async function createWindow() {
     mainWindow = null;
   });
   mainWindow.on("unresponsive", () => {
+    writeDesktopEvent("window-unresponsive", { status: "failed", level: "error", message: "窗口暂时无响应" });
     dialog.showMessageBox(mainWindow, {
       type: "warning",
       title: "老鬼AI 暂时无响应",
@@ -183,6 +217,11 @@ async function createWindow() {
   mainWindow.webContents.setZoomFactor(1);
   mainWindow.webContents.on("did-finish-load", () => {
     mainWindow.webContents.setZoomFactor(1);
+    writeDesktopEvent("page-loaded", { message: "主页面载入完成", details: { url: mainWindow.webContents.getURL() } });
+  });
+  mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (!isMainFrame) return;
+    writeDesktopEvent("page-load-failed", { status: "failed", level: "error", message: errorDescription, details: { errorCode, validatedURL } });
   });
 
   await mainWindow.loadURL(`http://127.0.0.1:${serverPort}`);
@@ -211,6 +250,7 @@ async function checkForAppUpdates() {
   try {
     await autoUpdater.checkForUpdates();
   } catch (error) {
+    writeDesktopEvent("update-check-failed", { status: "failed", level: "error", message: error.message, details: { stack: error.stack || "" } });
     console.warn(`[electron] update check failed: ${error.message || error}`);
     setUpdateState({
       status: "error",
@@ -227,6 +267,7 @@ async function downloadAppUpdate() {
   try {
     await autoUpdater.downloadUpdate();
   } catch (error) {
+    writeDesktopEvent("update-download-failed", { status: "failed", level: "error", message: error.message, details: { stack: error.stack || "" } });
     console.warn(`[electron] update download failed: ${error.message || error}`);
     setUpdateState({
       status: "error",
@@ -347,9 +388,11 @@ app.on("second-instance", () => {
 });
 
 app.whenReady().then(async () => {
+  writeDesktopEvent("app-start", { message: "老鬼AI 启动" });
   await createWindow();
   configureAutoUpdater();
 }).catch((error) => {
+  writeDesktopEvent("startup-failed", { status: "failed", level: "error", message: error.message, details: { stack: error.stack || "" } });
   dialog.showErrorBox("老鬼AI 启动失败", error.message || String(error));
   requestAppShutdown("startup-failed");
 });
@@ -390,3 +433,10 @@ app.on("activate", () => {
 
 process.on("SIGTERM", () => requestAppShutdown("SIGTERM"));
 process.on("SIGINT", () => requestAppShutdown("SIGINT"));
+process.on("uncaughtExceptionMonitor", (error) => {
+  writeDesktopEvent("uncaught-exception", { status: "failed", level: "error", message: error.message, details: { stack: error.stack || "" } });
+});
+process.on("unhandledRejection", (error) => {
+  writeDesktopEvent("unhandled-rejection", { status: "failed", level: "error", message: error?.message || String(error), details: { stack: error?.stack || "" } });
+});
+    writeDesktopEvent("render-process-gone", { status: "failed", level: "error", message: details.reason || "渲染进程退出", details });

@@ -1,0 +1,8 @@
+version: 2.3.10
+files:
+  - url: LaoguiAI-v2.3.10-windows-x64-setup.exe
+    sha512: RMXmv/zGLkG4sTr2O6T6Nvh0xYQFmlgSXXOh8FAdZcJuFDeyWNFaauxquKRdp1aWidVoQBdMfsm4SUf2z52b3Q==
+    size: 270049115
+path: LaoguiAI-v2.3.10-windows-x64-setup.exe
+sha512: RMXmv/zGLkG4sTr2O6T6Nvh0xYQFmlgSXXOh8FAdZcJuFDeyWNFaauxquKRdp1aWidVoQBdMfsm4SUf2z52b3Q==
+releaseDate: '2026-08-12T12:12:57.009Z'

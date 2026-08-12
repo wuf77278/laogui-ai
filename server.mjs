@@ -8,7 +8,7 @@ import { isIP } from "node:net";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { gzipSync, inflateSync } from "node:zlib";
-import { buildFailureLogMarkdown } from "./task-diagnostics.mjs";
+import { buildDiagnosticSummary, buildFailureLogMarkdown, diagnosticJsonLines, recentDiagnosticEntries, sanitizeDiagnosticValue } from "./task-diagnostics.mjs";
 import {
   communityPromptBlueprintLines,
   communityPromptCompactRules,
@@ -42,6 +42,8 @@ const defaultGeneratedDir = externalDataDirEnabled ? path.join(appDataDir, "gene
 const logsDir = path.join(appDataDir, "logs");
 const taskLogPath = path.join(logsDir, "task-runs.jsonl");
 const taskLogDir = path.join(logsDir, "task-runs");
+const diagnosticLogPath = path.join(logsDir, "diagnostic-events.jsonl");
+const desktopDiagnosticLogPath = path.join(logsDir, "desktop-events.jsonl");
 const authUsersPath = path.join(logsDir, "auth-users.json");
 const authSessionsPath = path.join(logsDir, "auth-sessions.json");
 const canvasStatePath = path.join(logsDir, "canvas-state.json");
@@ -504,6 +506,56 @@ function sendJson(res, status, body) {
 
 function sendText(res, status, body, contentType = "text/plain; charset=utf-8") {
   sendBuffered(res, status, body, { "content-type": contentType });
+}
+
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function createZipBuffer(files = []) {
+  const localParts = [];
+  const directoryParts = [];
+  let offset = 0;
+  for (const file of files) {
+    const name = Buffer.from(String(file.name || "log.txt").replace(/\\/g, "/"), "utf8");
+    const data = Buffer.isBuffer(file.data) ? file.data : Buffer.from(String(file.data || ""), "utf8");
+    const checksum = crc32(data);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0x0800, 6);
+    local.writeUInt32LE(checksum, 14);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    localParts.push(local, name, data);
+
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(0x0800, 8);
+    central.writeUInt32LE(checksum, 16);
+    central.writeUInt32LE(data.length, 20);
+    central.writeUInt32LE(data.length, 24);
+    central.writeUInt16LE(name.length, 28);
+    central.writeUInt32LE(offset, 42);
+    directoryParts.push(central, name);
+    offset += local.length + name.length + data.length;
+  }
+  const directory = Buffer.concat(directoryParts);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(files.length, 8);
+  end.writeUInt16LE(files.length, 10);
+  end.writeUInt32LE(directory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...localParts, directory, end]);
 }
 
 function staticEtag(stat) {
@@ -5844,7 +5896,7 @@ async function optimizeAiEditInstruction({ operation, userPrompt = "", regionNum
   }
 }
 
-async function runAiEdit(body = {}) {
+async function runAiEdit(body = {}, { signal = null } = {}) {
   const operation = String(body.operation || "").trim().toLowerCase();
   if (!AI_EDIT_OPERATIONS.has(operation)) {
     const error = new Error("不支持的 AI 编辑类型");
@@ -5904,7 +5956,8 @@ async function runAiEdit(body = {}) {
     maskImage: body.mask,
     size: imageStudioCliSize(body.outputSize || "auto"),
     quality: body.quality || "high",
-    providerOverride: "auto"
+    providerOverride: "auto",
+    signal
   });
   const title = {
     remove: "局部消除结果",
@@ -11554,6 +11607,8 @@ function summarizeTaskInput(body = {}) {
     batchId: body.batchId || null,
     batchIndex: body.batchIndex || null,
     batchCount: body.batchCount || null,
+    regionCount: body.regionCount || null,
+    progress: body.progress || null,
     primaryImage: summarizeImageForLog(body.primaryImage),
     referenceCount: references.length,
     referenceImages: references.map(summarizeImageForLog),
@@ -11578,10 +11633,15 @@ function summarizeTaskResult(result = {}) {
   const render = result.render || result.image || result;
   const attempts = summarizeTaskAttempts(render?.attempts || result.attempts);
   return {
+    id: render?.id || result.id || null,
     outputUrl: render?.url || render?.outputUrl || null,
     outputFile: render?.file || render?.outputFile || render?.fileBase || null,
     title: render?.title || null,
     mode: render?.mode || result.mode || null,
+    stepMode: render?.stepMode || result.stepMode || render?.mode || result.mode || null,
+    parentImageId: render?.parentImageId || result.parentImageId || null,
+    parentNodeId: render?.parentNodeId || result.parentNodeId || null,
+    workflowId: render?.workflowId || result.workflowId || null,
     intent: truncateLogText(render?.intent || "", 3000),
     bytes: render?.bytes || null,
     model: render?.model || result.model || null,
@@ -11611,11 +11671,51 @@ function taskLogPathForClient(clientId) {
   return path.join(taskLogDir, `${safeClientId}.jsonl`);
 }
 
+let taskLogWriteQueue = Promise.resolve();
+
+function queueTaskLogWrite(write) {
+  const pending = taskLogWriteQueue.then(write, write);
+  taskLogWriteQueue = pending.catch(() => {});
+  return pending;
+}
+
 async function appendTaskLog(entry, clientId = "local") {
   const safeClientId = sanitizeClientId(clientId);
   const logPath = taskLogPathForClient(safeClientId);
-  await fs.mkdir(path.dirname(logPath), { recursive: true });
-  await fs.appendFile(logPath, `${JSON.stringify({ ...entry, clientId: safeClientId })}\n`);
+  await queueTaskLogWrite(async () => {
+    await fs.mkdir(path.dirname(logPath), { recursive: true });
+    await fs.appendFile(logPath, `${JSON.stringify({ ...entry, clientId: safeClientId })}\n`);
+  });
+}
+
+async function upsertTaskLog(entry, clientId = "local") {
+  const safeClientId = sanitizeClientId(clientId);
+  const logPath = taskLogPathForClient(safeClientId);
+  await queueTaskLogWrite(async () => {
+    await fs.mkdir(path.dirname(logPath), { recursive: true });
+    let logs = [];
+    try {
+      const raw = await fs.readFile(logPath, "utf8");
+      logs = raw
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((line) => {
+          try {
+            return JSON.parse(line);
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    const normalized = { ...entry, clientId: safeClientId };
+    const index = logs.findIndex((item) => item?.id === normalized.id);
+    if (index >= 0) logs[index] = normalized;
+    else logs.push(normalized);
+    await fs.writeFile(logPath, logs.map((item) => JSON.stringify(item)).join("\n") + (logs.length ? "\n" : ""));
+  });
 }
 
 async function readTaskLogs(limit = 80, clientId = "local") {
@@ -11642,6 +11742,67 @@ async function readTaskLogs(limit = 80, clientId = "local") {
     }
     throw error;
   }
+}
+
+async function appendDiagnosticEvent(event = {}) {
+  const normalized = sanitizeDiagnosticValue({
+    id: String(event.id || randomUUID()),
+    time: event.time || new Date().toISOString(),
+    sessionId: String(event.sessionId || ""),
+    layer: String(event.layer || "service"),
+    level: String(event.level || "info"),
+    action: String(event.action || "unknown"),
+    status: String(event.status || "success"),
+    message: String(event.message || "").slice(0, 4000),
+    details: event.details || {}
+  });
+  await queueTaskLogWrite(async () => {
+    await fs.mkdir(logsDir, { recursive: true });
+    await fs.appendFile(diagnosticLogPath, `${JSON.stringify(normalized)}\n`);
+  });
+  return normalized;
+}
+
+async function readJsonLines(filePath, limit = 10000) {
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    return raw.split(/\r?\n/).filter(Boolean).slice(-limit).map((line) => {
+      try { return JSON.parse(line); } catch { return null; }
+    }).filter(Boolean);
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+async function readDiagnosticEvents(limit = 10000) {
+  const [renderer, desktop] = await Promise.all([
+    readJsonLines(diagnosticLogPath, limit),
+    readJsonLines(desktopDiagnosticLogPath, limit)
+  ]);
+  return [...renderer, ...desktop]
+    .sort((a, b) => Date.parse(a.time || 0) - Date.parse(b.time || 0))
+    .slice(-limit);
+}
+
+async function buildDiagnosticPackage(clientId, { days = 7 } = {}) {
+  const [events, tasks] = await Promise.all([readDiagnosticEvents(), readTaskLogs(10000, clientId)]);
+  const system = {
+    version: appVersion,
+    platform: `${process.platform}-${process.arch} · Node ${process.version}`,
+    dataDir: appDataDir,
+    imageConfigured: imageProviderSources().some((source) => source.apiKey),
+    imageEndpoint: config.imageProvider.baseUrl,
+    generatedDirectory: generatedDirectory()
+  };
+  const now = Date.now();
+  const summary = buildDiagnosticSummary({ events, tasks, system, days, now });
+  return createZipBuffer([
+    { name: "summary.md", data: summary },
+    { name: "operation-events.jsonl", data: diagnosticJsonLines(events, { days, now }) },
+    { name: "task-records.jsonl", data: diagnosticJsonLines(tasks, { days, now }) },
+    { name: "system-info.json", data: `${JSON.stringify(sanitizeDiagnosticValue(system), null, 2)}\n` }
+  ]);
 }
 
 async function deleteTaskLog(logId, clientId = "local") {
@@ -12445,7 +12606,7 @@ async function generatedStorageSummary() {
     retentionDefaults: {
       archiveOlderThanDays: 30,
       deleteTestFiles: true,
-      keepLogDays: 30
+      keepLogDays: 7
     }
   };
 }
@@ -12613,9 +12774,11 @@ async function pruneLogFile(filePath, keepDays = 30) {
   };
 }
 
-async function pruneTaskLogs({ keepDays = 30 } = {}) {
+async function pruneTaskLogs({ keepDays = 7 } = {}) {
   const files = [
     taskLogPath,
+    diagnosticLogPath,
+    desktopDiagnosticLogPath,
     ...(await listFilesRecursive(taskLogDir)).filter((file) => file.name.endsWith(".jsonl")).map((file) => file.path)
   ];
   const results = [];
@@ -12631,6 +12794,10 @@ async function pruneTaskLogs({ keepDays = 30 } = {}) {
   };
 }
 
+async function pruneSevenDayDiagnostics() {
+  return pruneTaskLogs({ keepDays: 7 });
+}
+
 async function runStorageMaintenance(body = {}) {
   const action = String(body.action || "").trim();
   const dryRun = Boolean(body.dryRun);
@@ -12638,13 +12805,13 @@ async function runStorageMaintenance(body = {}) {
   if (action === "archive-generated") return archiveGeneratedFiles({ olderThanDays: body.olderThanDays ?? 30, dryRun });
   if (action === "cleanup-test-generated") return cleanupTestGeneratedFiles({ dryRun });
   if (action === "delete-generated-urls") return deleteGeneratedFilesByUrls(body.urls, { dryRun });
-  if (action === "prune-task-logs") return pruneTaskLogs({ keepDays: body.keepDays ?? 30 });
+  if (action === "prune-task-logs") return pruneTaskLogs({ keepDays: body.keepDays ?? 7 });
   if (action === "daily-maintenance") {
     const archive = await archiveGeneratedFiles({ olderThanDays: body.olderThanDays ?? 30, dryRun });
     const cleanup = body.deleteTestFiles === false
       ? { ok: true, action: "delete-generated", skipped: true }
       : await cleanupTestGeneratedFiles({ dryRun });
-    const logs = await pruneTaskLogs({ keepDays: body.keepLogDays ?? 30 });
+    const logs = await pruneTaskLogs({ keepDays: body.keepLogDays ?? 7 });
     return { ok: true, action, dryRun, archive, cleanup, logs, summary: await generatedStorageSummary() };
   }
   const error = new Error("未知维护动作");
@@ -14424,7 +14591,7 @@ async function handleApi(req, res) {
     }
 
     if (req.method === "GET" && url.pathname === "/api/task-logs/export") {
-      const days = clampNumber(Number(url.searchParams.get("days") || 30), 1, 365);
+      const days = clampNumber(Number(url.searchParams.get("days") || 7), 1, 7);
       const clientId = await clientIdFromRequest(req, url);
       const logs = await readTaskLogs(10000, clientId);
       const markdown = buildFailureLogMarkdown(logs, {
@@ -14439,6 +14606,52 @@ async function handleApi(req, res) {
         "content-disposition": `attachment; filename*=UTF-8''${fileName}`,
         "cache-control": "no-store"
       });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/diagnostics/events") {
+      const body = await readJson(req);
+      const event = await appendDiagnosticEvent(body);
+      sendJson(res, 200, { ok: true, event });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/diagnostics/export") {
+      const days = clampNumber(Number(url.searchParams.get("days") || 7), 1, 7);
+      const clientId = await clientIdFromRequest(req, url);
+      const archive = await buildDiagnosticPackage(clientId, { days });
+      const date = new Date().toISOString().slice(0, 10);
+      const fileName = encodeURIComponent(`老鬼AI-诊断包-${date}.zip`);
+      sendBuffered(res, 200, archive, {
+        "content-type": "application/zip",
+        "content-disposition": `attachment; filename*=UTF-8''${fileName}`,
+        "cache-control": "no-store"
+      });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/diagnostics/image") {
+      const sourceUrl = String(url.searchParams.get("url") || "").trim();
+      let sourcePath = sourceUrl;
+      try {
+        const parsed = new URL(sourceUrl, `http://${req.headers.host}`);
+        if (!["127.0.0.1", "localhost", "::1"].includes(parsed.hostname)) throw new Error("只允许读取本机图片");
+        sourcePath = parsed.pathname;
+      } catch (error) {
+        if (!sourceUrl.startsWith("/")) throw error;
+      }
+      if (!sourcePath.startsWith("/generated/")) {
+        sendJson(res, 400, { ok: false, error: "只允许恢复本机生成图片" });
+        return;
+      }
+      const filePath = staticFilePath(generatedDirectory(), sourcePath.replace(/^\/generated\/?/, ""));
+      const ext = path.extname(filePath).toLowerCase();
+      if (![".png", ".jpg", ".jpeg", ".webp"].includes(ext)) {
+        sendJson(res, 400, { ok: false, error: "不支持的图片格式" });
+        return;
+      }
+      const buffer = await fs.readFile(filePath);
+      sendBuffered(res, 200, buffer, { "content-type": generatedStaticContentType(ext), "cache-control": "no-store" });
       return;
     }
 
@@ -14554,12 +14767,12 @@ async function handleApi(req, res) {
       const clientId = await clientIdFromRequest(req, url);
       const body = await readJson(req);
       const entry = {
-        id: randomUUID(),
+        id: String(body.taskId || "").trim() || randomUUID(),
         clientId,
         type: body.type || "client-event",
         status: body.status || "success",
         startedAt: body.startedAt || new Date().toISOString(),
-        completedAt: body.completedAt || new Date().toISOString(),
+        completedAt: body.completedAt || (body.status === "running" ? null : new Date().toISOString()),
         durationMs: Number(body.durationMs || 0),
         input: summarizeTaskInput(body.input || {}),
         result: summarizeTaskResult(body.result || {}),
@@ -14576,7 +14789,7 @@ async function handleApi(req, res) {
         activeImageBaseUrl: config.imageProvider.baseUrl,
         clientLogged: true
       };
-      await appendTaskLog(entry, clientId);
+      await upsertTaskLog(entry, clientId);
       sendJson(res, 200, { ok: true, log: entry });
       return;
     }
@@ -14584,11 +14797,18 @@ async function handleApi(req, res) {
     if (req.method === "POST" && url.pathname === "/api/ai-edit") {
       const clientId = await clientIdFromRequest(req, url);
       const body = await readJson(req);
-      const render = await runLoggedTask({
+      const taskId = taskIdFromBodyOrUrl(body, url);
+      const render = await runRecoverableTask({
         type: "ai-edit",
         body,
         clientId,
-        run: () => withImageGenerationSlot("ai-edit", () => runAiEdit(body))
+        taskId,
+        run: (signal) => {
+          const run = (taskSignal) => withImageGenerationSlot("ai-edit", (slotSignal) => runAiEdit(body, { signal: slotSignal }), { signal: taskSignal });
+          return body.suppressTaskLog === true
+            ? run(signal)
+            : runLoggedTask({ type: "ai-edit", body, clientId, signal, run });
+        }
       });
       sendJson(res, 200, { ok: true, render });
       return;
@@ -14763,6 +14983,14 @@ async function handleApi(req, res) {
     sendJson(res, 404, { ok: false, error: "Unknown API route" });
   } catch (error) {
     const status = error.status || 500;
+    appendDiagnosticEvent({
+      layer: "service",
+      level: status >= 400 ? "error" : "warning",
+      action: "api-error",
+      status: "failed",
+      message: error.message || "Server error",
+      details: { method: req.method, path: String(req.url || "").split("?")[0], status, stack: error.stack || "" }
+    }).catch(() => {});
     const logMethod = status === 499 ? console.warn : console.error;
     logMethod(`[api] ${req.method} ${req.url} failed: ${status} ${error.message || "Server error"}; body=${describeRequestSize(req)}`);
     if (res.writableEnded || res.destroyed) return;
@@ -14840,6 +15068,13 @@ server.listen(config.port, config.host, async () => {
     if (active?.baseUrl) config.imageProvider.baseUrl = active.baseUrl;
   }
   hydrateImageEndpointStatsFromTaskLogs();
+  await appendDiagnosticEvent({
+    layer: "service",
+    action: "service-start",
+    message: "本地服务启动",
+    details: { version: appVersion, platform: `${process.platform}-${process.arch}`, port: config.port }
+  }).catch(() => {});
+  await pruneSevenDayDiagnostics().catch((error) => console.warn(`[diagnostics] prune failed: ${error.message || error}`));
   console.log(`老鬼AI running at http://${config.host}:${config.port}`);
   console.log(`Image tool runner model: ${config.imageToolRunnerModel}`);
   console.log(`Image model: ${config.imageModel} via ${config.imageProvider.baseUrls.join(", ")}`);
@@ -14850,4 +15085,8 @@ server.listen(config.port, config.host, async () => {
       console.warn(`[image-provider] endpoint probe failed: ${error.message || error}`);
     });
   }, 250);
+  const diagnosticCleanupTimer = setInterval(() => {
+    pruneSevenDayDiagnostics().catch((error) => console.warn(`[diagnostics] prune failed: ${error.message || error}`));
+  }, 6 * 60 * 60 * 1000);
+  diagnosticCleanupTimer.unref?.();
 });

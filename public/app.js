@@ -543,6 +543,8 @@ const els = {
   cleanupTestGeneratedButton: $("cleanupTestGeneratedButton"),
   archiveGeneratedButton: $("archiveGeneratedButton"),
   pruneLogsButton: $("pruneLogsButton"),
+  exportDiagnosticPackageButton: $("exportDiagnosticPackageButton"),
+  diagnosticExportHint: $("diagnosticExportHint"),
   imageStudioKernelStatus: $("imageStudioKernelStatus"),
   imageStudioKernelSummary: $("imageStudioKernelSummary"),
   imageStudioKernelHint: $("imageStudioKernelHint"),
@@ -674,6 +676,7 @@ let pendingCanvasMinimapNodes = null;
 let selectionCanvasFrame = 0;
 let settingsReturnFocus = null;
 let desktopUpdateState = null;
+const diagnosticSessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 let activeGenerationBatch = null;
 const overlayFocusReturn = new WeakMap();
 let restoringCanvasState = false;
@@ -5621,8 +5624,8 @@ function compactTaskLogText(value, maxLength = 128) {
 }
 
 function renderTaskLogItem(log) {
-  const statusText = log.status === "success" ? "成功" : log.status === "canceled" ? "已取消" : "失败";
-  const statusClass = log.status === "success" ? "success" : log.status === "canceled" ? "canceled" : "failed";
+  const statusText = log.status === "running" ? "进行中" : log.status === "success" ? "成功" : log.status === "canceled" ? "已取消" : "失败";
+  const statusClass = log.status === "running" ? "running" : log.status === "success" ? "success" : log.status === "canceled" ? "canceled" : "failed";
   const typeText = taskTypeLabel(log.type);
   const timeText = log.completedAt || log.startedAt || "";
   const duration = log.durationMs ? `${Math.round(log.durationMs / 1000)}s` : "--";
@@ -5696,6 +5699,7 @@ function renderTaskLogItem(log) {
       ${error}
       <div class="task-log-actions">
         ${output}
+        ${log.status === "running" && log.type === "ai-edit" ? uiIconButton({ icon: "icon-stop", label: "停止任务", attrs: `data-log-action="stop-ai-edit" data-log-id="${escapeAttr(log.id)}"` }) : ""}
         ${finalPrompt ? uiIconButton({ icon: "icon-copy", label: "复制提示词", attrs: `data-log-action="copy-prompt" data-log-id="${escapeAttr(log.id)}"` }) : ""}
         ${nextMode && log.result?.outputUrl ? uiIconButton({ icon: "icon-continue", label: "继续下一步", attrs: `data-log-action="continue-next" data-next-mode="${escapeAttr(nextMode)}" data-log-id="${escapeAttr(log.id)}"` }) : ""}
         ${uiIconButton({ icon: "icon-refresh", label: "复跑", attrs: `data-log-action="rerun" data-log-id="${escapeAttr(log.id)}"` })}
@@ -5726,6 +5730,10 @@ function bindTaskLogEvents() {
         continueFromLogOutput(log, button.dataset.nextMode);
       } else if (button.dataset.logAction === "delete-log") {
         deleteTaskLogRecord(log).catch((error) => toast(error.message));
+      } else if (button.dataset.logAction === "stop-ai-edit") {
+        cancelNumberedAiEdit({ taskId: log.id, regionCount: log.input?.regionCount || 1 })
+          .then(() => toast("正在停止 AI 编辑任务"))
+          .catch((error) => toast(error.message));
       }
     });
   });
@@ -5762,7 +5770,8 @@ function taskTypeLabel(type) {
     "canvas-colorgrade": "画布调色",
     "canvas-cutout": "画布抠图",
     "canvas-detail": "画布细节增强",
-    "canvas-outpaint": "画布扩图"
+    "canvas-outpaint": "画布扩图",
+    "ai-edit": "AI 编辑"
   };
   return labels[type] || type || "任务";
 }
@@ -5799,6 +5808,22 @@ function logClientTask(type, { input = {}, result = {}, error = null, status = "
     .catch(() => {});
 }
 
+function logDiagnosticEvent(action, { message = "", status = "success", level = "info", details = {} } = {}) {
+  fetch("/api/diagnostics/events", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      sessionId: diagnosticSessionId,
+      layer: "renderer",
+      action,
+      status,
+      level,
+      message,
+      details: { mode: state.mode || "", page: window.location.pathname, ...details }
+    })
+  }).catch(() => {});
+}
+
 const recentClientErrorLogs = new Map();
 
 function logUnexpectedClientError(source, error, details = {}) {
@@ -5808,6 +5833,12 @@ function logUnexpectedClientError(source, error, details = {}) {
   const now = Date.now();
   if (now - Number(recentClientErrorLogs.get(key) || 0) < 30000) return;
   recentClientErrorLogs.set(key, now);
+  logDiagnosticEvent(source, {
+    message,
+    status: "failed",
+    level: "error",
+    details: { stack: String(error?.stack || "").slice(0, 8000), ...details }
+  });
   logClientTask("client-error", {
     status: "failed",
     input: {
@@ -5839,6 +5870,29 @@ window.addEventListener("unhandledrejection", (event) => {
   logUnexpectedClientError("unhandledrejection", event.reason);
 });
 
+document.addEventListener("click", (event) => {
+  const control = event.target.closest("button, a[href]");
+  if (!control || control.disabled) return;
+  const action = control.dataset.canvasImageTool
+    || control.dataset.outputAction
+    || control.dataset.aiCommand
+    || control.id
+    || control.getAttribute("aria-label")
+    || control.title
+    || control.textContent?.trim().slice(0, 80)
+    || control.tagName.toLowerCase();
+  logDiagnosticEvent("ui-action", { message: action, status: "running", details: { control: control.id || control.dataset.canvasImageTool || control.dataset.outputAction || "" } });
+}, true);
+
+document.addEventListener("change", (event) => {
+  const input = event.target;
+  if (input.matches("input[type='file']")) {
+    logDiagnosticEvent("file-selected", { message: input.id || "选择文件", details: { files: [...(input.files || [])].map((file) => file.name) } });
+  } else if (input.matches("select")) {
+    logDiagnosticEvent("setting-change", { message: input.id || input.getAttribute("aria-label") || "修改选项", details: { value: input.value } });
+  }
+}, true);
+
 async function exportFailureLogs(button = els.exportFailureLogsButton) {
   setBusy(button, true, "导出中");
   try {
@@ -5855,6 +5909,30 @@ async function exportFailureLogs(button = els.exportFailureLogsButton) {
     toast("失败日志已导出");
   } catch (error) {
     toast(error.message || "失败日志导出失败");
+  } finally {
+    setBusy(button, false);
+  }
+}
+
+async function exportDiagnosticPackage(button = els.exportDiagnosticPackageButton) {
+  setBusy(button, true, "导出中");
+  try {
+    logDiagnosticEvent("diagnostic-export", { message: "用户导出诊断包", status: "running" });
+    const response = await fetch(taskLogScopedApiPath("/api/diagnostics/export?days=7"), { cache: "no-store" });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || "诊断包导出失败");
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get("content-disposition") || "";
+    const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1] || "";
+    const fileName = encodedName ? decodeURIComponent(encodedName) : `老鬼AI-诊断包-${new Date().toISOString().slice(0, 10)}.zip`;
+    downloadBlob(blob, fileName);
+    if (els.diagnosticExportHint) els.diagnosticExportHint.textContent = `已导出：${fileName}`;
+    toast("诊断包已导出");
+  } catch (error) {
+    logDiagnosticEvent("diagnostic-export", { message: error.message, status: "failed", level: "error" });
+    toast(error.message || "诊断包导出失败");
   } finally {
     setBusy(button, false);
   }
@@ -12407,8 +12485,12 @@ function bindOutputActionEvents(root) {
   root.querySelectorAll("[data-output-action]").forEach((button) => {
     button.addEventListener("click", (event) => {
       event.stopPropagation();
+      logDiagnosticEvent("output-action", { message: button.dataset.outputAction || "", status: "running", details: { outputId: button.dataset.outputId || "" } });
       handleOutputAction(button.dataset.outputAction, button.dataset.outputId, button.dataset.nextMode)
-        .catch((error) => toast(error.message));
+        .catch((error) => {
+          logUnexpectedClientError("output-action", error, { action: button.dataset.outputAction || "", outputId: button.dataset.outputId || "" });
+          toast(error.message);
+        });
     });
   });
 }
@@ -13205,7 +13287,7 @@ function toggleSetValue(set, value) {
   else set.add(value);
 }
 
-function imageCanvasNode({ id, kind, title, url, width = 320, caption = "", contain = false, actions = "", outputId = "", advice = "", planPaper = false, multiAngle = false, panorama = false }) {
+function imageCanvasNode({ id, kind, title, url, width = 320, caption = "", contain = false, actions = "", outputId = "", advice = "", planPaper = false, multiAngle = false, panorama = false, sourceBadge = "" }) {
   return {
     id,
     kind,
@@ -13221,6 +13303,7 @@ function imageCanvasNode({ id, kind, title, url, width = 320, caption = "", cont
     planPaper,
     multiAngle,
     panorama,
+    sourceBadge,
     actions
   };
 }
@@ -13540,6 +13623,7 @@ function buildCanvasNodes() {
         url: render.url,
         caption: `${outputMetaLine(outputItem)}${render.intent ? ` · ${render.intent}` : ""}`,
         panorama: isPanoramaOutput(outputItem),
+        sourceBadge: normalizeClientMode(outputItem.stepMode || outputItem.mode) === "ai-edit" ? "AI 编辑" : "",
         actions: outputNodeActions(outputId, render.url, outputItem)
       }));
     });
@@ -13747,6 +13831,7 @@ function renderCanvasNode(node) {
             ${planPaperPanControlsHtml()}
           ` : ""}
           ${activePlanPaperStage ? "" : `<img src="${escapeAttr(node.imageUrl)}" alt="${escapeAttr(node.title)}" />`}
+          ${node.sourceBadge ? `<span class="canvas-image-source-badge">${escapeHtml(node.sourceBadge)}</span>` : ""}
           <span class="canvas-image-zoom-hint" aria-hidden="true">${activePlanPaperStage ? `双击预览 / 拖拽${planPaperWorkflowOutputLabel(state.mode)}角度` : "双击预览 / Option拖到面板"}</span>
         </div>
         <figcaption class="canvas-image-meta" data-node-drag-handle="true">
@@ -14174,9 +14259,10 @@ async function commitEditorChildResult({ dataUrl, title, mode, selected, width, 
   renderGeneratedResult();
   scheduleCanvasStateSave({ delay: 160 });
   toast(`${editorName}完成，已生成新的子节点`);
+  return result;
 }
 
-async function requestNumberedAiEdit({ selected, regionNumber, operation, selectionMode, prompt, sourceDataUrl, maskDataUrl, maskWidth, maskHeight, bounds, outputSize, promptOptimizationEnabled }) {
+async function requestNumberedAiEdit({ taskId, selected, regionNumber, operation, selectionMode, prompt, sourceDataUrl, maskDataUrl, maskWidth, maskHeight, bounds, outputSize, promptOptimizationEnabled }) {
   const primary = sourceDataUrl
     ? { name: `${slugForFile(selected?.title || "ai-edit")}-region-${regionNumber}.png`, type: "image/png", dataUrl: sourceDataUrl }
     : await imageSourceToPrimaryImage(selected);
@@ -14193,9 +14279,60 @@ async function requestNumberedAiEdit({ selected, regionNumber, operation, select
     quality: state.generation?.quality || "high",
     parentImageId: parent?.id || selected?.outputId || selected?.id || "",
     parentNodeId: parent?.nodeId || selected?.id || "",
-    workflowId: parent?.workflowId || ""
+    workflowId: parent?.workflowId || "",
+    parentTaskId: taskId || "",
+    clientTaskId: `${taskId}-region-${regionNumber}`,
+    suppressTaskLog: true
   });
   return data.render;
+}
+
+async function cancelNumberedAiEdit({ taskId, regionCount = 2 } = {}) {
+  await Promise.allSettled(Array.from({ length: Math.max(1, regionCount) }, (_, index) => requestJson(clientScopedApiPath("/api/task-cancel"), {
+    method: "POST",
+    body: JSON.stringify({ taskId: `${taskId}-region-${index + 1}` })
+  })));
+}
+
+async function recordAiEditTaskEvent(event = {}) {
+  const selected = event.selected || {};
+  const parent = outputItemForSelectedImage(selected);
+  const result = event.result || null;
+  const startedAt = event.startedAt || new Date().toISOString();
+  const status = ["running", "success", "failed", "canceled"].includes(event.status) ? event.status : "running";
+  const payload = {
+    taskId: event.taskId,
+    type: "ai-edit",
+    status,
+    startedAt,
+    completedAt: status === "running" ? "" : new Date().toISOString(),
+    durationMs: status === "running" ? 0 : Math.max(0, Date.now() - new Date(startedAt).getTime()),
+    input: {
+      mode: "ai-edit",
+      stepMode: "ai-edit",
+      intent: event.message || `AI 编辑进行中 · ${event.progress || "准备中"}`,
+      parentImageId: parent?.id || selected.outputId || selected.id || "",
+      workflowId: parent?.workflowId || "",
+      regionCount: event.regionCount || 0,
+      progress: event.progress || ""
+    },
+    result: result ? {
+      id: result.id,
+      title: result.title,
+      mode: "ai-edit",
+      stepMode: "ai-edit",
+      parentImageId: result.parentImageId,
+      parentNodeId: result.parentNodeId,
+      workflowId: result.workflowId,
+      intent: result.intent
+    } : {},
+    ...(event.error ? { error: { message: event.error.message || event.message || "AI 编辑失败" } } : {})
+  };
+  await requestJson(clientScopedApiPath("/api/task-log-event"), {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+  await refreshTaskLogs({ silent: true });
 }
 
 let professionalDeepEditor = null;
@@ -14215,7 +14352,11 @@ function aiEditorInstance() {
   professionalAiEditor = createAiEditor({
     notify: toast,
     onEditRegion: requestNumberedAiEdit,
-    onCommit: (payload) => commitEditorChildResult({ ...payload, editorName: "AI 编辑" })
+    onCommit: (payload) => commitEditorChildResult({ ...payload, editorName: "AI 编辑" }),
+    onTaskEvent: recordAiEditTaskEvent,
+    onCancel: cancelNumberedAiEdit,
+    onResolveImage: resolveAiEditImage,
+    onDiagnostic: (event) => logDiagnosticEvent(event.action, event)
   });
   return professionalAiEditor;
 }
@@ -14239,14 +14380,26 @@ async function openDeepEdit(selected, options = {}) {
 async function openAiEdit(selected) {
   if (!selected?.url) {
     toast("没有可以编辑的图片");
+    logDiagnosticEvent("ai-edit-open", { message: "没有可以编辑的图片", status: "failed", level: "error" });
     return;
   }
   try {
     await aiEditorInstance().open(selected);
   } catch (error) {
-    aiEditorInstance().close();
+    logUnexpectedClientError("ai-edit-open", error, { title: selected.title || "", source: selected.url || "" });
     toast(error.message || "无法打开 AI 编辑");
   }
+}
+
+async function resolveAiEditImage(selected) {
+  const source = String(selected?.url || "");
+  if (source.startsWith("data:image")) return source;
+  const response = await fetch(`/api/diagnostics/image?url=${encodeURIComponent(source)}`, { cache: "no-store" });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error || "本地图片恢复失败");
+  }
+  return URL.createObjectURL(await response.blob());
 }
 
 function ensureCanvasImageToolbar() {
@@ -14266,6 +14419,7 @@ function selectCanvasImage(image) {
 async function handleCanvasImageTool(action, nextMode = "", targetMode = "") {
   const selected = state.canvas.selectedImage;
   if (!selected) return;
+  logDiagnosticEvent("canvas-image-tool", { message: action, status: "running", details: { title: selected.title || "", source: selected.url || "" } });
   if (action === "close") {
     state.canvas.selectedImage = null;
     renderCanvasImageToolbar();
@@ -15904,6 +16058,7 @@ function syncModeControls(mode) {
 }
 
 function setMode(mode) {
+  logDiagnosticEvent("mode-change", { message: `切换功能：${mode}`, details: { from: state.mode || "", to: mode || "" } });
   mode = publicModeOrFallback(mode);
   const previousMode = normalizeClientMode(state.mode);
   state.mode = mode;
@@ -19749,7 +19904,8 @@ els.storagePromptButtons.forEach((button) => {
 });
 els.cleanupTestGeneratedButton?.addEventListener("click", () => runStorageMaintenance("cleanup-test-generated", {}, els.cleanupTestGeneratedButton));
 els.archiveGeneratedButton?.addEventListener("click", () => runStorageMaintenance("archive-generated", { olderThanDays: 30 }, els.archiveGeneratedButton));
-els.pruneLogsButton?.addEventListener("click", () => runStorageMaintenance("prune-task-logs", { keepDays: 30 }, els.pruneLogsButton));
+els.pruneLogsButton?.addEventListener("click", () => runStorageMaintenance("prune-task-logs", { keepDays: 7 }, els.pruneLogsButton));
+els.exportDiagnosticPackageButton?.addEventListener("click", () => exportDiagnosticPackage());
 els.addImageApiProfileButton?.addEventListener("click", startNewImageApiProfile);
 els.probeAllImageApiProfilesButton?.addEventListener("click", probeAllImageApiProfiles);
 els.importApiTextButton?.addEventListener("click", importApiText);
@@ -20040,7 +20196,7 @@ els.zoomInButton.addEventListener("click", () => {
   zoomCanvas(1 + CANVAS_BUTTON_ZOOM_STEP);
 });
 els.refreshTaskLogsButton?.addEventListener("click", () => refreshTaskLogs());
-els.exportFailureLogsButton?.addEventListener("click", () => exportFailureLogs());
+els.exportFailureLogsButton?.addEventListener("click", () => exportDiagnosticPackage(els.exportFailureLogsButton));
 els.taskLogFilterButtons.forEach((button) => {
   button.addEventListener("click", () => {
     state.taskLogFilter = button.dataset.taskLogFilter || "all";

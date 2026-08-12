@@ -71,8 +71,9 @@ function makeCanvas(width, height) {
 function loadImage(url) {
   return new Promise((resolve, reject) => {
     const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("图片载入失败"));
+    const timer = setTimeout(() => reject(new Error("图片载入超时，请检查图片是否仍然存在")), 15000);
+    image.onload = () => { clearTimeout(timer); resolve(image); };
+    image.onerror = () => { clearTimeout(timer); reject(new Error("图片载入失败")); };
     image.src = url;
   });
 }
@@ -144,7 +145,7 @@ async function compositeAiWorkArea(source, generatedUrl, mask, area) {
   return out;
 }
 
-export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {}) {
+export function createAiEditor({ onEditRegion, onCommit, onTaskEvent, onCancel, onResolveImage, onDiagnostic, notify = () => {} } = {}) {
   const state = {
     open: false,
     busy: false,
@@ -167,11 +168,26 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
     history: [],
     future: [],
     promptOptimizationEnabled: false,
-    status: "就绪"
+    status: "就绪",
+    brushControlsOpen: false,
+    brushControlsTool: "",
+    backgrounded: false,
+    cancelRequested: false,
+    loadError: "",
+    taskId: ""
   };
   let overlay = null;
+  let brushCloseTimer = null;
 
   const activeRegion = () => state.regions[state.activeRegion];
+
+  async function emitTaskEvent(event) {
+    try {
+      await onTaskEvent?.(event);
+    } catch (error) {
+      console.warn(`[ai-edit] task log update failed: ${error.message || error}`);
+    }
+  }
 
   function ensureOverlay() {
     if (overlay) return overlay;
@@ -191,6 +207,8 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
             <button class="text-button ai-zoom-readout" type="button" data-ai-command="fit">100%</button>
             <button class="text-button" type="button" data-ai-command="zoom-in" title="放大">＋</button>
             <button class="primary-button" type="button" data-ai-command="submit">${icon("icon-spark")}<span data-ai-submit-label>开始 AI 编辑</span></button>
+            <button class="secondary-button" type="button" data-ai-command="background" hidden>${icon("icon-home")}<span>转到后台</span></button>
+            <button class="secondary-button danger-button" type="button" data-ai-command="stop" hidden><span>停止任务</span></button>
           </div>
         </header>
         <div class="deep-workspace-body ai-edit-body">
@@ -260,6 +278,7 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
               </div>
               <p>系统会按编号 1 → 2 依次编辑。若两个选区重叠，以编号 2 的要求为准。</p>
               <p class="ai-inline-error" data-ai-error role="alert" hidden></p>
+              <button class="secondary-button" type="button" data-ai-command="retry-image" hidden>重新载入图片</button>
               <button class="primary-button" type="button" data-ai-command="submit">${icon("icon-spark")}<span data-ai-submit-label>按编号生成结果</span></button>
             </div>
           </aside>
@@ -317,6 +336,23 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
     overlay?.querySelectorAll("button, input, textarea").forEach((element) => {
       element.disabled = busy;
     });
+    overlay?.querySelectorAll("[data-ai-command='background'], [data-ai-command='stop']").forEach((button) => {
+      button.hidden = !busy || !state.taskId;
+      button.disabled = !busy || !state.taskId;
+    });
+  }
+
+  function setBrushControlsOpen(open, tool = state.brushControlsTool || state.tool) {
+    if (brushCloseTimer) clearTimeout(brushCloseTimer);
+    brushCloseTimer = null;
+    state.brushControlsTool = ["brush-add", "brush-subtract"].includes(tool) ? tool : "";
+    state.brushControlsOpen = Boolean(open && state.brushControlsTool);
+    updateUi();
+  }
+
+  function scheduleBrushControlsClose() {
+    if (brushCloseTimer) clearTimeout(brushCloseTimer);
+    brushCloseTimer = setTimeout(() => setBrushControlsOpen(false), 150);
   }
 
   function setError(message = "") {
@@ -324,6 +360,62 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
     if (!element) return;
     element.textContent = message;
     element.hidden = !message;
+    const retry = overlay?.querySelector("[data-ai-command='retry-image']");
+    if (retry) retry.hidden = !state.loadError;
+  }
+
+  async function emitDiagnostic(event) {
+    try { await onDiagnostic?.(event); } catch {}
+  }
+
+  async function loadSelectedImage() {
+    const startedAt = Date.now();
+    state.loadError = "";
+    setError("");
+    setBusy(true, "正在载入原图");
+    try {
+      try {
+        state.image = await loadImage(state.selected.url);
+      } catch (directError) {
+        const recoveredUrl = await onResolveImage?.(state.selected, directError);
+        if (!recoveredUrl) throw directError;
+        state.image = await loadImage(recoveredUrl);
+      }
+      const pixelCount = state.image.naturalWidth * state.image.naturalHeight;
+      const scale = pixelCount > 40_000_000 ? Math.min(1, 4096 / Math.max(state.image.naturalWidth, state.image.naturalHeight)) : 1;
+      state.sourceCanvas = makeCanvas(state.image.naturalWidth * scale, state.image.naturalHeight * scale);
+      state.sourceCanvas.getContext("2d", { willReadFrequently: true }).drawImage(state.image, 0, 0, state.sourceCanvas.width, state.sourceCanvas.height);
+      state.regions = createNumberedRegions(state.sourceCanvas.width, state.sourceCanvas.height);
+      state.status = scale < 1 ? "原图超过 40MP，已创建 4K 工作副本" : "请选择编号并框选区域";
+      await emitDiagnostic({
+        action: "ai-edit-image-loaded",
+        message: "AI 编辑原图载入成功",
+        status: "success",
+        details: { title: state.selected.title || "", width: state.image.naturalWidth, height: state.image.naturalHeight, durationMs: Date.now() - startedAt }
+      });
+      requestAnimationFrame(render);
+      overlay.querySelector("[data-ai-canvas]")?.focus();
+      return true;
+    } catch (error) {
+      state.sourceCanvas = null;
+      state.regions = [];
+      state.loadError = error.message || "图片载入失败";
+      state.status = "原图载入失败，请重新载入或返回画布";
+      setError(`原图载入失败：${state.loadError}`);
+      await emitDiagnostic({
+        action: "ai-edit-image-load",
+        message: state.loadError,
+        status: "failed",
+        level: "error",
+        details: { title: state.selected?.title || "", source: state.selected?.url || "", durationMs: Date.now() - startedAt, stack: error.stack || "" }
+      });
+      return false;
+    } finally {
+      setBusy(false);
+      setError(state.loadError ? `原图载入失败：${state.loadError}` : "");
+      overlay?.querySelectorAll("[data-ai-command='submit']").forEach((button) => { button.disabled = Boolean(state.loadError); });
+      render();
+    }
   }
 
   function sourcePoint(event) {
@@ -518,8 +610,8 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
     const brushActive = ["brush-add", "brush-subtract"].includes(state.tool);
     canvas.style.cursor = brushActive ? "none" : "crosshair";
     const brushControls = overlay.querySelector("[data-ai-brush-controls]");
-    brushControls.hidden = !brushActive;
-    brushControls.querySelector("[data-ai-brush-heading]").textContent = state.tool === "brush-subtract" ? "橡皮擦粗细" : "画笔粗细";
+    brushControls.hidden = !state.brushControlsOpen;
+    brushControls.querySelector("[data-ai-brush-heading]").textContent = state.brushControlsTool === "brush-subtract" ? "橡皮擦粗细" : "画笔粗细";
     overlay.querySelector("[data-ai-title]").textContent = state.selected?.title || "选中图片";
     overlay.querySelectorAll("[data-ai-tool]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.aiTool === state.tool)));
     overlay.querySelectorAll("[data-ai-combine]").forEach((button) => button.classList.toggle("active", button.dataset.aiCombine === state.combine));
@@ -669,7 +761,19 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
       return;
     }
     setBusy(true, "正在准备 AI 编辑");
+    state.taskId = `ai-edit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    state.backgrounded = false;
+    state.cancelRequested = false;
     state.previewCanvas = null;
+    const taskStartedAt = new Date().toISOString();
+    await emitTaskEvent({
+      taskId: state.taskId,
+      status: "running",
+      startedAt: taskStartedAt,
+      progress: `0/${jobs.length}`,
+      selected: state.selected,
+      regionCount: jobs.length
+    });
     try {
       let current = makeCanvas(state.sourceCanvas.width, state.sourceCanvas.height);
       current.getContext("2d").drawImage(state.sourceCanvas, 0, 0);
@@ -682,6 +786,15 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
           : `正在将${region.label}和原始提示词交给图片大模型（${progress}）`;
         state.status = progressText;
         setBusy(true, progressText);
+        await emitTaskEvent({
+          taskId: state.taskId,
+          status: "running",
+          startedAt: taskStartedAt,
+          progress: `${index + 1}/${jobs.length}`,
+          message: progressText,
+          selected: state.selected,
+          regionCount: jobs.length
+        });
         const fullMask = maskDataUrl(region.mask, current.width, current.height, region.feather);
         const fullBounds = maskBounds(fullMask.editable, current.width, current.height);
         const workArea = createAiEditWorkArea(fullBounds, current.width, current.height, region.selectionMode);
@@ -690,6 +803,7 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
         const workMask = maskDataUrl(workMaskData, workArea.canvasWidth, workArea.canvasHeight);
         const workBounds = maskBounds(workMask.editable, workArea.canvasWidth, workArea.canvasHeight);
         const generated = await onEditRegion?.({
+          taskId: state.taskId,
           selected: state.selected,
           regionNumber: region.number,
           operation: region.operation,
@@ -719,7 +833,7 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
         state.previewCanvas = current;
         render();
       }
-      await onCommit?.({
+      const committedResult = await onCommit?.({
         dataUrl: current.toDataURL("image/png"),
         title: "AI 编辑结果",
         mode: "ai-edit",
@@ -727,15 +841,37 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
         width: current.width,
         height: current.height,
         regionCount: jobs.length,
-        optimizedPrompts
+        optimizedPrompts,
+        taskId: state.taskId,
+        taskStartedAt
+      });
+      await emitTaskEvent({
+        taskId: state.taskId,
+        status: "success",
+        startedAt: taskStartedAt,
+        progress: `${jobs.length}/${jobs.length}`,
+        message: "AI 编辑完成",
+        selected: state.selected,
+        regionCount: jobs.length,
+        result: committedResult
       });
       setBusy(false);
-      close();
+      close({ force: true });
     } catch (error) {
+      const canceled = state.cancelRequested || error?.name === "AbortError" || Number(error?.status || 0) === 499;
       state.previewCanvas = null;
-      state.status = "AI 编辑失败，编号选区和提示词已保留";
-      setError(error.message || "AI 编辑失败，请重试");
-      notify(error.message || "AI 编辑失败，请重试");
+      state.status = canceled ? "AI 编辑任务已停止" : "AI 编辑失败，编号选区和提示词已保留";
+      setError(canceled ? "任务已停止" : (error.message || "AI 编辑失败，请重试"));
+      notify(canceled ? "AI 编辑任务已停止" : (error.message || "AI 编辑失败，请重试"));
+      await emitTaskEvent({
+        taskId: state.taskId,
+        status: canceled ? "canceled" : "failed",
+        startedAt: taskStartedAt,
+        message: error.message || "AI 编辑失败，请重试",
+        selected: state.selected,
+        regionCount: jobs.length,
+        error
+      });
       render();
     } finally {
       setBusy(false);
@@ -743,13 +879,24 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
     }
   }
 
-  function handleCommand(command) {
+  async function handleCommand(command) {
     if (command === "close") close();
     else if (command === "undo") undo();
     else if (command === "redo") redo();
     else if (command === "fit") { state.zoom = 1; state.panX = 0; state.panY = 0; render(); }
     else if (command === "zoom-in") { state.zoom = clamp(state.zoom * 1.2, .1, 8); render(); }
     else if (command === "zoom-out") { state.zoom = clamp(state.zoom / 1.2, .1, 8); render(); }
+    else if (command === "background") {
+      state.backgrounded = true;
+      close({ force: true, keepTask: true });
+      notify("AI 编辑已转到后台，可在任务日志查看进度");
+    }
+    else if (command === "stop") {
+      state.cancelRequested = true;
+      setBusy(true, "正在停止 AI 编辑任务");
+      await onCancel?.({ taskId: state.taskId, regionCount: validJobs().length });
+    }
+    else if (command === "retry-image") await loadSelectedImage();
     else if (command === "toggle-prompt-optimization") {
       state.promptOptimizationEnabled = !state.promptOptimizationEnabled;
       state.status = state.promptOptimizationEnabled ? "提示词优化已开启，生成时间会更长" : "提示词优化已关闭，将快速直出";
@@ -777,7 +924,7 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
         return;
       }
       const tool = event.target.closest("[data-ai-tool]")?.dataset.aiTool;
-      if (tool) { state.tool = tool; state.polygonPoints = []; render(); return; }
+      if (tool) { state.tool = tool; state.polygonPoints = []; state.brushControlsOpen = false; render(); return; }
       const combine = event.target.closest("[data-ai-combine]")?.dataset.aiCombine;
       if (combine) { state.combine = combine; render(); return; }
       const brushPreset = event.target.closest("[data-ai-brush-preset]")?.dataset.aiBrushPreset;
@@ -807,12 +954,24 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
       if (event.target.matches("[data-ai-feather]")) { activeRegion().feather = Number(event.target.value); updateUi(); }
     });
     const canvas = overlay.querySelector("[data-ai-canvas]");
+    canvas.addEventListener("pointerenter", () => setBrushControlsOpen(false));
     canvas.addEventListener("pointerdown", handlePointerDown);
     canvas.addEventListener("pointermove", handlePointerMove);
     canvas.addEventListener("pointerleave", () => { state.cursorPoint = null; render(); });
     canvas.addEventListener("pointerup", handlePointerUp);
     canvas.addEventListener("pointercancel", handlePointerUp);
     canvas.addEventListener("dblclick", () => { if (state.tool === "polygon") finishPolygon(); });
+    overlay.querySelectorAll("[data-ai-tool='brush-add'], [data-ai-tool='brush-subtract']").forEach((button) => {
+      button.addEventListener("pointerenter", () => setBrushControlsOpen(true, button.dataset.aiTool));
+      button.addEventListener("pointerleave", scheduleBrushControlsClose);
+      button.addEventListener("focus", () => setBrushControlsOpen(true, button.dataset.aiTool));
+      button.addEventListener("blur", scheduleBrushControlsClose);
+    });
+    const brushControls = overlay.querySelector("[data-ai-brush-controls]");
+    brushControls.addEventListener("pointerenter", () => setBrushControlsOpen(true));
+    brushControls.addEventListener("pointerleave", scheduleBrushControlsClose);
+    brushControls.addEventListener("focusin", () => setBrushControlsOpen(true));
+    brushControls.addEventListener("focusout", scheduleBrushControlsClose);
     canvas.addEventListener("wheel", (event) => {
       event.preventDefault();
       state.zoom = clamp(state.zoom * Math.exp(-event.deltaY * .001), .1, 8);
@@ -834,6 +993,7 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
 
   async function open(selected) {
     ensureOverlay();
+    if (state.busy) throw new Error("已有 AI 编辑任务正在后台运行，请先等待当前任务完成");
     if (!selected?.url) throw new Error("没有可以编辑的图片");
     state.selected = selected;
     state.tool = "rect";
@@ -850,40 +1010,36 @@ export function createAiEditor({ onEditRegion, onCommit, notify = () => {} } = {
     state.future = [];
     state.promptOptimizationEnabled = false;
     state.previewCanvas = null;
+    state.sourceCanvas = null;
+    state.image = null;
+    state.regions = [];
+    state.brushControlsOpen = false;
+    state.brushControlsTool = "";
+    state.backgrounded = false;
+    state.cancelRequested = false;
+    state.loadError = "";
+    state.taskId = "";
     state.status = "正在载入图片";
     setError("");
     overlay.hidden = false;
     overlay.setAttribute("aria-hidden", "false");
     state.open = true;
     document.body.classList.add("ai-editor-open");
-    setBusy(true, "正在载入原图");
-    try {
-      state.image = await loadImage(selected.url);
-      const pixelCount = state.image.naturalWidth * state.image.naturalHeight;
-      const scale = pixelCount > 40_000_000 ? Math.min(1, 4096 / Math.max(state.image.naturalWidth, state.image.naturalHeight)) : 1;
-      state.sourceCanvas = makeCanvas(state.image.naturalWidth * scale, state.image.naturalHeight * scale);
-      state.sourceCanvas.getContext("2d", { willReadFrequently: true }).drawImage(state.image, 0, 0, state.sourceCanvas.width, state.sourceCanvas.height);
-      state.regions = createNumberedRegions(state.sourceCanvas.width, state.sourceCanvas.height);
-      state.status = scale < 1 ? "原图超过 40MP，已创建 4K 工作副本" : "请选择编号并框选区域";
-      requestAnimationFrame(render);
-      overlay.querySelector("[data-ai-canvas]")?.focus();
-    } finally {
-      setBusy(false);
-      render();
-    }
+    await emitDiagnostic({ action: "ai-edit-open", message: "打开 AI 编辑", status: "running", details: { title: selected.title || "", source: selected.url } });
+    await loadSelectedImage();
   }
 
-  function close() {
+  function close({ force = false, keepTask = false } = {}) {
     if (!overlay) return;
-    if (state.busy) {
-      notify("AI 编辑正在处理中，请稍候");
+    if (state.busy && !force) {
+      notify("AI 编辑正在处理中，请使用“转到后台”继续其他工作");
       return;
     }
     overlay.hidden = true;
     overlay.setAttribute("aria-hidden", "true");
     document.body.classList.remove("ai-editor-open");
     state.open = false;
-    state.busy = false;
+    if (!keepTask) state.busy = false;
     state.gesture = null;
     state.polygonPoints = [];
   }

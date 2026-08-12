@@ -24,6 +24,66 @@ export function recentFailureLogs(logs = [], { days = 30, now = Date.now() } = {
   });
 }
 
+export function recentDiagnosticEntries(entries = [], { days = 7, now = Date.now() } = {}) {
+  const cutoff = now - Math.max(1, Number(days) || 7) * 86400000;
+  return entries.filter((entry) => {
+    const timestamp = Date.parse(entry?.time || entry?.completedAt || entry?.startedAt || "");
+    return Number.isFinite(timestamp) && timestamp >= cutoff && timestamp <= now + 60000;
+  });
+}
+
+export function sanitizeDiagnosticValue(value) {
+  if (value == null) return value;
+  if (typeof value === "string") {
+    if (/^data:image\//i.test(value)) return "[图片内容已省略]";
+    return redactDiagnosticText(value);
+  }
+  if (Array.isArray(value)) return value.map(sanitizeDiagnosticValue);
+  if (typeof value !== "object") return value;
+  const safe = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (/^(?:imageData|dataUrl)$/i.test(key)) {
+      safe[key] = "[图片内容已省略]";
+    } else if (/^(?:api[_-]?key|token|secret|authorization|cookie)$/i.test(key)) {
+      safe[key] = "已隐藏";
+    } else {
+      safe[key] = sanitizeDiagnosticValue(item);
+    }
+  }
+  return safe;
+}
+
+export function buildDiagnosticSummary({ events = [], tasks = [], system = {}, days = 7, now = Date.now() } = {}) {
+  const recentEvents = recentDiagnosticEntries(events, { days, now });
+  const recentTasks = recentDiagnosticEntries(tasks, { days, now });
+  const failures = recentTasks.filter((item) => ["failed", "canceled"].includes(item?.status));
+  const lines = [
+    "# 老鬼AI 问题诊断摘要",
+    "",
+    markdownField("导出时间", new Date(now).toISOString()),
+    markdownField("软件版本", system.version || "未知"),
+    markdownField("系统", system.platform || "未知"),
+    markdownField("日志范围", `最近 ${days} 天`),
+    markdownField("操作记录", recentEvents.length),
+    markdownField("任务记录", recentTasks.length),
+    markdownField("失败或取消", failures.length),
+    "",
+    "> API 密钥、令牌和图片内容已经自动隐藏。提示词和图片文件名会保留用于排查。",
+    "",
+    "## 最近异常",
+    ""
+  ].filter((line) => line !== "");
+  const errors = [...recentEvents.filter((item) => item?.level === "error" || item?.status === "failed"), ...failures].slice(-30).reverse();
+  if (!errors.length) lines.push("最近没有记录到异常。", "");
+  else errors.forEach((item) => lines.push(`- ${diagnosticText(item.time || item.completedAt || item.startedAt, 80)} · ${diagnosticText(item.action || item.type || "异常", 120)} · ${diagnosticText(item.message || item.error?.message || item.status, 500)}`));
+  return `${lines.join("\n")}\n`;
+}
+
+export function diagnosticJsonLines(entries = [], options = {}) {
+  const recent = recentDiagnosticEntries(entries, options);
+  return recent.map((entry) => JSON.stringify(sanitizeDiagnosticValue(entry))).join("\n") + (recent.length ? "\n" : "");
+}
+
 function markdownField(label, value) {
   const text = diagnosticText(value, 12000);
   return text ? `- ${label}：${text.replace(/\n/g, "\n  ")}` : "";

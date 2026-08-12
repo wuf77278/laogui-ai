@@ -634,7 +634,7 @@
                   <button class="text-button active" type="button" data-task-log-filter="all" aria-pressed="true">全部</button>
                   <button class="text-button" type="button" data-task-log-filter="failed" aria-pressed="false">失败</button>
                   <button class="text-button" type="button" data-task-log-filter="canceled" aria-pressed="false">已取消</button>
-                  <button id="exportFailureLogsButton" class="text-button icon-only" type="button" title="导出最近30天失败日志" aria-label="导出最近30天失败日志"><svg><use href="#icon-export"></use></svg></button>
+                  <button id="exportFailureLogsButton" class="text-button icon-only" type="button" title="导出最近7天诊断包" aria-label="导出最近7天诊断包"><svg><use href="#icon-export"></use></svg></button>
                   <button id="refreshTaskLogsButton" class="text-button icon-only" type="button" title="刷新任务日志" aria-label="刷新任务日志"><svg><use href="#icon-refresh"></use></svg></button>
                 </div>
               </div>
@@ -1241,9 +1241,20 @@
             <div class="settings-actions">
               <button id="cleanupTestGeneratedButton" class="secondary-button" type="button">清理测试生成图</button>
               <button id="archiveGeneratedButton" class="secondary-button" type="button">归档 30 天前生成图</button>
-              <button id="pruneLogsButton" class="secondary-button" type="button">日志保留 30 天</button>
+              <button id="pruneLogsButton" class="secondary-button" type="button">清理 7 天前日志</button>
             </div>
             <p id="storageMaintenanceHint" class="settings-hint">维护操作只允许本机 localhost 执行；归档会移动文件到 archive/generated，不会删除正式作品。</p>
+          </section>
+          <section class="app-settings-block" aria-labelledby="diagnosticSettingsTitle">
+            <div class="settings-title-row">
+              <span id="diagnosticSettingsTitle" class="agent-skill-title">问题诊断</span>
+              <span class="api-endpoint-status available">自动保留 7 天</span>
+            </div>
+            <p class="settings-hint">记录功能操作、任务结果和程序异常。导出包不包含图片、API 密钥或令牌。</p>
+            <div class="settings-actions">
+              <button id="exportDiagnosticPackageButton" class="primary-button" type="button"><svg aria-hidden="true"><use href="#icon-export"></use></svg>导出最近 7 天诊断包</button>
+            </div>
+            <p id="diagnosticExportHint" class="settings-hint">遇到问题后导出 ZIP 文件，直接发给维护人员即可。</p>
           </section>
           <section class="api-settings-block" aria-labelledby="imageStudioKernelTitle">
             <div class="settings-title-row">

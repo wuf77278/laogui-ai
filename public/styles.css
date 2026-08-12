@@ -1533,6 +1533,24 @@ body[data-theme="day"].workspace-active .reference-edit-button {
   object-fit: contain;
 }
 
+.canvas-image-source-badge {
+  position: absolute;
+  left: 10px;
+  top: 10px;
+  z-index: 3;
+  min-height: 26px;
+  padding: 5px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  border-radius: 6px;
+  color: #fff;
+  background: rgba(17, 17, 15, 0.72);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16);
+  font-size: 11px;
+  font-weight: 760;
+  line-height: 1.2;
+  pointer-events: none;
+}
+
 .canvas-image-zoom-hint {
   position: absolute;
   right: 10px;
@@ -4073,6 +4091,14 @@ body[data-theme="day"].workspace-active .reference-edit-button {
 
 .task-log-item.success {
   border-left-color: var(--green);
+}
+
+.task-log-item.running {
+  border-color: rgba(169, 113, 26, 0.34);
+}
+
+.task-log-status.running {
+  color: #9f6b1a;
 }
 
 .task-log-item.failed {
