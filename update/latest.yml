@@ -1,8 +1,8 @@
-version: 2.3.10
+version: 2.3.12
 files:
-  - url: https://gitee.com/wuf7727/laogui-ai/releases/download/v2.3.10/LaoguiAI-v2.3.10-windows-x64-setup.exe
-    sha512: RMXmv/zGLkG4sTr2O6T6Nvh0xYQFmlgSXXOh8FAdZcJuFDeyWNFaauxquKRdp1aWidVoQBdMfsm4SUf2z52b3Q==
-    size: 270049115
-path: https://gitee.com/wuf7727/laogui-ai/releases/download/v2.3.10/LaoguiAI-v2.3.10-windows-x64-setup.exe
-sha512: RMXmv/zGLkG4sTr2O6T6Nvh0xYQFmlgSXXOh8FAdZcJuFDeyWNFaauxquKRdp1aWidVoQBdMfsm4SUf2z52b3Q==
-releaseDate: '2026-08-12T12:12:57.009Z'
+  - url: https://gitee.com/wuf7727/laogui-ai/releases/download/v2.3.12/LaoguiAI-v2.3.12-windows-x64-setup.exe
+    sha512: 1M8FP665bb47Psl2joJWegjn6vtDcUFxsCNbWGSHkV/LufiSEulr1zjGj6+86t9/s+D04cJ8A5SVHCyJes0Eqg==
+    size: 270051034
+path: https://gitee.com/wuf7727/laogui-ai/releases/download/v2.3.12/LaoguiAI-v2.3.12-windows-x64-setup.exe
+sha512: 1M8FP665bb47Psl2joJWegjn6vtDcUFxsCNbWGSHkV/LufiSEulr1zjGj6+86t9/s+D04cJ8A5SVHCyJes0Eqg==
+releaseDate: '2026-08-12T14:53:22.175Z'
