@@ -9,6 +9,7 @@ const SERVER_ENTRY = path.join(ROOT_DIR, "server.mjs");
 const DEFAULT_PORT = Number(process.env.PORT || 4177);
 const PRELOAD_ENTRY = path.join(ROOT_DIR, "electron", "preload.cjs");
 const APP_ICON_PATH = path.join(ROOT_DIR, "electron", "assets", "icon.png");
+const DEFAULT_UPDATE_URL = "https://gitee.com/wuf7727/laogui-ai/raw/main/update/";
 const SHUTDOWN_TIMEOUT_MS = 6000;
 const SERVER_SHUTDOWN_TIMEOUT_MS = 3500;
 
@@ -206,7 +207,7 @@ async function checkForAppUpdates() {
   if (["checking", "available", "downloading", "downloaded", "installing"].includes(updateState.status)) {
     return updateState;
   }
-  setUpdateState({ status: "checking", progress: null, message: "正在连接 GitHub 检查新版本…" });
+  setUpdateState({ status: "checking", progress: null, message: "正在连接 Gitee 检查新版本…" });
   try {
     await autoUpdater.checkForUpdates();
   } catch (error) {
@@ -214,7 +215,7 @@ async function checkForAppUpdates() {
     setUpdateState({
       status: "error",
       progress: null,
-      message: "检查更新失败，请确认电脑能正常访问 GitHub 后再试。"
+      message: "检查更新失败，请确认电脑能正常访问 Gitee 后再试。"
     });
   }
   return updateState;
@@ -244,9 +245,13 @@ function configureAutoUpdater() {
   autoUpdater.allowPrerelease = false;
   autoUpdater.allowDowngrade = false;
   autoUpdater.logger = console;
+  autoUpdater.setFeedURL({
+    provider: "generic",
+    url: String(process.env.LAOGUI_UPDATE_URL || DEFAULT_UPDATE_URL).trim() || DEFAULT_UPDATE_URL
+  });
 
   autoUpdater.on("checking-for-update", () => {
-    setUpdateState({ status: "checking", progress: null, message: "正在连接 GitHub 检查新版本…" });
+    setUpdateState({ status: "checking", progress: null, message: "正在连接 Gitee 检查新版本…" });
   });
   autoUpdater.on("update-available", (info) => {
     const version = String(info?.version || "").trim();
@@ -287,7 +292,7 @@ function configureAutoUpdater() {
     setUpdateState({
       status: "error",
       progress: null,
-      message: "更新失败，请稍后重试，或从 GitHub 下载最新版。"
+      message: "更新失败，请稍后重试，或从 Gitee 下载最新版。"
     });
   });
 

@@ -4,7 +4,7 @@
 
 ## 下载安装
 
-请到 [GitHub Releases](https://github.com/wuf77278/laogui-ai/releases/latest) 下载最新版安装包：
+请到 [Gitee 发行版](https://gitee.com/wuf7727/laogui-ai/releases) 下载最新版安装包。国内网络下载不需要代理：
 
 - Windows 10 / 11：下载名称中带 `windows-x64-setup.exe` 的最新版安装包
 - macOS：Apple 芯片下载 `mac-arm64.dmg`，Intel 芯片下载 `mac-x64.dmg`。
@@ -19,7 +19,8 @@ Windows 安装版启动时不会自动检查或下载。用户需要打开“设
 
 1. 把 `package.json` 中的版本号改大，例如从 `2.0.4` 改为 `2.1.0`。
 2. 提交代码，并创建同名标签，例如 `v2.1.0`，然后推送到 GitHub。
-3. GitHub 会自动执行 `.github/workflows/release-windows.yml`，生成并发布 Windows 安装包、差分文件和 `latest.yml`。
+3. 生成 Windows 安装包、差分文件和 `latest.yml` 后，将它们上传到 Gitee 发行版。
+4. 把最新的 `latest.yml` 同步到仓库的 `update/latest.yml`。从 2.3.9 开始，软件内检查更新和下载安装包都通过 Gitee。
 
 旧版本如果没有软件内更新功能，需要先手动安装一次新版本。之后发布新版本时，就可以在软件内手动检查并更新。
 
