@@ -15,6 +15,7 @@ models/
 public/generated/
 public/archive/
 public/vendor/
+design-previews/
 archive/
 output/
 outputs/
