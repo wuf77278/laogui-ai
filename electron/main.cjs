@@ -211,6 +211,7 @@ async function createWindow() {
   });
   mainWindow.webContents.on("render-process-gone", (_event, details) => {
     if (shutdownStarted) return;
+    writeDesktopEvent("render-process-gone", { status: "failed", level: "error", message: details.reason || "渲染进程退出", details });
     dialog.showErrorBox("老鬼AI 窗口异常退出", `渲染进程已结束：${details.reason || "unknown"}。请重新打开应用。`);
     requestAppShutdown("render-process-gone");
   });
@@ -439,4 +440,3 @@ process.on("uncaughtExceptionMonitor", (error) => {
 process.on("unhandledRejection", (error) => {
   writeDesktopEvent("unhandled-rejection", { status: "failed", level: "error", message: error?.message || String(error), details: { stack: error?.stack || "" } });
 });
-    writeDesktopEvent("render-process-gone", { status: "failed", level: "error", message: details.reason || "渲染进程退出", details });

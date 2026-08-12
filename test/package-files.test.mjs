@@ -14,4 +14,5 @@ test("Windows 主进程记录启动、页面和崩溃诊断", async () => {
   assert.match(source, /did-fail-load/);
   assert.match(source, /render-process-gone/);
   assert.match(source, /uncaughtExceptionMonitor/);
+  assert.equal((source.match(/writeDesktopEvent\("render-process-gone"/g) || []).length, 1);
 });
