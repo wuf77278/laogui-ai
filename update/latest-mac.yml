@@ -1,0 +1,11 @@
+version: 2.3.12
+files:
+  - url: https://gitee.com/wuf7727/laogui-ai/releases/download/v2.3.12/LaoguiAI-v2.3.12-mac-arm64.zip
+    sha512: 0EBESn/Ei7HXqmJ7WrL8cbGLGs9BO71xLhUgbH4QxlFLbiCW+xC0CeIsQjdEbObHWgGym9ANl6XXmIV2z0/L9g==
+    size: 292732038
+  - url: https://gitee.com/wuf7727/laogui-ai/releases/download/v2.3.12/LaoguiAI-v2.3.12-mac-arm64.dmg
+    sha512: yKapeCksx8UceUTjtwPc6PPMGuGweKlO+VP+F73/KFMtrNHpg+Sl8+LljOoHc0GCkefN8f4qggClU2FoT0KytA==
+    size: 296976664
+path: https://gitee.com/wuf7727/laogui-ai/releases/download/v2.3.12/LaoguiAI-v2.3.12-mac-arm64.zip
+sha512: 0EBESn/Ei7HXqmJ7WrL8cbGLGs9BO71xLhUgbH4QxlFLbiCW+xC0CeIsQjdEbObHWgGym9ANl6XXmIV2z0/L9g==
+releaseDate: '2026-08-12T15:25:33.723Z'
