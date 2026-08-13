@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { lookup } from "node:dns/promises";
 import { promises as fs } from "node:fs";
-import { createReadStream, existsSync, readFileSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isIP } from "node:net";
@@ -5364,8 +5364,9 @@ function normalizeImageStudioReasoningEffort(value) {
 
 function imageStudioFhlSkillStatus() {
   const mode = normalizeImageStudioFhlEnabled(config.imageStudioFhlSkill.enabled);
-  const script = path.resolve(config.imageStudioFhlSkill.script);
-  const available = existsSync(script);
+  const configuredScript = String(config.imageStudioFhlSkill.script || "").trim();
+  const script = configuredScript ? path.resolve(configuredScript) : "";
+  const available = Boolean(script && existsSync(script) && statSync(script).isFile());
   const cliPath = resolveImageStudioCliPath();
   const desktop = imageStudioDesktopState();
   return {
@@ -5761,6 +5762,21 @@ async function runImageStudioFhlSkill({ prompt, inputImages = [], maskImage = nu
     signal
   });
   if (result.canceled) throw canceledTaskError();
+  if (!result.ok && result.error && /spawn\s+python3\s+ENOENT/i.test(result.error)) {
+    const engineStatus = imageStudioEngineStatus();
+    if (engineStatus.enabled && engineStatus.available) {
+      const fallback = await runImageStudioEngine({ prompt, inputImages, maskImage, size, quality, signal });
+      return {
+        ...fallback,
+        diagnostics: {
+          ...(fallback.diagnostics || {}),
+          fallback: "bundled-image-studio-engine",
+          fallbackReason: "python3-unavailable",
+          fhlSkillScript: status.script
+        }
+      };
+    }
+  }
   const combinedOutput = [result.stdout, result.stderr].filter(Boolean).join("\n");
   const resultImage = imageStudioFhlResultLine(combinedOutput, "RESULT_IMAGE");
   const resultProvider = imageStudioFhlResultLine(combinedOutput, "RESULT_PROVIDER") || provider;

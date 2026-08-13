@@ -55,3 +55,11 @@ test("电脑端提供七天诊断包和三层日志", () => {
   assert.match(server, /diagnostic-events\.jsonl/);
   assert.match(server, /desktop-events\.jsonl/);
 });
+
+test("Windows 缺少聚合生图脚本或 Python 时使用内置图片引擎", () => {
+  assert.match(server, /const script = configuredScript \? path\.resolve\(configuredScript\) : ""/);
+  assert.match(server, /existsSync\(script\) && statSync\(script\)\.isFile\(\)/);
+  assert.match(server, /spawn\\s\+python3\\s\+ENOENT/);
+  assert.match(server, /fallbackReason: "python3-unavailable"/);
+  assert.match(server, /runImageStudioEngine\(\{ prompt, inputImages, maskImage, size, quality, signal \}\)/);
+});
