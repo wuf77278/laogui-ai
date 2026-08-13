@@ -76,15 +76,21 @@ jobs:
             throw "安装版本不正确：期望 $env:TEST_VERSION，实际 $version"
           }
 
-      - name: 上传诊断信息
+      - name: 上传健康检查结果
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-installer-test-logs
+          name: windows-installer-health
           if-no-files-found: ignore
-          path: |
-            ${{ runner.temp }}/health.json
-            C:/Users/runneradmin/AppData/Roaming/laogui-ai/data/logs/*.jsonl
+          path: ${{ runner.temp }}/health.json
+
+      - name: 上传程序日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-app-logs
+          if-no-files-found: ignore
+          path: C:/Users/runneradmin/AppData/Roaming/laogui-ai/data/logs/*.jsonl
 
       - name: 关闭老鬼AI
         if: always()
