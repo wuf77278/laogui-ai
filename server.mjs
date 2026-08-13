@@ -339,7 +339,10 @@ const config = {
   },
   imageStudioFhlSkill: {
     enabled: process.env.IMAGE_STUDIO_FHL_ENABLED || process.env.FHL_IMAGE_STUDIO_ENABLED || "auto",
-    script: process.env.IMAGE_STUDIO_FHL_SCRIPT || "/Users/Apple_501/.codex/skills/aggregate-image-generation/scripts/yingfang_image.py",
+    // The optional desktop skill is available on the development Mac only. Packaged
+    // builds use the bundled Image Studio engine when this path does not exist.
+    script: process.env.IMAGE_STUDIO_FHL_SCRIPT
+      || (process.platform === "darwin" ? "/Users/Apple_501/.codex/skills/aggregate-image-generation/scripts/yingfang_image.py" : ""),
     provider: process.env.IMAGE_STUDIO_FHL_PROVIDER || "auto",
     outputDir: process.env.IMAGE_STUDIO_FHL_OUTPUT_DIR || path.join(logsDir, "image-studio-fhl"),
     timeoutSeconds: boundedIntegerEnv("IMAGE_STUDIO_FHL_TIMEOUT_SECONDS", 300, 30, 900)
@@ -5568,7 +5571,7 @@ async function writeImageStudioFhlMask(maskImage, outputDir) {
   return filePath;
 }
 
-async function runImageStudioEngine({ prompt, inputImages = [], size = "auto", quality = "medium", sourceOverride = null, imageModelOverride = "", textModelOverride = "", fastMode = false, signal = null } = {}) {
+async function runImageStudioEngine({ prompt, inputImages = [], maskImage = null, size = "auto", quality = "medium", sourceOverride = null, imageModelOverride = "", textModelOverride = "", fastMode = false, signal = null } = {}) {
   const status = imageStudioEngineStatus();
   if (!status.enabled || !status.available) {
     const error = new Error(status.available
@@ -5590,6 +5593,7 @@ async function runImageStudioEngine({ prompt, inputImages = [], size = "auto", q
   const outputDir = path.join(status.outputDir, `${Date.now()}-${randomUUID().slice(0, 8)}`);
   await fs.mkdir(outputDir, { recursive: true });
   const references = await writeImageStudioFhlReferences(inputImages, outputDir);
+  const maskPath = await writeImageStudioFhlMask(maskImage, outputDir);
   const apiMode = normalizeImageApiMode(source.apiMode || config.imageApiMode);
   const responsesTransport = normalizeResponsesTransport(source.responsesTransport || status.responsesTransport);
   const requestPolicy = normalizeImageStudioRequestPolicy(source.requestPolicy || status.requestPolicy);
@@ -5619,6 +5623,7 @@ async function runImageStudioEngine({ prompt, inputImages = [], size = "auto", q
   if (status.autoRetryCount <= 0) args.push("--no-auto-retry");
   if (apiMode === "images" && imagesNewApiCompat) args.push("--images-new-api-compat");
   for (const filePath of references) args.push("--reference-image", filePath);
+  if (maskPath) args.push("--mask", maskPath);
 
   const result = await runCommand(status.cliPath, args, {
     cwd: outputDir,
@@ -5702,10 +5707,25 @@ function redactImageStudioCommand(command = "") {
 async function runImageStudioFhlSkill({ prompt, inputImages = [], maskImage = null, size = "auto", quality = "medium", providerOverride = "", signal = null } = {}) {
   const status = imageStudioFhlSkillStatus();
   if (!status.enabled) {
+    // Installed Windows builds do not contain the developer's Python skill path.
+    // Fall back to the bundled cross-platform engine, which supports masked edits.
+    const engineStatus = imageStudioEngineStatus();
+    if (engineStatus.enabled && engineStatus.available) {
+      const result = await runImageStudioEngine({ prompt, inputImages, maskImage, size, quality, signal });
+      return {
+        ...result,
+        diagnostics: {
+          ...(result.diagnostics || {}),
+          fallback: "bundled-image-studio-engine",
+          fhlSkillScript: status.script || "未安装"
+        }
+      };
+    }
     const error = new Error(status.available
-      ? "Image Studio FHL skill is disabled"
-      : `Image Studio FHL skill script not found: ${status.script}`);
+      ? "Image Studio FHL skill is disabled，且内置图片引擎不可用"
+      : `Image Studio FHL skill 未安装，内置图片引擎也不可用: ${engineStatus.cliPath}`);
     error.status = 503;
+    error.details = { fhlSkill: status, engine: engineStatus };
     throw error;
   }
 
