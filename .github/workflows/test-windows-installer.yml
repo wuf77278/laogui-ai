@@ -1,0 +1,93 @@
+name: 验收 Windows 安装包
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 要测试的版本号
+        required: true
+        default: "2.3.14"
+
+permissions:
+  contents: read
+
+jobs:
+  test-installer:
+    runs-on: windows-latest
+    steps:
+      - name: 下载 Windows 安装包
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TEST_VERSION: ${{ inputs.version }}
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP "LaoguiAI-setup.exe"
+          gh release download "v$env:TEST_VERSION" `
+            --repo "${{ github.repository }}" `
+            --pattern "LaoguiAI-v$env:TEST_VERSION-windows-x64-setup.exe" `
+            --output $installer
+          if (-not (Test-Path $installer)) { throw "安装包下载失败" }
+          "INSTALLER=$installer" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: 安装老鬼AI
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath $env:INSTALLER -ArgumentList "/S" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "安装失败，退出码 $($process.ExitCode)" }
+          $app = Join-Path $env:LOCALAPPDATA "Programs\laogui-ai\老鬼AI.exe"
+          if (-not (Test-Path $app)) { throw "安装后没有找到老鬼AI.exe" }
+          $engine = Join-Path $env:LOCALAPPDATA "Programs\laogui-ai\resources\engines\image-studio\win32-x64\gptcodex-image.exe"
+          if (-not (Test-Path $engine)) { throw "安装包缺少 Windows x64 图片引擎" }
+          "APP_EXE=$app" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "ENGINE_EXE=$engine" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: 启动并检查本地服务
+        shell: pwsh
+        run: |
+          $appProcess = Start-Process -FilePath $env:APP_EXE -PassThru
+          "APP_PID=$($appProcess.Id)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $health = $null
+          for ($attempt = 1; $attempt -le 60; $attempt++) {
+            try {
+              $health = Invoke-RestMethod -Uri "http://127.0.0.1:4177/api/health" -TimeoutSec 2
+              break
+            } catch {
+              Start-Sleep -Seconds 1
+            }
+          }
+          if (-not $health) { throw "老鬼AI 启动后，本地服务 4177 未就绪" }
+          if (-not $health.ok) { throw "健康接口状态异常" }
+          if ($health.imageStudioEngine.platform -ne "win32-x64") { throw "图片引擎平台不是 win32-x64" }
+          if (-not $health.imageStudioEngine.available) { throw "Windows 内置图片引擎不可用" }
+          if ($health.imageStudioFhlSkill.available) { throw "Windows 错误地把外部聚合生图脚本判断为可用" }
+          if ($health.imageBackend -ne "image-studio-cli-engine") { throw "Windows 没有选择内置图片引擎" }
+          $python = Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^python(3)?\.exe$' }
+          if ($python) { throw "老鬼AI 启动期间出现了不应存在的 Python 进程" }
+          $health | ConvertTo-Json -Depth 8 | Out-File "$env:RUNNER_TEMP\health.json" -Encoding utf8
+          Write-Host "Windows 安装、启动和内置图片引擎检查全部通过。"
+
+      - name: 检查安装文件版本
+        shell: pwsh
+        env:
+          TEST_VERSION: ${{ inputs.version }}
+        run: |
+          $version = (Get-Item $env:APP_EXE).VersionInfo.ProductVersion
+          if (-not $version.StartsWith($env:TEST_VERSION)) {
+            throw "安装版本不正确：期望 $env:TEST_VERSION，实际 $version"
+          }
+
+      - name: 上传诊断信息
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-test-logs
+          if-no-files-found: ignore
+          path: |
+            ${{ runner.temp }}/health.json
+            C:/Users/runneradmin/AppData/Roaming/laogui-ai/data/logs/*.jsonl
+
+      - name: 关闭老鬼AI
+        if: always()
+        shell: pwsh
+        run: |
+          Get-Process -Name "老鬼AI" -ErrorAction SilentlyContinue | Stop-Process -Force
