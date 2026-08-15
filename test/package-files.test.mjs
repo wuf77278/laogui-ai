@@ -47,6 +47,19 @@ test("Windows 安装验收会真实执行内置内核 AI 编辑", async () => {
   assert.match(verifier, /image-studio-cli/);
 });
 
+test("正式发布同时生成通用更新包并同步 Gitee 更新清单", async () => {
+  const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  const workflow = await readFile(new URL("../.github/workflows/release-windows.yml", import.meta.url), "utf8");
+  const metadataScript = await readFile(new URL("../scripts/prepare-gitee-update-metadata.mjs", import.meta.url), "utf8");
+  assert.match(packageJson.scripts["publish:win"], /--win --x64 --arm64/);
+  assert.match(workflow, /windows-setup\.exe/);
+  assert.match(workflow, /release\/latest\.yml/);
+  assert.match(workflow, /release\/latest-mac\.yml/);
+  assert.match(workflow, /GITEE_ACCESS_TOKEN/);
+  assert.match(workflow, /attach_files/);
+  assert.match(metadataScript, /releases\/download/);
+});
+
 test("首页循环视频经过桌面安装包体积优化", async () => {
   for (const index of [1, 2, 3]) {
     const info = await stat(new URL(`../public/assets/home/architectural-sketch-home-${index}-4k.mp4`, import.meta.url));

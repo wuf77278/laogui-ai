@@ -40,9 +40,9 @@
     "pack:mac:x64": "electron-builder --mac --x64",
     "pack:win": "electron-builder --win --x64",
     "pack:win:arm64": "electron-builder --win --arm64",
-    "publish:win": "npm run check && npm run engine:image-studio:win && electron-builder --win --x64 --publish never && electron-builder --win --arm64 --publish never",
-    "pack:all": "electron-builder --mac --arm64 --x64 && electron-builder --win --x64 --publish never && electron-builder --win --arm64 --publish never",
-    "check": "node --check server.mjs && node --check public/app.js && node --check public/ai-edit/editor.js && node --check public/ai-edit/region-engine.js && node --check public/deep-edit/editor.js && node --check public/deep-edit/image-ops.worker.js && node --check public/deep-edit/mask-engine.js && node --check public/deep-edit/layer-engine.js && node --check public/deep-edit/project-store.js && node --check electron/main.cjs && node --check electron/preload.cjs && node --check scripts/doctor.mjs && node --check scripts/sync-vendor.mjs && node --check scripts/verify-installed-ai-edit.mjs && npm run check:vendor",
+    "publish:win": "npm run check && npm run engine:image-studio:win && electron-builder --win --x64 --arm64 --publish never",
+    "pack:all": "electron-builder --mac --arm64 --x64 --win --x64 --arm64",
+    "check": "node --check server.mjs && node --check public/app.js && node --check public/ai-edit/editor.js && node --check public/ai-edit/region-engine.js && node --check public/deep-edit/editor.js && node --check public/deep-edit/image-ops.worker.js && node --check public/deep-edit/mask-engine.js && node --check public/deep-edit/layer-engine.js && node --check public/deep-edit/project-store.js && node --check electron/main.cjs && node --check electron/preload.cjs && node --check scripts/doctor.mjs && node --check scripts/sync-vendor.mjs && node --check scripts/verify-installed-ai-edit.mjs && node --check scripts/prepare-gitee-update-metadata.mjs && npm run check:vendor",
     "test": "node --test test/*.test.mjs",
     "doctor": "node scripts/doctor.mjs",
     "mobile:config": "node scripts/sync-mobile-shared.mjs",
@@ -141,6 +141,7 @@
   },
   "dependencies": {
     "electron-updater": "^6.8.9",
+    "js-yaml": "4.3.1",
     "pannellum": "^2.5.7",
     "three": "^0.160.0"
   }

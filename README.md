@@ -18,10 +18,10 @@ Windows 安装版启动时不会自动检查或下载。用户需要打开“设
 发布新版本时：
 
 1. 把 `package.json` 中的版本号改大，例如从 `2.3.15` 改为 `2.3.16`。
-2. 在 GitHub 仓库配置 Windows 正式签名证书，以及 Mac Developer ID 和苹果公证凭据；缺少任一正式凭据时禁止对外发布。
+2. 在 GitHub 仓库配置 Windows 正式签名证书、Mac Developer ID、苹果公证凭据，以及 `GITEE_USERNAME`、`GITEE_ACCESS_TOKEN`；缺少任一正式凭据时禁止对外发布。
 3. 提交代码，并创建同名标签，例如 `v2.3.16`，然后推送到 GitHub。
-4. GitHub 自动生成并上传 Windows x64、Windows ARM64、Mac Intel 和 Mac Apple 芯片安装包。
-5. 将安装包和更新清单同步到 Gitee 发行版，并把最新清单同步到 `update/latest.yml` 与 `update/latest-mac.yml`。软件内检查更新通过 Gitee。
+4. GitHub 自动生成 Windows 通用更新包、Windows x64、Windows ARM64、Mac Intel 和 Mac Apple 芯片安装包。
+5. 发布任务自动把安装包同步到 Gitee 发行版，并把绝对下载地址写入 `update/latest.yml` 与 `update/latest-mac.yml`。任一步失败都会停止发布。
 6. 运行 Windows 安装包验收；验收必须真实完成一次 AI 编辑，而不是只检查图片内核文件是否存在。
 
 旧版本如果没有软件内更新功能，需要先手动安装一次新版本。之后发布新版本时，就可以在软件内手动检查并更新。

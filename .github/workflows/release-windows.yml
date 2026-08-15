@@ -62,13 +62,15 @@ jobs:
         shell: bash
         run: |
           VERSION="$(node -p "require('./package.json').version")"
-          npx electron-builder --win --x64 --publish never
-          npx electron-builder --win --arm64 --publish never
+          npx electron-builder --win --x64 --arm64 --publish never
           gh release upload "v${VERSION}" \
+            "release/LaoguiAI-v${VERSION}-windows-setup.exe" \
+            "release/LaoguiAI-v${VERSION}-windows-setup.exe.blockmap" \
             "release/LaoguiAI-v${VERSION}-windows-x64-setup.exe" \
             "release/LaoguiAI-v${VERSION}-windows-x64-setup.exe.blockmap" \
             "release/LaoguiAI-v${VERSION}-windows-arm64-setup.exe" \
             "release/LaoguiAI-v${VERSION}-windows-arm64-setup.exe.blockmap" \
+            "release/latest.yml" \
             --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -129,6 +131,7 @@ jobs:
             "release/LaoguiAI-v${VERSION}-mac-arm64.zip" \
             "release/LaoguiAI-v${VERSION}-mac-arm64.zip.blockmap" \
             "release/LaoguiAI-v${VERSION}-mac-arm64.dmg" \
+            "release/latest-mac.yml" \
             --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -137,3 +140,110 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+  sync-gitee:
+    name: 同步 Gitee 下载和自动更新
+    needs: [build-and-publish, build-and-publish-mac]
+    runs-on: ubuntu-latest
+    steps:
+      - name: 读取主分支
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: 准备 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 检查 Gitee 发布凭据
+        shell: bash
+        env:
+          GITEE_USERNAME: ${{ secrets.GITEE_USERNAME }}
+          GITEE_ACCESS_TOKEN: ${{ secrets.GITEE_ACCESS_TOKEN }}
+        run: |
+          test -n "$GITEE_USERNAME" && test -n "$GITEE_ACCESS_TOKEN" || {
+            echo "缺少 GITEE_USERNAME 或 GITEE_ACCESS_TOKEN，停止发布，避免软件检查不到新版本。" >&2
+            exit 1
+          }
+
+      - name: 下载 GitHub 安装包
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          mkdir -p release
+          gh release download "v${VERSION}" --dir release
+          test -f "release/LaoguiAI-v${VERSION}-windows-setup.exe"
+          test -f "release/LaoguiAI-v${VERSION}-windows-x64-setup.exe"
+          test -f "release/LaoguiAI-v${VERSION}-windows-arm64-setup.exe"
+          test -f "release/LaoguiAI-v${VERSION}-mac-arm64.zip"
+          test -f "release/LaoguiAI-v${VERSION}-mac-x64.zip"
+          test -f release/latest.yml
+          test -f release/latest-mac.yml
+
+      - name: 生成 Gitee 更新清单
+        run: |
+          npm ci --omit=dev
+          node scripts/prepare-gitee-update-metadata.mjs release update
+
+      - name: 同步源码标签和 Gitee 发行版
+        shell: bash
+        env:
+          GITEE_USERNAME: ${{ secrets.GITEE_USERNAME }}
+          GITEE_ACCESS_TOKEN: ${{ secrets.GITEE_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG="v${VERSION}"
+          API="https://gitee.com/api/v5/repos/wuf7727/laogui-ai"
+          BASIC_AUTH="$(printf '%s:%s' "$GITEE_USERNAME" "$GITEE_ACCESS_TOKEN" | base64 -w0)"
+          echo "::add-mask::$BASIC_AUTH"
+          git -c http.extraHeader="Authorization: Basic $BASIC_AUTH" push \
+            https://gitee.com/wuf7727/laogui-ai.git HEAD:main "refs/tags/${TAG}"
+
+          HTTP_CODE="$(curl -sS -o gitee-release.json -w '%{http_code}' \
+            -H "Authorization: Bearer $GITEE_ACCESS_TOKEN" \
+            "$API/releases/tags/$TAG")"
+          if [ "$HTTP_CODE" = "404" ]; then
+            curl -fsS -o gitee-release.json -X POST \
+              -H "Authorization: Bearer $GITEE_ACCESS_TOKEN" \
+              --data-urlencode "tag_name=$TAG" \
+              --data-urlencode "name=老鬼AI ${VERSION}" \
+              --data-urlencode "body=老鬼AI ${VERSION} 正式安装包" \
+              --data-urlencode "target_commitish=main" \
+              "$API/releases"
+          elif [ "$HTTP_CODE" != "200" ]; then
+            echo "读取 Gitee 发行版失败，HTTP $HTTP_CODE" >&2
+            exit 1
+          fi
+          RELEASE_ID="$(jq -er '.id' gitee-release.json)"
+          curl -fsS -H "Authorization: Bearer $GITEE_ACCESS_TOKEN" \
+            "$API/releases/$RELEASE_ID/attach_files" > gitee-assets.json
+
+          for ASSET in release/LaoguiAI-v${VERSION}-* update/latest.yml update/latest-mac.yml; do
+            ASSET_NAME="$(basename "$ASSET")"
+            OLD_ID="$(jq -r --arg name "$ASSET_NAME" '.[] | select(.name == $name) | .id' gitee-assets.json | head -1)"
+            if [ -n "$OLD_ID" ]; then
+              curl -fsS -o /dev/null -X DELETE \
+                -H "Authorization: Bearer $GITEE_ACCESS_TOKEN" \
+                "$API/releases/$RELEASE_ID/attach_files/$OLD_ID"
+            fi
+            curl -fsS -o /dev/null -X POST \
+              -H "Authorization: Bearer $GITEE_ACCESS_TOKEN" \
+              -F "file=@$ASSET" \
+              "$API/releases/$RELEASE_ID/attach_files"
+          done
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add update/latest.yml update/latest-mac.yml
+          if ! git diff --cached --quiet; then
+            git commit -m "build: publish ${TAG} update metadata [skip ci]"
+            git push origin HEAD:main
+          fi
+          git -c http.extraHeader="Authorization: Basic $BASIC_AUTH" push \
+            https://gitee.com/wuf7727/laogui-ai.git HEAD:main
