@@ -21,4 +21,8 @@ module.exports = async function afterPack(context) {
   for (const candidate of ["darwin-arm64", "darwin-x64", "win32-arm64", "win32-x64"]) {
     if (candidate !== keepEngine) await fs.rm(path.join(engineRoot, candidate), { recursive: true, force: true });
   }
+  await Promise.all([
+    fs.rm(path.join(engineRoot, "gptcodex-image"), { force: true }),
+    fs.rm(path.join(engineRoot, "gptcodex-image.exe"), { force: true })
+  ]);
 };

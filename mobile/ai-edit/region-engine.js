@@ -4,8 +4,7 @@ export const AI_EDIT_OPERATIONS = new Set(["remove", "replace", "material", "det
 
 export function createNumberedRegions(width, height) {
   return [
-    { number: 1, label: "框选编号 1", color: [72, 164, 255], operation: "replace", prompt: "", feather: 2, selectionMode: "semantic", mask: createMask(width, height) },
-    { number: 2, label: "框选编号 2", color: [240, 167, 72], operation: "replace", prompt: "", feather: 2, selectionMode: "semantic", mask: createMask(width, height) }
+    { number: 1, label: "选区", color: [72, 164, 255], operation: "replace", prompt: "", feather: 2, selectionMode: "semantic", mask: createMask(width, height) }
   ];
 }
 
@@ -13,7 +12,7 @@ export function numberedRegionJobs(regions = []) {
   const jobs = regions
     .filter((region) => region?.mask && maskHasSelection(region.mask))
     .sort((a, b) => Number(a.number || 0) - Number(b.number || 0));
-  if (!jobs.length) throw new Error("请至少创建一个编号选区");
+  if (!jobs.length) throw new Error("请先创建选区");
   for (const region of jobs) {
     if (!AI_EDIT_OPERATIONS.has(region.operation)) throw new Error(`${region.label}的编辑类型无效`);
     if (region.operation !== "remove" && !String(region.prompt || "").trim()) {

@@ -1,6 +1,7 @@
 import { parseApiConfigText, normalizeApiProfiles } from "./api-config-parser.js";
-import { createAiEditor } from "./ai-edit/editor.js";
-import { createDeepEditor } from "./deep-edit/editor.js";
+import { createAiEditor } from "./ai-edit/editor.js?v=20260812-mobile-lasso";
+import { createDeepEditor } from "./deep-edit/editor.js?v=20260812-simple-crop";
+import { createBasicEditor } from "./basic-editor.js?v=20260812-basic-editor-final";
 
 const CapacitorRuntime = globalThis.Capacitor || {};
 const Plugins = CapacitorRuntime.Plugins || {};
@@ -59,12 +60,14 @@ const state = {
   pendingReplaceAssetId: null,
   canvas: { mode: "flow", x: 24, y: 72, zoom: 1, flowScrollTop: 0, pointers: new Map(), gesture: null },
   historyScope: "current",
-  toolSelected: false,
-  conversationBusy: false,
+  toolSelected: true,
+  generationSubmitting: false,
+  workbenchCollapsed: localStorage.getItem("laogui-mobile-workbench-collapsed") === "true",
   lastToolId: localStorage.getItem("laogui-mobile-last-tool") || "photo"
 };
 let mobileAiEditor;
 let mobileDeepEditor;
+let mobileBasicEditor;
 let localEditorMode = "basic";
 let flowScrollSaveTimer;
 
@@ -72,9 +75,9 @@ const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const els = {
   pages: $$(".page"), navs: $$("[data-nav]"), toolGrid: $("#toolGrid"), recentProject: $("#recentProjectCard"), themeButton: $("#themeButton"),
-  canvasMenuButton: $("#canvasMenuButton"), canvasMenu: $("#canvasMenu"), canvasList: $("#canvasList"), currentProjectLabel: $("#currentProjectLabel"), canvasModeSwitch: $("#canvasModeSwitch"), toolPopover: $("#toolPopover"), workspaceComposer: $("#workspaceComposer"), workspaceMenuButton: $("#workspaceMoreButton"), workspaceMenu: $("#workspaceMenu"), taskStatusButton: $("#taskStatusButton"), taskStatusPanel: $("#taskStatusPanel"), canvasTaskList: $("#canvasTaskList"), canvasZoomLabel: $("#canvasZoomLabel"), addImageMenu: $("#addImageMenu"), quickParameterPanel: $("#quickParameterPanel"), parameterSummary: $("#parameterSummary"), quickRatioChoices: $("#quickRatioChoices"), quickResolutionChoices: $("#quickResolutionChoices"), quickCountChoices: $("#quickCountChoices"), quickPromptOptimize: $("#quickPromptOptimize"), openFullParameters: $("#openFullParametersButton"),
+  canvasMenuButton: $("#canvasMenuButton"), canvasMenu: $("#canvasMenu"), canvasList: $("#canvasList"), currentProjectLabel: $("#currentProjectLabel"), canvasModeSwitch: $("#canvasModeSwitch"), toolPopover: $("#toolPopover"), workspaceComposer: $("#workspaceComposer"), workspaceMenuButton: $("#workspaceMoreButton"), workspaceMenu: $("#workspaceMenu"), taskStatusButton: $("#taskStatusButton"), taskStatusPanel: $("#taskStatusPanel"), canvasTaskList: $("#canvasTaskList"), canvasZoomLabel: $("#canvasZoomLabel"), addImageMenu: $("#addImageMenu"), quickParameterPanel: $("#quickParameterPanel"), parameterSummary: $("#parameterSummary"), quickRatioChoices: $("#quickRatioChoices"), quickResolutionChoices: $("#quickResolutionChoices"), quickCountChoices: $("#quickCountChoices"), quickPromptOptimize: $("#quickPromptOptimize"),
   projectList: $("#projectList"), taskList: $("#taskList"), taskBadge: $("#taskBadge"),
-  composer: $("#composerDialog"), composerTitle: $("#composerTitle"), infiniteCanvas: $("#infiniteCanvas"), creationFeed: $("#infiniteCanvas"), emptyCanvasHint: $("#emptyCanvasHint"), canvasWorld: $("#canvasWorld"), canvasConnections: $("#canvasConnections"), canvasNodes: $("#canvasNodes"), canvasEditDock: $("#canvasEditDock"), canvasBrushControl: $("#canvasBrushControl"), applyCrop: $("#applyCropButton"), newResults: $("#newResultsButton"), openParameters: $("#openParametersButton"), selectCapability: $("#selectCapabilityButton"), selectedCapabilityLabel: $("#selectedCapabilityLabel"), openConversation: $("#openConversationButton"), conversationPanel: $("#designConversationPanel"), conversationToolTitle: $("#conversationToolTitle"), conversationStatus: $("#conversationStatus"), conversationMessages: $("#conversationMessages"), conversationForm: $("#conversationForm"), conversationInput: $("#conversationInput"), sendConversation: $("#sendConversationButton"), designBriefCard: $("#designBriefCard"), designBriefText: $("#designBriefText"), quickGenerate: $("#quickGenerateButton"),
+  composer: $("#composerDialog"), composerTitle: $("#composerTitle"), creationWorkbench: $("#creationWorkbench"), toggleWorkbench: $("#toggleWorkbenchButton"), workbenchDetails: $("#workbenchDetails"), workbenchCollapsedSummary: $("#workbenchCollapsedSummary"), collapsedCapabilityLabel: $("#collapsedCapabilityLabel"), collapsedMediaSummary: $("#collapsedMediaSummary"), collapsedParameterSummary: $("#collapsedParameterSummary"), infiniteCanvas: $("#infiniteCanvas"), creationFeed: $("#infiniteCanvas"), emptyCanvasHint: $("#emptyCanvasHint"), canvasWorld: $("#canvasWorld"), canvasConnections: $("#canvasConnections"), canvasNodes: $("#canvasNodes"), canvasEditDock: $("#canvasEditDock"), canvasBrushControl: $("#canvasBrushControl"), applyCrop: $("#applyCropButton"), newResults: $("#newResultsButton"), openParameters: $("#openParametersButton"), selectCapability: $("#selectCapabilityButton"), selectedCapabilityLabel: $("#selectedCapabilityLabel"), quickGenerate: $("#quickGenerateButton"), workspacePrompt: $("#workspacePromptInput"), workspacePromptCount: $("#workspacePromptCount"), workbenchMediaList: $("#workbenchMediaList"), generationConfirm: $("#generationConfirmDialog"), generationConfirmContent: $("#generationConfirmContent"), browserGenerationNotice: $("#browserGenerationNotice"), confirmGenerate: $("#confirmGenerateButton"), backToEdit: $("#backToEditButton"),
   parameter: $("#parameterDialog"), parameterTitle: $("#parameterTitle"), toolSelect: $("#toolSelect"), capabilityChips: $("#capabilityChips"), apiProfileSelect: $("#apiProfileSelect"), currentApiStatus: $("#currentApiStatus"), resolutionChips: $("#resolutionChips"), countChips: $("#countChips"), promptOptimizeToggle: $("#promptOptimizeToggle"), promptCount: $("#promptCount"), requiredReferencePreviews: $("#requiredReferencePreviews"), optionalReferencePreviews: $("#optionalReferencePreviews"), requiredReferenceCount: $("#requiredReferenceCount"), optionalReferenceCount: $("#optionalReferenceCount"), primaryPreview: $("#primaryPreview"),
   referencePreviews: $("#requiredReferencePreviews"), referenceCount: $("#requiredReferenceCount"), styleChips: $("#styleChips"),
   prompt: $("#promptInput"), structure: $("#structureSelect"), ratio: $("#ratioSelect"), strategy: $("#strategyContent"),
@@ -241,6 +244,10 @@ function applyTheme() {
   Plugins.LaoguiNative?.setSystemBars?.({ theme }).catch(() => {});
 }
 
+function syncSystemTheme() {
+  if ((state.settings.theme || "system") === "system") applyTheme();
+}
+
 async function toggleTheme() {
   state.settings = { ...state.settings, theme: resolvedTheme() === "dark" ? "light" : "dark" };
   applyTheme();
@@ -333,7 +340,7 @@ async function acceptImages(files, kind, options = {}) {
       const saved = await addAsset({ dataUrl: raw, name, kind: "source" });
       state.primary = { dataUrl, name, assetId: saved.id };
       state.selectedCanvasAssetId = saved.id;
-      state.toolSelected = Boolean(currentProject()?.selectedToolId);
+      state.toolSelected = true;
       break;
     }
     if (state.references.length >= 8) break;
@@ -385,11 +392,10 @@ function resetCanvas() {
   state.selection = null;
   state.selectedCanvasAssetId = null;
   state.canvas = { mode: "flow", x: 24, y: 72, zoom: 1, flowScrollTop: 0, pointers: new Map(), gesture: null };
-  state.toolSelected = false;
+  state.toolSelected = true;
   state.selectedStyle = "不限定";
   els.prompt.value = "";
   els.toolPopover.hidden = true;
-  els.conversationPanel.hidden = true;
   navigate("home");
   renderComposer();
   renderCanvasList();
@@ -405,12 +411,9 @@ async function selectTool(tool, { openParameters = false } = {}) {
   if (tool.id === "panorama") els.ratio.value = "2:1";
   const project = state.projects.find((item) => item.id === state.currentProjectId) || await ensureProject();
   project.selectedToolId = tool.id;
-  project.designConversation = [{ role: "assistant", content: `已选择“${tool.name}”。请补充你最想调整的风格、材料、灯光，或者必须保留的内容。`, createdAt: new Date().toISOString() }];
-  project.designBrief = null;
   await dbPut("projects", project);
   renderComposer();
   els.toolPopover.hidden = true;
-  els.conversationPanel.hidden = false;
   if (openParameters && !els.parameter.open) els.parameter.showModal();
 }
 
@@ -418,67 +421,82 @@ function currentProject() {
   return state.projects.find((item) => item.id === state.currentProjectId) || null;
 }
 
-function projectConversation(project = currentProject()) {
-  if (!project) return [];
-  if (!Array.isArray(project.designConversation)) project.designConversation = [];
-  return project.designConversation;
+function directPrompt(project = currentProject()) {
+  return project?.designBrief?.finalPrompt || project?.designBrief?.summary || "";
 }
 
-function renderConversation() {
-  const project = currentProject();
-  const messages = projectConversation(project);
-  const brief = project?.designBrief;
-  els.selectedCapabilityLabel.textContent = state.toolSelected ? state.tool.name : "选择设计能力";
-  els.selectCapability.classList.toggle("active", state.toolSelected);
-  els.openConversation.hidden = !state.toolSelected;
-  els.quickGenerate.hidden = !state.toolSelected || !brief?.ready;
-  els.conversationToolTitle.textContent = state.toolSelected ? `${state.tool.name} · AI 对话` : "AI 设计对话";
-  els.conversationStatus.textContent = state.conversationBusy ? "正在整理设计要求…" : brief?.ready ? "方案已整理，请确认后生成" : "每次补充一个要求即可";
-  els.conversationMessages.innerHTML = messages.length ? messages.map((message) => `<p class="conversation-message ${message.role === "user" ? "user" : "assistant"}">${escapeHtml(message.content)}</p>`).join("") : `<p class="conversation-empty">选择能力后，可以在这里补充设计要求。</p>`;
-  els.designBriefCard.hidden = !brief?.summary;
-  els.designBriefText.textContent = brief?.summary || "";
-  els.sendConversation.disabled = state.conversationBusy;
-  requestAnimationFrame(() => { els.conversationMessages.scrollTop = els.conversationMessages.scrollHeight; });
-}
-
-function localConversationResult(messages, tool) {
-  const requirements = messages.filter((item) => item.role === "user").map((item) => item.content.trim()).filter(Boolean);
-  const combined = requirements.slice(-5).join("；");
-  if (requirements.length < 2 && combined.length < 48) {
-    return { reply: "还需要保留哪些原有结构、家具或物体？没有特别要求也可以直接说“保持整体结构”。", ready: false, summary: "", finalPrompt: "" };
-  }
-  const summary = `${tool.name}：${combined || "保持整体结构，并根据图片形成专业设计方案"}`;
-  return { reply: "要求已经整理成方案。请检查下面的内容，确认后再生成。", ready: true, summary, finalPrompt: summary };
-}
-
-async function continueDesignConversation(message) {
-  const project = currentProject();
-  if (!project || !state.toolSelected || !message.trim() || state.conversationBusy) return;
-  const messages = projectConversation(project);
-  messages.push({ role: "user", content: message.trim(), createdAt: new Date().toISOString() });
-  project.designBrief = null;
-  state.conversationBusy = true;
+async function updateDirectPrompt(value) {
+  const project = currentProject() || await ensureProject();
+  const prompt = value.trimStart().slice(0, 800);
+  project.designBrief = { ready: Boolean(prompt.trim()), summary: prompt, finalPrompt: prompt, source: "direct" };
+  project.updatedAt = new Date().toISOString();
+  els.prompt.value = prompt;
   await dbPut("projects", project);
-  renderConversation();
-  let result;
-  let usedFallback = false;
-  try {
-    if (!Plugins.LaoguiNative?.continueDesignConversation) throw new Error("文字对话接口不可用");
-    result = await Plugins.LaoguiNative.continueDesignConversation({
-      tool: { id: state.tool.id, name: state.tool.name, prompt: state.tool.prompt },
-      imageSummary: { primary: state.primary?.name || "", references: state.references.map((item) => ({ name: item.name, role: item.role || "自动判断" })) },
-      messages,
-      profiles: (state.settings.profiles || []).filter((profile) => profile.enabled !== false)
-    });
-  } catch {
-    usedFallback = true;
-    result = localConversationResult(messages, state.tool);
-  }
-  messages.push({ role: "assistant", content: `${usedFallback ? "AI 对话暂不可用，已使用本机整理。" : ""}${result.reply || "请继续补充设计要求。"}`, createdAt: new Date().toISOString() });
-  project.designBrief = { ready: Boolean(result.ready), summary: result.summary || "", finalPrompt: result.finalPrompt || result.summary || "", source: usedFallback ? "local" : "ai" };
-  state.conversationBusy = false;
-  await dbPut("projects", project);
-  renderComposer();
+  renderGenerationControls();
+}
+
+function toolRequiresPrimary(tool = state.tool) { return tool.id !== "custom"; }
+
+function generationReadiness() {
+  const running = state.tasks.some((task) => task.projectId === state.currentProjectId && task.status === "running");
+  if (state.generationSubmitting || running) return { action: "busy", label: "正在生成…", disabled: true };
+  if (toolRequiresPrimary() && !state.primary) return { action: "image", label: "添加底图", disabled: false };
+  if (!directPrompt().trim() && !state.primary && !state.references.length) return { action: "prompt", label: "输入要求开始", disabled: false };
+  return { action: "ready", label: `生成 ${state.count} 张图片`, disabled: false };
+}
+
+function renderGenerationControls() {
+  const readiness = generationReadiness();
+  els.quickGenerate.dataset.actionState = readiness.action;
+  els.quickGenerate.disabled = readiness.disabled;
+  els.quickGenerate.innerHTML = `<svg><use href="#i-spark"/></svg><span>${readiness.label}</span>`;
+  els.selectedCapabilityLabel.textContent = state.tool.name;
+  els.selectCapability.classList.toggle("active", state.tool.id !== "custom");
+  els.workspacePromptCount.textContent = String(els.workspacePrompt.value.length);
+}
+
+function renderWorkbenchMedia() {
+  const media = [];
+  if (state.primary) media.push(`<article class="workbench-media-thumb primary"><img src="${state.primary.dataUrl}" alt="底图"><span>底图</span><button type="button" data-remove-primary aria-label="删除底图"><svg><use href="#i-close"/></svg></button></article>`);
+  state.references.forEach((item, index) => media.push(`<article class="workbench-media-thumb"><img src="${item.dataUrl}" alt="参考图 ${index + 1}"><span>参考 ${index + 1}</span><button type="button" data-remove-reference="${index}" aria-label="删除参考图"><svg><use href="#i-close"/></svg></button></article>`));
+  els.workbenchMediaList.innerHTML = media.join("");
+  els.workbenchMediaList.hidden = media.length === 0;
+}
+
+function renderWorkbenchVisibility() {
+  const collapsed = state.workbenchCollapsed;
+  const imageCount = Number(Boolean(state.primary)) + state.references.length;
+  els.creationWorkbench.classList.toggle("collapsed", collapsed);
+  els.workbenchDetails.hidden = collapsed;
+  els.workbenchCollapsedSummary.hidden = !collapsed;
+  els.toggleWorkbench.setAttribute("aria-expanded", String(!collapsed));
+  els.toggleWorkbench.querySelector("span").textContent = collapsed ? "展开" : "收起";
+  els.collapsedCapabilityLabel.textContent = state.tool.name;
+  els.collapsedMediaSummary.textContent = imageCount ? `${imageCount} 张图片` : "未添加图片";
+  els.collapsedParameterSummary.textContent = els.parameterSummary.textContent;
+}
+
+function setWorkbenchCollapsed(collapsed) {
+  state.workbenchCollapsed = Boolean(collapsed);
+  localStorage.setItem("laogui-mobile-workbench-collapsed", String(state.workbenchCollapsed));
+  renderWorkbenchVisibility();
+}
+
+function renderGenerationConfirmation() {
+  const prompt = directPrompt().trim() || "根据已上传图片进行专业设计";
+  const images = [state.primary && { ...state.primary, label: "底图" }, ...state.references.map((item, index) => ({ ...item, label: `参考图 ${index + 1}` }))].filter(Boolean);
+  const ratio = els.ratio.value === "auto" ? "参考原图" : els.ratio.value;
+  els.generationConfirmContent.innerHTML = `<section><small>文字要求</small><p>${escapeHtml(prompt)}</p></section>${images.length ? `<section><small>图片</small><div class="confirm-media-row">${images.map((item) => `<figure><img src="${item.dataUrl}" alt="${item.label}"><figcaption>${item.label}</figcaption></figure>`).join("")}</div></section>` : ""}<section class="confirm-summary-grid"><div><small>创作能力</small><strong>${escapeHtml(state.tool.name)}</strong></div><div><small>生成参数</small><strong>${ratio} · ${state.resolution} · ${state.count}张</strong></div><div><small>提示词优化</small><strong>${state.promptOptimize ? "开启" : "关闭"}</strong></div></section>`;
+  els.browserGenerationNotice.hidden = isNative;
+}
+
+function openGenerationConfirmation() {
+  const readiness = generationReadiness();
+  if (readiness.action === "prompt") { els.workspacePrompt.focus(); return toast("请先输入要求或添加图片"); }
+  if (readiness.action === "image") { els.galleryPrimary.click(); return; }
+  if (readiness.action !== "ready") return;
+  renderGenerationConfirmation();
+  if (!els.generationConfirm.open) els.generationConfirm.showModal();
 }
 
 async function openComposer(tool = state.tool, { asset = null, reset = true, openParameters = true } = {}) {
@@ -494,11 +512,9 @@ async function openComposer(tool = state.tool, { asset = null, reset = true, ope
     state.resolution = "2K";
   }
   state.currentProjectId = asset?.projectId || state.currentProjectId;
-  state.toolSelected = Boolean(state.primary);
-  if (state.toolSelected) {
-    state.lastToolId = tool.id;
-    localStorage.setItem("laogui-mobile-last-tool", tool.id);
-  }
+  state.toolSelected = true;
+  state.lastToolId = tool.id;
+  localStorage.setItem("laogui-mobile-last-tool", tool.id);
   navigate("home");
   renderComposer();
   if (openParameters && state.primary && !els.parameter.open) els.parameter.showModal();
@@ -535,12 +551,17 @@ function renderComposer() {
   els.quickPromptOptimize.checked = state.promptOptimize;
   els.promptOptimizeToggle.checked = state.promptOptimize;
   const designBrief = project?.designBrief;
-  if (document.activeElement !== els.prompt) els.prompt.value = designBrief?.finalPrompt || designBrief?.summary || "";
+  const prompt = designBrief?.finalPrompt || designBrief?.summary || "";
+  if (document.activeElement !== els.prompt) els.prompt.value = prompt;
+  if (document.activeElement !== els.workspacePrompt) els.workspacePrompt.value = prompt;
   els.promptCount.textContent = `${els.prompt.value.length} / 800`;
   els.primaryPreview.classList.toggle("empty", !state.primary);
   els.primaryPreview.classList.remove("mask-mode");
   els.primaryPreview.innerHTML = state.primary ? `<img src="${state.primary.dataUrl}" alt="已选择底图">` : "<span>请返回画布选择一张图片</span>";
   if (els.maskControls) els.maskControls.hidden = true;
+  renderWorkbenchMedia();
+  renderGenerationControls();
+  renderWorkbenchVisibility();
   $$("[data-canvas-tool]").forEach((button) => button.classList.toggle("active", button.dataset.canvasTool === state.canvasTool));
   els.referencePreviews.innerHTML = state.references.map((item, index) => `<div class="reference-thumb"><img src="${item.dataUrl}" alt="参考图 ${index + 1}"><button data-remove-reference="${index}" aria-label="删除参考图"><svg><use href="#i-close"/></svg></button><button class="reference-role" data-reference-role="${index}" title="点击切换参考内容">${escapeHtml(item.role || "自动判断")}</button></div>`).join("");
   els.referenceCount.textContent = `${state.references.length} / 8`;
@@ -550,7 +571,8 @@ function renderComposer() {
   els.strategy.innerHTML = strategyMarkup();
   els.angleControls.hidden = !["plan-axonometric", "plan-axonometric-view", "plan-render"].includes(state.tool.id);
   els.generate.innerHTML = `<svg><use href="#i-spark"/></svg>生成${state.count}张图片`;
-  renderConversation();
+  renderWorkbenchMedia();
+  renderGenerationControls();
   renderCreationFeed();
   renderCanvasList();
 }
@@ -600,10 +622,11 @@ async function requestMobileAiEdit({ selected, prompt, sourceDataUrl, maskDataUr
   return { url, optimizedPrompt: prompt, reasoningModel: result.provider || "" };
 }
 
-async function commitMobileLocalEdit({ dataUrl, title, selected }) {
+async function commitMobileLocalEdit({ dataUrl, title, selected, format = "image/png" }) {
   const parent = state.assets.find((asset) => asset.id === selected?.assetId) || selectedCanvasAsset();
   const label = localEditorMode === "adjust" ? "调色" : "基础编辑";
-  const result = await addAsset({ dataUrl, name: `${parent?.name || "图片"}-${label}-${Date.now()}.png`, kind: "edited", mode: localEditorMode === "adjust" ? "local-colorgrade" : "local-basic-edit", parentId: parent?.id || null, prompt: title || label, projectId: parent?.projectId || state.currentProjectId });
+  const extension = format === "image/jpeg" ? "jpg" : format === "image/webp" ? "webp" : "png";
+  const result = await addAsset({ dataUrl, name: `${parent?.name || "图片"}-${label}-${Date.now()}.${extension}`, kind: "edited", mode: localEditorMode === "adjust" ? "local-colorgrade" : "local-basic-edit", parentId: parent?.id || null, prompt: title || label, projectId: parent?.projectId || state.currentProjectId });
   if (parent) {
     normalizeCanvasAsset(parent); normalizeCanvasAsset(result);
     result.canvas.x = parent.canvas.x + parent.canvas.width + 34;
@@ -620,13 +643,26 @@ function mobileDeepEditorInstance() {
   return mobileDeepEditor;
 }
 
+function mobileBasicEditorInstance() {
+  if (!mobileBasicEditor) mobileBasicEditor = createBasicEditor({ onCommit: commitMobileLocalEdit, notify: toast });
+  return mobileBasicEditor;
+}
+
 async function openMobileLocalEdit(asset, mode) {
   if (!asset) return toast("请先选择一张图片");
   localEditorMode = mode;
   document.body.dataset.localEditorMode = mode;
   try {
-    await mobileDeepEditorInstance().open({ id: asset.id, assetId: asset.id, title: asset.name, url: assetUrl(asset) }, { initialTab: mode, initialTool: "select-shape" });
-  } catch (error) { mobileDeepEditorInstance().close(); toast(error.message || "无法打开本地编辑"); }
+    if (mode === "basic") {
+      await mobileBasicEditorInstance().open({ id: asset.id, assetId: asset.id, title: asset.name, url: assetUrl(asset) });
+      return;
+    }
+    await mobileDeepEditorInstance().open({ id: asset.id, assetId: asset.id, title: asset.name, url: assetUrl(asset) }, { initialTab: mode, initialTool: "move" });
+  } catch (error) {
+    const editor = mode === "basic" ? mobileBasicEditor : mobileDeepEditor;
+    editor?.close?.(true);
+    toast(error.message || "无法打开本地编辑，请从网页地址进入");
+  }
 }
 
 async function commitMobileAiEdit({ dataUrl, selected, optimizedPrompts = [] }) {
@@ -680,7 +716,7 @@ function canvasNodeMarkup(asset, index) {
   const task = state.tasks.find((item) => item.assetId === asset.id || item.id === asset.taskId);
   const title = asset.kind === "source" ? "底图" : asset.kind === "reference" ? `参考图 · ${asset.role || "自动判断"}` : tools.find((item) => item.id === asset.mode)?.name || (asset.mode === "local-colorgrade" ? "本地调色" : asset.mode === "local-basic-edit" ? "基础编辑" : "设计图片");
   const editor = false;
-  const common = [["preset", "功能预设", "i-sliders"], ["ai-edit", "AI 编辑", "i-spark"], ["basic-edit", "基础编辑", "i-crop"], ["delete", "删除", "i-trash"]];
+  const common = [["ai-edit", "AI 编辑", "i-spark"], ["basic-edit", "基础编辑", "i-crop"], ["download", "下载", "i-download"], ["delete", "删除", "i-trash"]];
   const toolsMarkup = selected ? `<div class="canvas-node-context">${common.map(([action, label, icon]) => `<button type="button" data-object-action="${action}" data-asset-id="${asset.id}" class="${state.canvasTool === action ? "active" : ""}"><svg><use href="#${icon}"/></svg><span>${label}</span></button>`).join("")}</div>` : "";
   const maskMarkup = editor ? `<canvas class="canvas-node-mask" data-mask-asset="${asset.id}" aria-label="在图片上选择编辑区域"></canvas>` : "";
   const resize = selected && !asset.canvas.locked ? `<span class="canvas-node-handle resize" data-handle="resize" data-asset-id="${asset.id}" aria-label="调整大小"></span><span class="canvas-node-handle rotate" data-handle="rotate" data-asset-id="${asset.id}" aria-label="旋转图片"></span>` : "";
@@ -810,7 +846,7 @@ function flowNodeMarkup(asset, assets, seen = new Set()) {
   const selected = asset.id === state.selectedCanvasAssetId;
   const task = state.tasks.find((item) => item.assetId === asset.id || item.id === asset.taskId);
   const title = asset.kind === "source" ? "底图" : asset.kind === "reference" ? `参考图 · ${asset.role || "自动判断"}` : tools.find((item) => item.id === asset.mode)?.name || (asset.mode === "local-colorgrade" ? "本地调色" : asset.mode === "local-basic-edit" ? "基础编辑" : "设计图片");
-  const common = [["preset", "功能预设", "i-sliders"], ["ai-edit", "AI 编辑", "i-spark"], ["basic-edit", "基础编辑", "i-crop"], ["delete", "删除", "i-trash"]];
+  const common = [["ai-edit", "AI 编辑", "i-spark"], ["basic-edit", "基础编辑", "i-crop"], ["download", "下载", "i-download"], ["delete", "删除", "i-trash"]];
   const children = assets.filter((item) => item.parentId === asset.id && !item.canvas?.hidden);
   const related = selected || asset.parentId === state.selectedCanvasAssetId || children.some((child) => child.id === state.selectedCanvasAssetId);
   const toolsMarkup = selected ? `<div class="canvas-node-context flow-node-context">${common.map(([action, label, icon]) => `<button type="button" data-object-action="${action}" data-asset-id="${asset.id}"><svg><use href="#${icon}"/></svg><span>${label}</span></button>`).join("")}</div>` : "";
@@ -1096,7 +1132,7 @@ async function openProject(projectId) {
   const source = projectAssets.find((asset) => asset.kind === "source");
   state.primary = source ? { dataUrl: assetUrl(source), name: source.name, assetId: source.id } : null;
   state.selectedCanvasAssetId = source?.id || projectAssets.find((asset) => asset.kind === "reference")?.id || null;
-  state.toolSelected = Boolean(selectedTool && state.primary);
+  state.toolSelected = true;
   state.references = projectAssets.filter((asset) => asset.kind === "reference").slice(0, 8).map((asset) => ({ dataUrl: assetUrl(asset), name: asset.name, assetId: asset.id, role: asset.role || "自动判断" }));
   state.maskDataUrl = "";
   els.prompt.value = project.designBrief?.finalPrompt || "";
@@ -1118,16 +1154,17 @@ function buildPrompt() {
 async function createTask() {
   if (!state.primary && !["custom", "design-derivation"].includes(state.tool.id)) return toast("请先添加底图");
   const project = currentProject();
-  if (!state.toolSelected) { showToolPopover(selectedCanvasAsset()); return toast("请先选择设计能力"); }
-  if (!project?.designBrief?.ready) { els.conversationPanel.hidden = false; renderConversation(); return toast("请先在 AI 对话中确认设计方案"); }
+  if (!directPrompt(project).trim() && !state.primary && !state.references.length) return toast("请先输入要求或添加图片");
   const profiles = (state.settings.profiles || []).filter((profile) => profile.enabled !== false && profile.baseUrl && profile.apiKey && profile.model);
   if (!profiles.length) { if (els.parameter.open) els.parameter.close(); navigate("settings"); return toast("生成前请先导入至少一套完整接口配置"); }
   if (Plugins.Network?.getStatus && !(await Plugins.Network.getStatus()).connected) return toast("当前没有网络，请联网后再生成");
   if (!Plugins.LaoguiNative?.generateImage) return toast("直接生图只能在安卓安装包中使用");
+  state.generationSubmitting = true;
+  renderGenerationControls();
   const task = {
     id: id("task"), requestId: crypto.randomUUID(), title: state.tool.name, mode: state.tool.id,
     projectId: (await ensureProject()).id, status: "running", createdAt: new Date().toISOString(), error: "",
-    prompt: project.designBrief.finalPrompt || project.designBrief.summary,
+    prompt: directPrompt(project) || state.tool.prompt,
     sourceAssetId: state.primary?.assetId || null, referenceAssetIds: state.references.map((item) => item.assetId),
     ratio: els.ratio.value, resolution: state.resolution, count: state.count
   };
@@ -1138,6 +1175,7 @@ async function createTask() {
     profiles
   });
   state.tasks.push(task);
+  state.generationSubmitting = false;
   await dbPut("tasks", task);
   renderTasks();
   if (els.parameter.open) els.parameter.close();
@@ -1182,9 +1220,10 @@ async function runTask(task) {
   }
   await dbPut("tasks", task);
   state.taskPayloads.delete(task.id);
+  state.generationSubmitting = false;
   renderTasks();
   renderProjects();
-  renderCreationFeed();
+  renderComposer();
   if (state.page === "home" && !isFeedNearBottom()) {
     state.newResultsPending = true;
     els.newResults.hidden = false;
@@ -1216,34 +1255,76 @@ function resetEditorTransform() {
 }
 
 function setupImageEditor() {
-  let pointerId = null;
-  let startX = 0;
-  let startY = 0;
-  let originX = 0;
-  let originY = 0;
-  els.imageEditorStage.addEventListener("pointerdown", (event) => {
-    if (els.imageDialogImage.hidden || pointerId !== null) return;
-    pointerId = event.pointerId;
-    startX = event.clientX;
-    startY = event.clientY;
-    originX = state.editorX;
-    originY = state.editorY;
-    els.imageEditorStage.setPointerCapture(pointerId);
-  });
-  els.imageEditorStage.addEventListener("pointermove", (event) => {
-    if (event.pointerId !== pointerId || state.editorZoom <= 1) return;
-    state.editorX = originX + event.clientX - startX;
-    state.editorY = originY + event.clientY - startY;
-    applyEditorTransform();
-  });
-  const finish = (event) => { if (event.pointerId === pointerId) pointerId = null; };
-  els.imageEditorStage.addEventListener("pointerup", finish);
-  els.imageEditorStage.addEventListener("pointercancel", finish);
-  els.imageEditorStage.addEventListener("dblclick", () => {
-    state.editorZoom = state.editorZoom > 1 ? 1 : 2;
+  const pointers = new Map();
+  let gesture = null;
+  let lastTouchTap = 0;
+  let lastTouchToggle = 0;
+  const distance = () => { const points = [...pointers.values()]; return points.length < 2 ? 0 : Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y); };
+  const toggleZoom = () => {
+    state.editorZoom = state.editorZoom > 1.05 ? 1 : 2;
     if (state.editorZoom === 1) { state.editorX = 0; state.editorY = 0; }
     applyEditorTransform();
+  };
+  els.imageEditorStage.addEventListener("pointerdown", (event) => {
+    if (els.imageDialogImage.hidden) return;
+    pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    els.imageEditorStage.setPointerCapture(event.pointerId);
+    if (pointers.size === 2) gesture = { type: "pinch", distance: distance(), zoom: state.editorZoom };
+    else gesture = { type: "pan", pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, x: state.editorX, y: state.editorY };
   });
+  els.imageEditorStage.addEventListener("pointermove", (event) => {
+    if (!pointers.has(event.pointerId) || !gesture) return;
+    pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (gesture.type === "pinch") {
+      const nextDistance = distance();
+      if (!nextDistance) return;
+      state.editorZoom = Math.max(1, Math.min(5, gesture.zoom * nextDistance / Math.max(gesture.distance, 1)));
+    } else if (gesture.pointerId === event.pointerId && state.editorZoom > 1) {
+      state.editorX = gesture.x + event.clientX - gesture.startX;
+      state.editorY = gesture.y + event.clientY - gesture.startY;
+    }
+    applyEditorTransform();
+  });
+  const finish = (event) => {
+    const moved = gesture?.type === "pan" ? Math.hypot(event.clientX - gesture.startX, event.clientY - gesture.startY) : 99;
+    pointers.delete(event.pointerId);
+    if (!pointers.size) {
+      if (event.pointerType === "touch" && moved < 8) {
+        const now = Date.now();
+        if (now - lastTouchTap < 330) { toggleZoom(); lastTouchToggle = now; lastTouchTap = 0; }
+        else lastTouchTap = now;
+      }
+      gesture = null;
+    } else if (pointers.size === 1) {
+      const [pointerId, point] = pointers.entries().next().value;
+      gesture = { type: "pan", pointerId, startX: point.x, startY: point.y, x: state.editorX, y: state.editorY };
+    }
+  };
+  els.imageEditorStage.addEventListener("pointerup", finish);
+  els.imageEditorStage.addEventListener("pointercancel", finish);
+  els.imageEditorStage.addEventListener("dblclick", () => { if (Date.now() - lastTouchToggle > 420) toggleZoom(); });
+}
+
+async function downloadAsset(asset) {
+  if (!asset) return;
+  try {
+    const project = state.projects.find((item) => item.id === asset.projectId);
+    if (isNative && Plugins.LaoguiNative?.saveImage) {
+      const dataUrl = asset.blob ? await blobToDataUrl(asset.blob) : asset.dataUrl || asset.webPath || asset.uri;
+      await saveToGallery(dataUrl, project?.name || "老鬼AI", asset.name || `老鬼AI-${Date.now()}.png`);
+      navigator.vibrate?.(12);
+      return toast("图片已保存到手机相册");
+    }
+    const link = document.createElement("a");
+    link.href = assetUrl(asset);
+    link.download = asset.name || `老鬼AI-${Date.now()}.png`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    toast("图片已下载");
+  } catch (error) {
+    toast(`图片保存失败：${error.message || "请检查相册权限或存储空间"}`);
+  }
 }
 
 async function handleAssetAction(action, assetId) {
@@ -1254,6 +1335,7 @@ async function handleAssetAction(action, assetId) {
     else toast("当前环境暂不支持系统分享");
     return;
   }
+  if (action === "download") return downloadAsset(asset);
   if (action === "compare") {
     const original = state.assets.find((item) => item.id === asset.parentId) || state.assets.find((item) => item.projectId === asset.projectId && item.kind === "source");
     if (!original) return toast("这个结果没有找到可对比的原图");
@@ -1276,13 +1358,17 @@ async function handleAssetAction(action, assetId) {
     if (url) URL.revokeObjectURL(url);
     state.objectUrls.delete(asset.id);
     await dbDelete("assets", asset.id);
+    if (state.primary?.assetId === asset.id) state.primary = null;
+    state.references = state.references.filter((item) => item.assetId !== asset.id);
+    if (state.selectedCanvasAssetId === asset.id) state.selectedCanvasAssetId = null;
+    if (state.selectedAssetId === asset.id) state.selectedAssetId = null;
     const project = state.projects.find((item) => item.id === asset.projectId);
     if (project?.coverAssetId === asset.id) {
       project.coverAssetId = state.assets.filter((item) => item.projectId === project.id).at(-1)?.id || null;
       project.updatedAt = new Date().toISOString();
       await dbPut("projects", project);
     }
-    renderProjects(); renderCreationFeed();
+    renderProjects(); renderComposer();
     toast("已从本地项目中删除");
     return;
   }
@@ -1359,14 +1445,11 @@ async function replaceCanvasImage(file) {
 async function handleObjectAction(action, assetId = state.selectedCanvasAssetId) {
   const asset = state.assets.find((item) => item.id === assetId);
   if (!asset) return;
-  if (action === "preset") {
-    showToolPopover(asset);
-    return;
-  }
   if (action === "ai-edit") {
     state.canvasTool = "move"; renderComposer(); await openMobileAiEdit(asset); return;
   }
   if (action === "basic-edit") return openMobileLocalEdit(asset, "basic");
+  if (action === "download") return downloadAsset(asset);
   if (action === "more") { if (!els.objectMoreDrawer.open) els.objectMoreDrawer.showModal(); return; }
   if (action === "duplicate") await duplicateCanvasAsset(asset);
   if (action === "compare") await handleAssetAction("compare", asset.id);
@@ -1383,7 +1466,7 @@ function openAssetPreview(asset) {
   state.selectedAssetId = asset.id;
   const url = assetUrl(asset);
   const isPanorama = asset.mode === "panorama";
-  els.editorAssetLabel.textContent = asset.name || "移动和缩放查看细节";
+  els.editorAssetLabel.textContent = asset.name || "双指缩放，拖动查看细节";
   resetEditorTransform();
   els.imageDialogImage.hidden = isPanorama;
   els.panorama.hidden = !isPanorama;
@@ -1407,6 +1490,11 @@ function setupInfiniteCanvas() {
     if (state.canvas.mode === "flow") {
       const flowNode = event.target.closest(".flow-node[data-asset-id]");
       const flowAsset = flowNode ? state.assets.find((item) => item.id === flowNode.dataset.assetId) : null;
+      if (flowAsset && event.pointerType === "touch") {
+        const now = Date.now();
+        if (lastTap.assetId === flowAsset.id && now - lastTap.at < 340) { openAssetPreview(flowAsset); lastTap = { assetId: null, at: 0 }; return; }
+        lastTap = { assetId: flowAsset.id, at: now };
+      }
       state.selectedCanvasAssetId = flowAsset?.id || null;
       if (flowAsset) setSelectedAssetAsPrimary(flowAsset, state.tool.id);
       renderInfiniteCanvas();
@@ -1503,6 +1591,7 @@ async function updateProfile(action, profileId) {
 
 function bindEvents() {
   els.themeButton.addEventListener("click", toggleTheme);
+  els.toggleWorkbench.addEventListener("click", () => setWorkbenchCollapsed(!state.workbenchCollapsed));
   els.workspaceMenuButton.addEventListener("click", (event) => { event.stopPropagation(); els.workspaceMenu.hidden = !els.workspaceMenu.hidden; els.taskStatusPanel.hidden = true; });
   els.taskStatusButton.addEventListener("click", (event) => { event.stopPropagation(); els.taskStatusPanel.hidden = !els.taskStatusPanel.hidden; els.workspaceMenu.hidden = true; renderCanvasTasks(); });
   els.canvasMenuButton.addEventListener("click", (event) => {
@@ -1521,7 +1610,7 @@ function bindEvents() {
     if (!event.target.closest("#taskStatusPanel,#taskStatusButton")) els.taskStatusPanel.hidden = true;
     if (!event.target.closest("#addImageMenu,[data-action='toggle-add-menu']")) els.addImageMenu.hidden = true;
     if (!event.target.closest("#quickParameterPanel,#openParametersButton")) { els.quickParameterPanel.hidden = true; els.openParameters.setAttribute("aria-expanded", "false"); }
-    if (!event.target.closest("#toolPopover,#selectCapabilityButton,[data-action='more-tools'],[data-object-action='preset']")) els.toolPopover.hidden = true;
+    if (!event.target.closest("#toolPopover,#selectCapabilityButton,[data-action='more-tools']")) els.toolPopover.hidden = true;
     const toolButton = event.target.closest("[data-tool]");
     if (toolButton) selectTool(tools.find((tool) => tool.id === toolButton.dataset.tool));
     const recommendedButton = event.target.closest("[data-recommended-tool]");
@@ -1542,7 +1631,7 @@ function bindEvents() {
       if (action === "gallery-reference") { els.addImageMenu.hidden = true; els.galleryReference.click(); }
       if (action === "new-project") resetCanvas();
       if (action === "more-tools") showToolPopover(selectedCanvasAsset());
-      if (action === "close-conversation") els.conversationPanel.hidden = true;
+      if (action === "close-quick-parameters") { els.quickParameterPanel.hidden = true; els.openParameters.setAttribute("aria-expanded", "false"); }
       if (action === "import-config-file") els.apiConfigFile.click();
     }
     const styleButton = event.target.closest("[data-style]");
@@ -1567,6 +1656,8 @@ function bindEvents() {
     if (historyAssetButton) await focusCanvasAsset(historyAssetButton.dataset.historyAsset);
     const removeButton = event.target.closest("[data-remove-reference]");
     if (removeButton) { state.references.splice(Number(removeButton.dataset.removeReference), 1); renderComposer(); }
+    const removePrimaryButton = event.target.closest("[data-remove-primary]");
+    if (removePrimaryButton) { state.primary = null; state.selectedCanvasAssetId = null; renderComposer(); }
     const roleButton = event.target.closest("[data-reference-role]");
     if (roleButton) {
       const reference = state.references[Number(roleButton.dataset.referenceRole)];
@@ -1640,16 +1731,17 @@ function bindEvents() {
     els.addImageMenu.hidden = true;
     els.openParameters.setAttribute("aria-expanded", String(!els.quickParameterPanel.hidden));
   });
-  els.openFullParameters.addEventListener("click", () => { els.quickParameterPanel.hidden = true; renderComposer(); if (!els.parameter.open) els.parameter.showModal(); });
-  els.quickGenerate.addEventListener("click", createTask);
+  els.quickGenerate.addEventListener("click", openGenerationConfirmation);
   els.selectCapability.addEventListener("click", () => showToolPopover(selectedCanvasAsset()));
-  els.openConversation.addEventListener("click", () => { els.conversationPanel.hidden = false; renderConversation(); els.conversationInput.focus(); });
-  els.conversationForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const message = els.conversationInput.value;
-    if (!message.trim()) return;
-    els.conversationInput.value = "";
-    await continueDesignConversation(message);
+  els.workspacePrompt.addEventListener("input", () => { els.workspacePromptCount.textContent = String(els.workspacePrompt.value.length); updateDirectPrompt(els.workspacePrompt.value); });
+  els.backToEdit.addEventListener("click", () => els.generationConfirm.close());
+  els.confirmGenerate.addEventListener("click", async () => {
+    if (!isNative || !Plugins.LaoguiNative?.generateImage) {
+      els.browserGenerationNotice.hidden = false;
+      return toast("浏览器用于界面测试，请在安卓端正式生成");
+    }
+    els.generationConfirm.close();
+    await createTask();
   });
   els.newResults.addEventListener("click", scrollFeedToEnd);
   els.creationFeed.addEventListener("scroll", () => {
@@ -1666,20 +1758,31 @@ function bindEvents() {
   els.toolSelect.addEventListener("change", () => {
     selectTool(tools.find((tool) => tool.id === els.toolSelect.value) || state.tool);
   });
-  els.prompt.addEventListener("input", () => { els.promptCount.textContent = `${els.prompt.value.length} / 800`; });
+  els.prompt.addEventListener("input", () => { els.promptCount.textContent = `${els.prompt.value.length} / 800`; els.workspacePrompt.value = els.prompt.value; updateDirectPrompt(els.prompt.value); });
   els.promptOptimizeToggle.addEventListener("change", () => { state.promptOptimize = els.promptOptimizeToggle.checked; els.quickPromptOptimize.checked = state.promptOptimize; persistGenerationSettings(); });
   els.quickPromptOptimize.addEventListener("change", () => { state.promptOptimize = els.quickPromptOptimize.checked; els.promptOptimizeToggle.checked = state.promptOptimize; persistGenerationSettings(); });
   els.settingsForm.addEventListener("submit", saveSettings);
   [els.yaw, els.pitch].forEach((input) => input.addEventListener("input", () => { els.yawValue.value = `${els.yaw.value}°`; els.pitchValue.value = `${els.pitch.value}°`; }));
-  $$('[data-image-action]').forEach((button) => button.addEventListener("click", () => { els.imageDialog.close(); handleAssetAction(button.dataset.imageAction, state.selectedAssetId); }));
+  $$('[data-image-action]').forEach((button) => button.addEventListener("click", async () => {
+    const action = button.dataset.imageAction;
+    const asset = state.assets.find((item) => item.id === state.selectedAssetId);
+    els.imageDialog.close();
+    if (action === "edit") await openMobileAiEdit(asset);
+    else if (action === "basic-edit") await openMobileLocalEdit(asset, "basic");
+    else await handleAssetAction(action, state.selectedAssetId);
+  }));
   els.imageDialog.addEventListener("close", () => { state.panoramaViewer?.destroy?.(); state.panoramaViewer = null; els.panorama.textContent = ""; });
   setupImageEditor();
   setupInfiniteCanvas();
   Plugins.App?.addListener?.("backButton", () => {
+    if (document.body.classList.contains("basic-editor-open")) return mobileBasicEditor?.close();
+    if (document.body.classList.contains("ai-editor-open")) return mobileAiEditor?.close();
+    if (document.body.classList.contains("deep-editor-open")) return mobileDeepEditor?.close();
     if (els.imageDialog.open) return els.imageDialog.close();
     if (els.compareDialog.open) return els.compareDialog.close();
+    if (els.generationConfirm.open) return els.generationConfirm.close();
     if (!els.toolPopover.hidden) { els.toolPopover.hidden = true; return; }
-    if (!els.conversationPanel.hidden) { els.conversationPanel.hidden = true; return; }
+    if (!els.quickParameterPanel.hidden) { els.quickParameterPanel.hidden = true; return; }
     if (els.parameter.open) return els.parameter.close();
     if (els.objectMoreDrawer.open) return els.objectMoreDrawer.close();
     if (!els.workspaceMenu.hidden) { els.workspaceMenu.hidden = true; return; }
@@ -1702,6 +1805,7 @@ async function init() {
   const legacy = Boolean(settings.fhlKey || settings.yybbKey || settings.aiwanwuKey);
   state.settings = { profiles: normalizeApiProfiles(settings.profiles || []), legacy, theme: settings.theme || "system" };
   applyTheme();
+  matchMedia("(prefers-color-scheme: dark)").addEventListener?.("change", syncSystemTheme);
   await Promise.all(state.tasks.filter((task) => task.status === "uncertain").map((task) => dbPut("tasks", task)));
   renderProjects(); renderTasks(); renderSettings(); renderComposer();
   navigate("home");

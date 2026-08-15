@@ -15,6 +15,974 @@
   font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
+/* 全局玻璃最终覆盖：必须位于历史样式之后 */
+html[data-theme] .topbar,
+html[data-theme] .bottom-nav,
+html[data-theme] .workspace-bottom,
+html[data-theme] .sheet-head,
+html[data-theme] .parameter-footer,
+html[data-theme] .editor-head {
+  color: var(--mobile-ink);
+  border-color: var(--mobile-border);
+  background: var(--mobile-glass);
+  box-shadow: var(--mobile-shadow-soft);
+  backdrop-filter: blur(22px) saturate(1.12);
+  -webkit-backdrop-filter: blur(22px) saturate(1.12);
+}
+
+html[data-theme] .glass-panel,
+html[data-theme] .creation-workbench,
+html[data-theme] .canvas-menu,
+html[data-theme] .workspace-menu,
+html[data-theme] .task-status-panel,
+html[data-theme] .tool-popover,
+html[data-theme] .add-image-menu,
+html[data-theme] .quick-parameter-panel,
+html[data-theme] .settings-card,
+html[data-theme] .api-profile,
+html[data-theme] .project-card,
+html[data-theme] .task-card,
+html[data-theme] .generation-confirm-dialog .confirm-sheet,
+html[data-theme] .object-more-drawer,
+html[data-theme] .parameter-dialog {
+  color: var(--mobile-ink);
+  border-color: var(--mobile-border);
+  background: var(--mobile-glass);
+  box-shadow: var(--mobile-shadow);
+  backdrop-filter: blur(24px) saturate(1.12);
+  -webkit-backdrop-filter: blur(24px) saturate(1.12);
+}
+
+html[data-theme] .page:not([data-page="home"]).active {
+  color: var(--mobile-ink);
+  background: color-mix(in srgb, var(--mobile-bg) 92%, transparent);
+}
+
+html[data-theme] .workbench-heading h2,
+html[data-theme] .section-heading h1,
+html[data-theme] .section-heading h2,
+html[data-theme] .canvas-menu-head strong,
+html[data-theme] .settings-card strong,
+html[data-theme] .project-card strong,
+html[data-theme] .task-card strong,
+html[data-theme] .object-more-drawer .sheet-head h2,
+html[data-theme] .editor-head strong { color: var(--mobile-ink); }
+
+html[data-theme] input,
+html[data-theme] textarea,
+html[data-theme] select,
+html[data-theme] .workbench-prompt-field textarea,
+html[data-theme] .mobile-ai-prompt-row textarea,
+html[data-theme] .basic-markup-settings input,
+html[data-theme] .basic-resize-controls input,
+html[data-theme] .basic-export-controls select {
+  color: var(--mobile-ink);
+  border-color: var(--mobile-border);
+  background: var(--mobile-glass-soft);
+}
+
+html[data-theme] .icon-button,
+html[data-theme] .secondary-button,
+html[data-theme] .workbench-collapse-button,
+html[data-theme] .workbench-setting-button,
+html[data-theme] .workbench-upload-actions button,
+html[data-theme] .theme-choice-row button,
+html[data-theme] .quick-choice-row button,
+html[data-theme] .object-action-grid button,
+html[data-theme] .basic-panel button,
+html[data-theme] .basic-category-bar button,
+html[data-theme] .editor-zoom button {
+  color: var(--mobile-muted);
+  border-color: var(--mobile-border);
+  background: var(--mobile-glass-soft);
+}
+
+html[data-theme] .primary-button,
+html[data-theme] .composer-generate,
+html[data-theme] .generate-button,
+html[data-theme] .parameter-sheet-done,
+html[data-theme] .mobile-ai-submit,
+html[data-theme] .basic-save,
+html[data-theme] .basic-panel button.primary,
+html[data-theme] .basic-apply-button,
+html[data-theme] .deep-mobile-apply-crop {
+  color: #1b160b;
+  border-color: rgba(158, 115, 27, .45);
+  background: linear-gradient(145deg, #e6c66c, #c39331) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.45), 0 9px 24px rgba(147,105,25,.2);
+}
+
+html[data-theme] .theme-choice-row button.active,
+html[data-theme] .quick-choice-row button.active,
+html[data-theme] .basic-panel button[aria-pressed="true"],
+html[data-theme] .basic-category-bar button[aria-pressed="true"],
+html[data-theme] .mobile-ai-tool-row button[aria-pressed="true"],
+html[data-theme] .deep-mobile-toolbar button[aria-pressed="true"],
+html[data-theme] .deep-mobile-crop-controls button[aria-pressed="true"] {
+  color: #231b0a;
+  border-color: rgba(174,129,32,.5);
+  background: linear-gradient(145deg, #e4c064, #cfa13e);
+}
+
+html[data-theme] .infinite-canvas,
+html[data-theme] .basic-editor-stage,
+html[data-theme] .ai-edit-stage,
+html[data-theme] .deep-stage {
+  background-color: var(--mobile-canvas);
+  background-image:
+    linear-gradient(45deg, rgba(104,108,101,.09) 25%, transparent 25%, transparent 75%, rgba(104,108,101,.09) 75%),
+    linear-gradient(45deg, rgba(104,108,101,.09) 25%, transparent 25%, transparent 75%, rgba(104,108,101,.09) 75%);
+  background-position: 0 0, 14px 14px;
+  background-size: 28px 28px;
+}
+
+html[data-theme] .image-dialog,
+html[data-theme] .compare-dialog,
+html[data-theme] .basic-editor-overlay,
+html[data-theme] .basic-editor,
+html[data-theme] .deep-workspace-overlay,
+html[data-theme] .deep-workspace {
+  color: var(--mobile-ink);
+  background: var(--mobile-bg);
+}
+
+html[data-theme] .image-actions,
+html[data-theme] .basic-editor-head,
+html[data-theme] .basic-control-panel,
+html[data-theme] .basic-category-bar,
+html[data-theme] .mobile-ai-edit-controls,
+html[data-theme] .deep-mobile-toolbar,
+html[data-theme] .deep-mobile-crop-controls,
+html[data-theme] .deep-workspace-overlay:not(.ai-edit-overlay) .deep-inspector,
+html[data-theme] .deep-workspace-overlay .ai-brush-flyout,
+html[data-theme] .deep-workspace-overlay .deep-workspace-head {
+  color: var(--mobile-ink);
+  border-color: var(--mobile-border);
+  background: var(--mobile-glass-strong);
+  box-shadow: var(--mobile-shadow-soft);
+  backdrop-filter: blur(22px) saturate(1.12);
+  -webkit-backdrop-filter: blur(22px) saturate(1.12);
+}
+
+html[data-theme] .image-actions button,
+html[data-theme] .mobile-ai-tool-row button,
+html[data-theme] .deep-mobile-toolbar button,
+html[data-theme] .deep-mobile-crop-controls button,
+html[data-theme] .deep-inspector button,
+html[data-theme] .ai-brush-flyout button {
+  color: var(--mobile-muted);
+  border-color: var(--mobile-border);
+  background: var(--mobile-glass-soft);
+}
+
+html[data-theme] .basic-zoom,
+html[data-theme] .mobile-canvas-zoom,
+html[data-theme] .deep-stage-hint,
+html[data-theme] .viewer-gesture-hint,
+html[data-theme] .editor-zoom {
+  color: var(--mobile-ink);
+  border-color: var(--mobile-border);
+  background: var(--mobile-glass);
+  box-shadow: var(--mobile-shadow-soft);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+html[data-theme] .workbench-heading small,
+html[data-theme] .workbench-section-title span,
+html[data-theme] .eyebrow,
+html[data-theme] .basic-editor-head > div span,
+html[data-theme] .basic-geometry-sliders output,
+html[data-theme] .basic-main-slider output,
+html[data-theme] .basic-export-controls output,
+html[data-theme] .deep-workspace-title span { color: var(--mobile-gold-strong); }
+
+html[data-theme] .workbench-input-hint,
+html[data-theme] .workbench-collapsed-summary,
+html[data-theme] .project-card p,
+html[data-theme] .project-card small,
+html[data-theme] .task-card p,
+html[data-theme] .task-card small,
+html[data-theme] .editor-head small,
+html[data-theme] .basic-panel > p,
+html[data-theme] .basic-geometry-sliders label,
+html[data-theme] .basic-main-slider,
+html[data-theme] .basic-resize-controls label,
+html[data-theme] .basic-export-controls label { color: var(--mobile-muted); }
+
+html[data-theme] .danger,
+html[data-theme] button.danger,
+html[data-theme] [data-object-action="delete"] { color: var(--mobile-danger) !important; }
+
+/* 2026-08-12 文件尾电脑端玻璃覆盖 */
+html[data-theme] .topbar,
+html[data-theme] .creation-workbench,
+html[data-theme] .glass-panel,
+html[data-theme] .settings-card,
+html[data-theme] .project-card,
+html[data-theme] .task-card,
+html[data-theme] .parameter-dialog,
+html[data-theme] .generation-confirm-dialog .confirm-sheet,
+html[data-theme] .basic-editor-head,
+html[data-theme] .basic-control-panel,
+html[data-theme] .basic-category-bar,
+html[data-theme] .mobile-ai-edit-controls,
+html[data-theme] .deep-mobile-toolbar,
+html[data-theme] .deep-mobile-crop-controls,
+html[data-theme] .deep-workspace-overlay:not(.ai-edit-overlay) .deep-inspector,
+html[data-theme] .deep-workspace-overlay .deep-workspace-head,
+html[data-theme] .deep-workspace-overlay .ai-brush-flyout,
+html[data-theme] .image-actions {
+  border-color: var(--desktop-glass-line-low) !important;
+  background: linear-gradient(145deg, var(--desktop-glass-highlight), transparent 40%), var(--desktop-glass-strong) !important;
+  box-shadow: var(--desktop-glass-shadow) !important;
+  backdrop-filter: blur(24px) saturate(1.14) contrast(1.02) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(1.14) contrast(1.02) !important;
+}
+
+html[data-theme] .basic-editor-stage,
+html[data-theme] .ai-edit-stage,
+html[data-theme] .deep-stage {
+  box-shadow: inset 0 1px 0 var(--desktop-glass-line), inset 0 0 44px color-mix(in srgb, var(--desktop-editor-wash) 60%, transparent) !important;
+}
+
+html[data-theme] .workbench-setting-button,
+html[data-theme] .workbench-upload-actions button,
+html[data-theme] .basic-panel button,
+html[data-theme] .basic-category-bar button,
+html[data-theme] .mobile-ai-tool-row button,
+html[data-theme] .deep-mobile-toolbar button,
+html[data-theme] .deep-mobile-crop-controls button,
+html[data-theme] .deep-inspector button,
+html[data-theme] .image-actions button {
+  border-color: var(--desktop-glass-line-low) !important;
+  background: var(--desktop-glass-soft) !important;
+  box-shadow: inset 0 1px 0 var(--desktop-glass-highlight) !important;
+}
+
+/* 最终玻璃层：必须放在文件末尾，避免旧版编辑器样式覆盖 */
+html[data-theme] .topbar,
+html[data-theme] .creation-workbench,
+html[data-theme] .glass-panel,
+html[data-theme] .settings-card,
+html[data-theme] .project-card,
+html[data-theme] .task-card,
+html[data-theme] .parameter-dialog,
+html[data-theme] .generation-confirm-dialog .confirm-sheet,
+html[data-theme] .basic-editor-head,
+html[data-theme] .basic-control-panel,
+html[data-theme] .basic-category-bar,
+html[data-theme] .mobile-ai-edit-controls,
+html[data-theme] .deep-mobile-toolbar,
+html[data-theme] .deep-mobile-crop-controls,
+html[data-theme] .deep-workspace-overlay:not(.ai-edit-overlay) .deep-inspector,
+html[data-theme] .deep-workspace-overlay .deep-workspace-head,
+html[data-theme] .deep-workspace-overlay .ai-brush-flyout,
+html[data-theme] .image-actions {
+  border-color: var(--desktop-glass-line-low) !important;
+  background: linear-gradient(145deg, var(--desktop-glass-highlight), transparent 40%), var(--desktop-glass-strong) !important;
+  box-shadow: var(--desktop-glass-shadow) !important;
+  backdrop-filter: blur(24px) saturate(1.14) contrast(1.02) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(1.14) contrast(1.02) !important;
+}
+
+html[data-theme] .basic-editor-stage,
+html[data-theme] .ai-edit-stage,
+html[data-theme] .deep-stage {
+  box-shadow: inset 0 1px 0 var(--desktop-glass-line), inset 0 0 44px color-mix(in srgb, var(--desktop-editor-wash) 60%, transparent) !important;
+}
+
+html[data-theme] .workbench-setting-button,
+html[data-theme] .workbench-upload-actions button,
+html[data-theme] .basic-panel button,
+html[data-theme] .basic-category-bar button,
+html[data-theme] .mobile-ai-tool-row button,
+html[data-theme] .deep-mobile-toolbar button,
+html[data-theme] .deep-mobile-crop-controls button,
+html[data-theme] .deep-inspector button,
+html[data-theme] .image-actions button {
+  border-color: var(--desktop-glass-line-low) !important;
+  background: var(--desktop-glass-soft) !important;
+  box-shadow: inset 0 1px 0 var(--desktop-glass-highlight) !important;
+}
+
+/* 2026-08-12 电脑端玻璃最终覆盖：置于全部历史规则之后 */
+html[data-theme] body,
+html[data-theme] .app-shell,
+html[data-theme] .page.active,
+html[data-theme] .basic-editor-overlay,
+html[data-theme] .deep-workspace-overlay {
+  background-color: var(--mobile-bg);
+  background-image:
+    repeating-linear-gradient(0deg, color-mix(in srgb, var(--mobile-ink) 2.2%, transparent) 0 1px, transparent 1px 6px),
+    repeating-linear-gradient(90deg, color-mix(in srgb, var(--mobile-ink) 1.7%, transparent) 0 1px, transparent 1px 8px),
+    linear-gradient(145deg, color-mix(in srgb, var(--mobile-bg) 82%, var(--mobile-gold) 18%), var(--mobile-bg) 48%, color-mix(in srgb, var(--mobile-bg) 92%, #708278 8%));
+  background-attachment: fixed;
+}
+
+html[data-theme] .topbar,
+html[data-theme] .bottom-nav,
+html[data-theme] .workspace-bottom,
+html[data-theme] .sheet-head,
+html[data-theme] .parameter-footer,
+html[data-theme] .editor-head,
+html[data-theme] .basic-editor-head,
+html[data-theme] .basic-control-panel,
+html[data-theme] .basic-category-bar,
+html[data-theme] .mobile-ai-edit-controls,
+html[data-theme] .deep-mobile-toolbar,
+html[data-theme] .deep-mobile-crop-controls,
+html[data-theme] .deep-workspace-overlay:not(.ai-edit-overlay) .deep-inspector,
+html[data-theme] .deep-workspace-overlay .ai-brush-flyout,
+html[data-theme] .deep-workspace-overlay .deep-workspace-head,
+html[data-theme] .image-actions {
+  border-color: var(--desktop-glass-line-low);
+  background: linear-gradient(180deg, var(--desktop-glass-highlight), transparent 42%), var(--desktop-glass-strong);
+  box-shadow: var(--desktop-glass-shadow-soft);
+  backdrop-filter: blur(22px) saturate(1.16) contrast(1.02);
+  -webkit-backdrop-filter: blur(22px) saturate(1.16) contrast(1.02);
+}
+
+html[data-theme] .glass-panel,
+html[data-theme] .creation-workbench,
+html[data-theme] .canvas-menu,
+html[data-theme] .workspace-menu,
+html[data-theme] .task-status-panel,
+html[data-theme] .tool-popover,
+html[data-theme] .add-image-menu,
+html[data-theme] .quick-parameter-panel,
+html[data-theme] .settings-card,
+html[data-theme] .api-profile,
+html[data-theme] .project-card,
+html[data-theme] .task-card,
+html[data-theme] .generation-confirm-dialog .confirm-sheet,
+html[data-theme] .object-more-drawer,
+html[data-theme] .parameter-dialog,
+html[data-theme] .parameter-dialog .drawer-section,
+html[data-theme] .parameter-dialog .canvas-section,
+html[data-theme] .parameter-dialog .input-section,
+html[data-theme] .parameter-dialog .parameter-drawer,
+html[data-theme] .parameter-dialog .strategy-panel,
+html[data-theme] .generation-confirm-content > section {
+  border-color: var(--desktop-glass-line-low);
+  background: linear-gradient(145deg, var(--desktop-glass-highlight), transparent 38%), var(--desktop-glass);
+  box-shadow: var(--desktop-glass-shadow);
+  backdrop-filter: blur(24px) saturate(1.14) contrast(1.02);
+  -webkit-backdrop-filter: blur(24px) saturate(1.14) contrast(1.02);
+}
+
+html[data-theme] .creation-workbench,
+html[data-theme] .settings-card,
+html[data-theme] .api-profile,
+html[data-theme] .project-card,
+html[data-theme] .task-card {
+  border-top-color: var(--desktop-glass-line);
+  border-left-color: color-mix(in srgb, var(--desktop-glass-line) 72%, transparent);
+}
+
+html[data-theme] .workbench-setting-button,
+html[data-theme] .workbench-upload-actions button,
+html[data-theme] .theme-choice-row button,
+html[data-theme] .quick-choice-row button,
+html[data-theme] .object-action-grid button,
+html[data-theme] .basic-panel button,
+html[data-theme] .basic-category-bar button,
+html[data-theme] .image-actions button,
+html[data-theme] .mobile-ai-tool-row button,
+html[data-theme] .deep-mobile-toolbar button,
+html[data-theme] .deep-mobile-crop-controls button,
+html[data-theme] .deep-inspector button,
+html[data-theme] .ai-brush-flyout button {
+  border-color: var(--desktop-glass-line-low);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--desktop-glass-highlight) 60%, transparent), transparent), var(--desktop-glass-soft);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--desktop-glass-line) 66%, transparent);
+}
+
+html[data-theme] .workbench-prompt-field textarea,
+html[data-theme] .mobile-ai-prompt-row textarea,
+html[data-theme] .deep-inspector input,
+html[data-theme] .deep-inspector textarea,
+html[data-theme] .deep-inspector select,
+html[data-theme] .basic-editor input,
+html[data-theme] .basic-editor textarea,
+html[data-theme] .basic-editor select {
+  border-color: var(--desktop-glass-line-low);
+  background: color-mix(in srgb, var(--desktop-glass-strong) 76%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--desktop-glass-line) 72%, transparent), inset 0 0 0 1px color-mix(in srgb, var(--mobile-ink) 2%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+html[data-theme] .basic-editor,
+html[data-theme] .deep-workspace { background: transparent; }
+
+html[data-theme] .basic-editor-stage,
+html[data-theme] .ai-edit-stage,
+html[data-theme] .deep-stage {
+  border-color: var(--desktop-glass-line-low);
+  box-shadow: inset 0 1px 0 var(--desktop-glass-line), inset 0 0 44px color-mix(in srgb, var(--desktop-editor-wash) 60%, transparent);
+}
+
+html[data-theme] .basic-control-panel,
+html[data-theme] .mobile-ai-edit-controls,
+html[data-theme] .deep-mobile-toolbar {
+  border-top-color: var(--desktop-glass-line);
+  box-shadow: 0 -1px 0 var(--desktop-glass-line) inset, 0 -16px 42px color-mix(in srgb, var(--mobile-bg) 22%, transparent);
+}
+
+html[data-theme] .deep-mobile-crop-controls,
+html[data-theme] .deep-workspace-overlay:not(.ai-edit-overlay) .deep-inspector,
+html[data-theme] .deep-workspace-overlay .ai-brush-flyout,
+html[data-theme] .editor-zoom,
+html[data-theme] .basic-zoom,
+html[data-theme] .mobile-canvas-zoom,
+html[data-theme] .deep-stage-hint,
+html[data-theme] .viewer-gesture-hint {
+  border-color: var(--desktop-glass-line);
+  background: linear-gradient(145deg, var(--desktop-glass-highlight), transparent 44%), var(--desktop-glass-strong);
+  box-shadow: var(--desktop-glass-shadow-soft);
+  backdrop-filter: blur(18px) saturate(1.12);
+  -webkit-backdrop-filter: blur(18px) saturate(1.12);
+}
+
+/* 2026-08-12 复用电脑端老鬼 AI 的磨砂玻璃质感 */
+html[data-theme="light"] {
+  --desktop-glass: rgba(255, 253, 248, .76);
+  --desktop-glass-strong: rgba(255, 253, 248, .86);
+  --desktop-glass-soft: rgba(255, 255, 255, .46);
+  --desktop-glass-line: rgba(255, 255, 255, .72);
+  --desktop-glass-line-low: rgba(42, 37, 29, .12);
+  --desktop-glass-highlight: rgba(255, 255, 255, .68);
+  --desktop-glass-shadow: 0 1px 0 rgba(255,255,255,.86) inset, 0 18px 52px rgba(31,27,20,.13);
+  --desktop-glass-shadow-soft: 0 1px 0 rgba(255,255,255,.8) inset, 0 10px 30px rgba(31,27,20,.09);
+  --desktop-editor-wash: rgba(239, 236, 228, .72);
+}
+
+html[data-theme="dark"] {
+  --desktop-glass: rgba(20, 20, 18, .76);
+  --desktop-glass-strong: rgba(23, 23, 20, .86);
+  --desktop-glass-soft: rgba(255, 255, 255, .055);
+  --desktop-glass-line: rgba(255, 255, 255, .16);
+  --desktop-glass-line-low: rgba(255, 255, 255, .1);
+  --desktop-glass-highlight: rgba(255, 255, 255, .055);
+  --desktop-glass-shadow: 0 1px 0 rgba(255,255,255,.08) inset, 0 22px 62px rgba(0,0,0,.34);
+  --desktop-glass-shadow-soft: 0 1px 0 rgba(255,255,255,.065) inset, 0 12px 34px rgba(0,0,0,.24);
+  --desktop-editor-wash: rgba(13, 13, 11, .72);
+}
+
+/* 让电脑端玻璃材质覆盖历史页面规则 */
+html[data-theme] .topbar,
+html[data-theme] .creation-workbench,
+html[data-theme] .glass-panel,
+html[data-theme] .settings-card,
+html[data-theme] .project-card,
+html[data-theme] .task-card,
+html[data-theme] .parameter-dialog,
+html[data-theme] .generation-confirm-dialog .confirm-sheet,
+html[data-theme] .basic-editor-head,
+html[data-theme] .basic-control-panel,
+html[data-theme] .basic-category-bar,
+html[data-theme] .mobile-ai-edit-controls,
+html[data-theme] .deep-mobile-toolbar,
+html[data-theme] .deep-mobile-crop-controls,
+html[data-theme] .deep-workspace-overlay:not(.ai-edit-overlay) .deep-inspector,
+html[data-theme] .deep-workspace-overlay .deep-workspace-head,
+html[data-theme] .deep-workspace-overlay .ai-brush-flyout,
+html[data-theme] .image-actions {
+  border-color: var(--desktop-glass-line-low) !important;
+  background: linear-gradient(145deg, var(--desktop-glass-highlight), transparent 40%), var(--desktop-glass-strong) !important;
+  box-shadow: var(--desktop-glass-shadow) !important;
+  backdrop-filter: blur(24px) saturate(1.14) contrast(1.02) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(1.14) contrast(1.02) !important;
+}
+
+html[data-theme] .basic-editor-stage,
+html[data-theme] .ai-edit-stage,
+html[data-theme] .deep-stage {
+  background-color: var(--mobile-canvas) !important;
+  box-shadow: inset 0 1px 0 var(--desktop-glass-line), inset 0 0 44px color-mix(in srgb, var(--desktop-editor-wash) 60%, transparent) !important;
+}
+
+html[data-theme] .workbench-setting-button,
+html[data-theme] .workbench-upload-actions button,
+html[data-theme] .basic-panel button,
+html[data-theme] .basic-category-bar button,
+html[data-theme] .mobile-ai-tool-row button,
+html[data-theme] .deep-mobile-toolbar button,
+html[data-theme] .deep-mobile-crop-controls button,
+html[data-theme] .deep-inspector button,
+html[data-theme] .image-actions button {
+  border-color: var(--desktop-glass-line-low) !important;
+  background: var(--desktop-glass-soft) !important;
+  box-shadow: inset 0 1px 0 var(--desktop-glass-highlight) !important;
+}
+
+html[data-theme] body,
+html[data-theme] .app-shell,
+html[data-theme] .page.active,
+html[data-theme] .basic-editor-overlay,
+html[data-theme] .deep-workspace-overlay {
+  background-color: var(--mobile-bg);
+  background-image:
+    repeating-linear-gradient(0deg, color-mix(in srgb, var(--mobile-ink) 2.2%, transparent) 0 1px, transparent 1px 6px),
+    repeating-linear-gradient(90deg, color-mix(in srgb, var(--mobile-ink) 1.7%, transparent) 0 1px, transparent 1px 8px),
+    linear-gradient(145deg, color-mix(in srgb, var(--mobile-bg) 82%, var(--mobile-gold) 18%), var(--mobile-bg) 48%, color-mix(in srgb, var(--mobile-bg) 92%, #708278 8%));
+  background-attachment: fixed;
+}
+
+html[data-theme] .topbar,
+html[data-theme] .bottom-nav,
+html[data-theme] .workspace-bottom,
+html[data-theme] .sheet-head,
+html[data-theme] .parameter-footer,
+html[data-theme] .editor-head,
+html[data-theme] .basic-editor-head,
+html[data-theme] .basic-control-panel,
+html[data-theme] .basic-category-bar,
+html[data-theme] .mobile-ai-edit-controls,
+html[data-theme] .deep-mobile-toolbar,
+html[data-theme] .deep-mobile-crop-controls,
+html[data-theme] .deep-workspace-overlay:not(.ai-edit-overlay) .deep-inspector,
+html[data-theme] .deep-workspace-overlay .ai-brush-flyout,
+html[data-theme] .deep-workspace-overlay .deep-workspace-head,
+html[data-theme] .image-actions {
+  border-color: var(--desktop-glass-line-low);
+  background:
+    linear-gradient(180deg, var(--desktop-glass-highlight), transparent 42%),
+    var(--desktop-glass-strong);
+  box-shadow: var(--desktop-glass-shadow-soft);
+  backdrop-filter: blur(22px) saturate(1.16) contrast(1.02);
+  -webkit-backdrop-filter: blur(22px) saturate(1.16) contrast(1.02);
+}
+
+html[data-theme] .glass-panel,
+html[data-theme] .creation-workbench,
+html[data-theme] .canvas-menu,
+html[data-theme] .workspace-menu,
+html[data-theme] .task-status-panel,
+html[data-theme] .tool-popover,
+html[data-theme] .add-image-menu,
+html[data-theme] .quick-parameter-panel,
+html[data-theme] .settings-card,
+html[data-theme] .api-profile,
+html[data-theme] .project-card,
+html[data-theme] .task-card,
+html[data-theme] .generation-confirm-dialog .confirm-sheet,
+html[data-theme] .object-more-drawer,
+html[data-theme] .parameter-dialog,
+html[data-theme] .parameter-dialog .drawer-section,
+html[data-theme] .parameter-dialog .canvas-section,
+html[data-theme] .parameter-dialog .input-section,
+html[data-theme] .parameter-dialog .parameter-drawer,
+html[data-theme] .parameter-dialog .strategy-panel,
+html[data-theme] .generation-confirm-content > section {
+  border-color: var(--desktop-glass-line-low);
+  background:
+    linear-gradient(145deg, var(--desktop-glass-highlight), transparent 38%),
+    var(--desktop-glass);
+  box-shadow: var(--desktop-glass-shadow);
+  backdrop-filter: blur(24px) saturate(1.14) contrast(1.02);
+  -webkit-backdrop-filter: blur(24px) saturate(1.14) contrast(1.02);
+}
+
+html[data-theme] .creation-workbench,
+html[data-theme] .settings-card,
+html[data-theme] .api-profile,
+html[data-theme] .project-card,
+html[data-theme] .task-card {
+  border-top-color: var(--desktop-glass-line);
+  border-left-color: color-mix(in srgb, var(--desktop-glass-line) 72%, transparent);
+}
+
+html[data-theme] .workbench-setting-button,
+html[data-theme] .workbench-upload-actions button,
+html[data-theme] .theme-choice-row button,
+html[data-theme] .quick-choice-row button,
+html[data-theme] .object-action-grid button,
+html[data-theme] .basic-panel button,
+html[data-theme] .basic-category-bar button,
+html[data-theme] .image-actions button,
+html[data-theme] .mobile-ai-tool-row button,
+html[data-theme] .deep-mobile-toolbar button,
+html[data-theme] .deep-mobile-crop-controls button,
+html[data-theme] .deep-inspector button,
+html[data-theme] .ai-brush-flyout button {
+  border-color: var(--desktop-glass-line-low);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--desktop-glass-highlight) 60%, transparent), transparent),
+    var(--desktop-glass-soft);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--desktop-glass-line) 66%, transparent);
+}
+
+html[data-theme] .workbench-prompt-field textarea,
+html[data-theme] .mobile-ai-prompt-row textarea,
+html[data-theme] .deep-inspector input,
+html[data-theme] .deep-inspector textarea,
+html[data-theme] .deep-inspector select,
+html[data-theme] .basic-editor input,
+html[data-theme] .basic-editor textarea,
+html[data-theme] .basic-editor select {
+  border-color: var(--desktop-glass-line-low);
+  background: color-mix(in srgb, var(--desktop-glass-strong) 76%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--desktop-glass-line) 72%, transparent), inset 0 0 0 1px color-mix(in srgb, var(--mobile-ink) 2%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+html[data-theme] .basic-editor,
+html[data-theme] .deep-workspace {
+  background: transparent;
+}
+
+html[data-theme] .basic-editor-stage,
+html[data-theme] .ai-edit-stage,
+html[data-theme] .deep-stage {
+  border-color: var(--desktop-glass-line-low);
+  box-shadow: inset 0 1px 0 var(--desktop-glass-line), inset 0 0 44px color-mix(in srgb, var(--desktop-editor-wash) 60%, transparent);
+}
+
+html[data-theme] .basic-control-panel,
+html[data-theme] .mobile-ai-edit-controls,
+html[data-theme] .deep-mobile-toolbar {
+  border-top-color: var(--desktop-glass-line);
+  box-shadow: 0 -1px 0 var(--desktop-glass-line) inset, 0 -16px 42px color-mix(in srgb, var(--mobile-bg) 22%, transparent);
+}
+
+html[data-theme] .deep-mobile-crop-controls,
+html[data-theme] .deep-workspace-overlay:not(.ai-edit-overlay) .deep-inspector,
+html[data-theme] .deep-workspace-overlay .ai-brush-flyout,
+html[data-theme] .editor-zoom,
+html[data-theme] .basic-zoom,
+html[data-theme] .mobile-canvas-zoom,
+html[data-theme] .deep-stage-hint,
+html[data-theme] .viewer-gesture-hint {
+  border-color: var(--desktop-glass-line);
+  background:
+    linear-gradient(145deg, var(--desktop-glass-highlight), transparent 44%),
+    var(--desktop-glass-strong);
+  box-shadow: var(--desktop-glass-shadow-soft);
+  backdrop-filter: blur(18px) saturate(1.12);
+  -webkit-backdrop-filter: blur(18px) saturate(1.12);
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  html[data-theme] .glass-panel,
+  html[data-theme] .creation-workbench,
+  html[data-theme] .basic-control-panel,
+  html[data-theme] .mobile-ai-edit-controls,
+  html[data-theme] .deep-mobile-toolbar,
+  html[data-theme] .deep-inspector { background: var(--mobile-glass-strong); }
+}
+
+/* 2026-08-12 手机版全局自动明暗磨砂玻璃系统 */
+html[data-theme="light"] {
+  color-scheme: light;
+  --mobile-bg: #eceeea;
+  --mobile-canvas: #f2f3ef;
+  --mobile-ink: #1d1e1b;
+  --mobile-muted: #666960;
+  --mobile-glass: rgba(250, 250, 247, .82);
+  --mobile-glass-strong: rgba(252, 252, 249, .92);
+  --mobile-glass-soft: rgba(255, 255, 255, .56);
+  --mobile-border: rgba(73, 78, 70, .16);
+  --mobile-border-strong: rgba(73, 78, 70, .22);
+  --mobile-shadow: 0 18px 48px rgba(52, 58, 51, .14), inset 0 1px 0 rgba(255,255,255,.96);
+  --mobile-shadow-soft: 0 8px 24px rgba(52, 58, 51, .10), inset 0 1px 0 rgba(255,255,255,.9);
+  --mobile-gold: #c99b37;
+  --mobile-gold-strong: #a8771c;
+  --mobile-gold-soft: rgba(201, 155, 55, .17);
+  --mobile-danger: #b9473e;
+  --bg: var(--mobile-bg);
+  --surface: var(--mobile-glass);
+  --surface-2: rgba(226, 229, 224, .78);
+  --ink: var(--mobile-ink);
+  --muted: var(--mobile-muted);
+  --line: var(--mobile-border);
+  --glass: var(--mobile-glass);
+  --glass-strong: var(--mobile-glass-strong);
+  --glass-soft: var(--mobile-glass-soft);
+  --glass-border: var(--mobile-border);
+  --glass-shadow: var(--mobile-shadow);
+  --danger: var(--mobile-danger);
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --mobile-bg: #0e0f0d;
+  --mobile-canvas: #181916;
+  --mobile-ink: #f4f1e8;
+  --mobile-muted: rgba(232, 230, 220, .64);
+  --mobile-glass: rgba(22, 23, 20, .82);
+  --mobile-glass-strong: rgba(27, 28, 24, .92);
+  --mobile-glass-soft: rgba(255, 255, 255, .06);
+  --mobile-border: rgba(255, 255, 255, .14);
+  --mobile-border-strong: rgba(255, 255, 255, .2);
+  --mobile-shadow: 0 20px 56px rgba(0, 0, 0, .38), inset 0 1px 0 rgba(255,255,255,.08);
+  --mobile-shadow-soft: 0 9px 28px rgba(0, 0, 0, .28), inset 0 1px 0 rgba(255,255,255,.07);
+  --mobile-gold: #d6b457;
+  --mobile-gold-strong: #f0d38a;
+  --mobile-gold-soft: rgba(214, 180, 87, .15);
+  --mobile-danger: #f08074;
+  --bg: var(--mobile-bg);
+  --surface: var(--mobile-glass);
+  --surface-2: rgba(44, 44, 39, .76);
+  --ink: var(--mobile-ink);
+  --muted: var(--mobile-muted);
+  --line: var(--mobile-border);
+  --glass: var(--mobile-glass);
+  --glass-strong: var(--mobile-glass-strong);
+  --glass-soft: var(--mobile-glass-soft);
+  --glass-border: var(--mobile-border);
+  --glass-shadow: var(--mobile-shadow);
+  --danger: var(--mobile-danger);
+}
+
+html[data-theme],
+html[data-theme] body {
+  color: var(--mobile-ink);
+  background-color: var(--mobile-bg);
+  background-image:
+    linear-gradient(rgba(120, 124, 116, .045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(120, 124, 116, .045) 1px, transparent 1px),
+    linear-gradient(145deg, var(--mobile-bg), color-mix(in srgb, var(--mobile-bg) 88%, var(--mobile-gold) 12%));
+  background-size: 32px 32px, 32px 32px, auto;
+}
+
+html[data-theme] .topbar,
+html[data-theme] .bottom-nav,
+html[data-theme] .workspace-bottom,
+html[data-theme] .sheet-head,
+html[data-theme] .parameter-footer,
+html[data-theme] .editor-head {
+  color: var(--mobile-ink);
+  border-color: var(--mobile-border);
+  background: var(--mobile-glass);
+  box-shadow: var(--mobile-shadow-soft);
+  backdrop-filter: blur(22px) saturate(1.12);
+  -webkit-backdrop-filter: blur(22px) saturate(1.12);
+}
+
+html[data-theme] .glass-panel,
+html[data-theme] .creation-workbench,
+html[data-theme] .canvas-menu,
+html[data-theme] .workspace-menu,
+html[data-theme] .task-status-panel,
+html[data-theme] .tool-popover,
+html[data-theme] .add-image-menu,
+html[data-theme] .quick-parameter-panel,
+html[data-theme] .settings-card,
+html[data-theme] .api-profile,
+html[data-theme] .project-card,
+html[data-theme] .task-card,
+html[data-theme] .generation-confirm-dialog .confirm-sheet,
+html[data-theme] .object-more-drawer,
+html[data-theme] .parameter-dialog {
+  color: var(--mobile-ink);
+  border-color: var(--mobile-border);
+  background: var(--mobile-glass);
+  box-shadow: var(--mobile-shadow);
+  backdrop-filter: blur(24px) saturate(1.12);
+  -webkit-backdrop-filter: blur(24px) saturate(1.12);
+}
+
+html[data-theme] .page:not([data-page="home"]).active {
+  color: var(--mobile-ink);
+  background: color-mix(in srgb, var(--mobile-bg) 92%, transparent);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+html[data-theme] .workbench-heading h2,
+html[data-theme] .section-heading h1,
+html[data-theme] .section-heading h2,
+html[data-theme] .canvas-menu-head strong,
+html[data-theme] .settings-card strong,
+html[data-theme] .project-card strong,
+html[data-theme] .task-card strong,
+html[data-theme] .object-more-drawer .sheet-head h2,
+html[data-theme] .editor-head strong {
+  color: var(--mobile-ink);
+}
+
+html[data-theme] .workbench-heading small,
+html[data-theme] .workbench-section-title span,
+html[data-theme] .eyebrow,
+html[data-theme] .basic-editor-head > div span {
+  color: var(--mobile-gold-strong);
+}
+
+html[data-theme] .workbench-input-hint,
+html[data-theme] .workbench-collapsed-summary,
+html[data-theme] .project-card p,
+html[data-theme] .project-card small,
+html[data-theme] .task-card p,
+html[data-theme] .task-card small,
+html[data-theme] .editor-head small,
+html[data-theme] .basic-panel > p {
+  color: var(--mobile-muted);
+}
+
+html[data-theme] input,
+html[data-theme] textarea,
+html[data-theme] select,
+html[data-theme] .workbench-prompt-field textarea,
+html[data-theme] .mobile-ai-prompt-row textarea,
+html[data-theme] .basic-markup-settings input,
+html[data-theme] .basic-resize-controls input,
+html[data-theme] .basic-export-controls select {
+  color: var(--mobile-ink);
+  border-color: var(--mobile-border);
+  background: var(--mobile-glass-soft);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--mobile-ink) 8%, transparent);
+}
+
+html[data-theme] input::placeholder,
+html[data-theme] textarea::placeholder { color: color-mix(in srgb, var(--mobile-muted) 72%, transparent); }
+
+html[data-theme] .icon-button,
+html[data-theme] .secondary-button,
+html[data-theme] .workbench-collapse-button,
+html[data-theme] .workbench-setting-button,
+html[data-theme] .workbench-upload-actions button,
+html[data-theme] .theme-choice-row button,
+html[data-theme] .quick-choice-row button,
+html[data-theme] .object-action-grid button,
+html[data-theme] .basic-panel button,
+html[data-theme] .basic-category-bar button,
+html[data-theme] .editor-zoom button {
+  color: var(--mobile-muted);
+  border-color: var(--mobile-border);
+  background: var(--mobile-glass-soft);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--mobile-ink) 8%, transparent);
+}
+
+html[data-theme] .primary-button,
+html[data-theme] .composer-generate,
+html[data-theme] .generate-button,
+html[data-theme] .parameter-sheet-done,
+html[data-theme] .mobile-ai-submit,
+html[data-theme] .basic-save,
+html[data-theme] .basic-panel button.primary,
+html[data-theme] .basic-apply-button,
+html[data-theme] .deep-mobile-apply-crop {
+  color: #1b160b;
+  border-color: rgba(158, 115, 27, .45);
+  background: linear-gradient(145deg, #e6c66c, #c39331) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.45), 0 9px 24px rgba(147, 105, 25, .2);
+}
+
+html[data-theme] .theme-choice-row button.active,
+html[data-theme] .quick-choice-row button.active,
+html[data-theme] .basic-panel button[aria-pressed="true"],
+html[data-theme] .basic-category-bar button[aria-pressed="true"],
+html[data-theme] .mobile-ai-tool-row button[aria-pressed="true"],
+html[data-theme] .deep-mobile-toolbar button[aria-pressed="true"],
+html[data-theme] .deep-mobile-crop-controls button[aria-pressed="true"] {
+  color: #231b0a;
+  border-color: rgba(174, 129, 32, .5);
+  background: linear-gradient(145deg, #e4c064, #cfa13e);
+}
+
+html[data-theme] .infinite-canvas,
+html[data-theme] .basic-editor-stage,
+html[data-theme] .ai-edit-stage,
+html[data-theme] .deep-stage {
+  background-color: var(--mobile-canvas);
+  background-image:
+    linear-gradient(45deg, rgba(104,108,101,.09) 25%, transparent 25%, transparent 75%, rgba(104,108,101,.09) 75%),
+    linear-gradient(45deg, rgba(104,108,101,.09) 25%, transparent 25%, transparent 75%, rgba(104,108,101,.09) 75%);
+  background-position: 0 0, 14px 14px;
+  background-size: 28px 28px;
+}
+
+html[data-theme] .image-dialog,
+html[data-theme] .compare-dialog,
+html[data-theme] .basic-editor-overlay,
+html[data-theme] .basic-editor,
+html[data-theme] .deep-workspace-overlay,
+html[data-theme] .deep-workspace {
+  color: var(--mobile-ink);
+  background: var(--mobile-bg);
+}
+
+html[data-theme] .image-actions,
+html[data-theme] .basic-editor-head,
+html[data-theme] .basic-control-panel,
+html[data-theme] .basic-category-bar,
+html[data-theme] .mobile-ai-edit-controls,
+html[data-theme] .deep-mobile-toolbar,
+html[data-theme] .deep-mobile-crop-controls,
+html[data-theme] .deep-inspector,
+html[data-theme] .ai-brush-flyout {
+  color: var(--mobile-ink);
+  border-color: var(--mobile-border);
+  background: var(--mobile-glass-strong);
+  box-shadow: var(--mobile-shadow-soft);
+  backdrop-filter: blur(22px) saturate(1.12);
+  -webkit-backdrop-filter: blur(22px) saturate(1.12);
+}
+
+html[data-theme] .image-actions button,
+html[data-theme] .mobile-ai-tool-row button,
+html[data-theme] .deep-mobile-toolbar button,
+html[data-theme] .deep-mobile-crop-controls button,
+html[data-theme] .deep-inspector button,
+html[data-theme] .ai-brush-flyout button {
+  color: var(--mobile-muted);
+  border-color: var(--mobile-border);
+  background: var(--mobile-glass-soft);
+}
+
+html[data-theme] .basic-zoom,
+html[data-theme] .mobile-canvas-zoom,
+html[data-theme] .deep-stage-hint,
+html[data-theme] .viewer-gesture-hint,
+html[data-theme] .editor-zoom {
+  color: var(--mobile-ink);
+  border-color: var(--mobile-border);
+  background: var(--mobile-glass);
+  box-shadow: var(--mobile-shadow-soft);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+html[data-theme] .basic-geometry-sliders label,
+html[data-theme] .basic-main-slider,
+html[data-theme] .basic-resize-controls label,
+html[data-theme] .basic-export-controls label {
+  color: var(--mobile-muted);
+}
+
+html[data-theme] .basic-geometry-sliders output,
+html[data-theme] .basic-main-slider output,
+html[data-theme] .basic-export-controls output { color: var(--mobile-gold-strong); }
+
+html[data-theme] .danger,
+html[data-theme] button.danger,
+html[data-theme] [data-object-action="delete"] { color: var(--mobile-danger) !important; }
+
+html[data-theme] dialog::backdrop {
+  background: color-mix(in srgb, #080907 58%, transparent);
+  backdrop-filter: blur(5px);
+  -webkit-backdrop-filter: blur(5px);
+}
+
+@media (max-width: 430px) {
+  html[data-theme] .main-content { padding-right: 12px; padding-left: 12px; }
+  html[data-theme] .creation-workbench { padding: 14px; }
+  html[data-theme] .basic-control-panel { max-height: 34dvh; }
+  html[data-theme] .generation-confirm-dialog .confirm-sheet { max-height: 92dvh; }
+}
+
+@media (max-width: 375px) {
+  html[data-theme] .topbar { padding-right: 7px; padding-left: 7px; }
+  html[data-theme] .topbar-actions { gap: 3px; }
+  html[data-theme] .brand-home-button .brand-logo-plate { width: 86px; }
+  html[data-theme] .canvas-menu-button { max-width: 98px; }
+  html[data-theme] .workbench-heading h2 { font-size: 18px; }
+  html[data-theme] .basic-editor-head { grid-template-columns: 44px minmax(0,1fr) 44px 44px 52px; }
+}
+
 * { box-sizing: border-box; }
 html { min-height: 100%; background: var(--bg); overscroll-behavior: none; }
 body { min-height: 100%; margin: 0; color: var(--ink); background: var(--bg); }
@@ -335,9 +1303,19 @@ dialog { color: var(--ink); }
 .editor-head > button { font-size: 11px; }
 .image-editor-stage { position: absolute; inset: calc(64px + env(safe-area-inset-top)) 0 calc(72px + env(safe-area-inset-bottom)); display: grid; place-items: center; overflow: hidden; touch-action: none; }
 .image-dialog .image-editor-stage > img, .image-dialog .panorama-viewer { width: 100%; height: 100%; object-fit: contain; transform-origin: center; transition: transform 120ms ease-out; will-change: transform; }
+.viewer-gesture-hint { position: absolute; left: 50%; bottom: 12px; max-width: calc(100% - 28px); margin: 0; padding: 7px 11px; color: rgba(255,255,255,.76); border: 1px solid rgba(255,255,255,.12); border-radius: 999px; background: rgba(8,9,10,.72); backdrop-filter: blur(10px); font-size: 10px; white-space: nowrap; pointer-events: none; transform: translateX(-50%); }
 .editor-zoom { position: fixed; z-index: 5; right: 14px; bottom: calc(86px + env(safe-area-inset-bottom)); display: grid; grid-template-columns: 42px 52px 42px; align-items: center; overflow: hidden; border: 1px solid rgba(255,255,255,.15); border-radius: 12px; color: #fff; background: rgba(9,11,16,.78); }
 .editor-zoom button { width: 42px; height: 42px; display: grid; place-items: center; padding: 0; border: 0; color: #fff; background: transparent; }
 .editor-zoom output { font-size: 11px; text-align: center; }
+.canvas-node-context { grid-template-columns: repeat(2, minmax(64px,1fr)); }
+.canvas-node-context button { min-width: 64px; min-height: 48px; }
+.canvas-node-context button[data-object-action="delete"] { color: #f2a198; }
+.canvas-node-context button[data-object-action="download"] { color: #e4c36f; }
+@media (max-width: 520px) {
+  .canvas-node-context { grid-template-columns: repeat(2, 66px); }
+  .canvas-node-context button { min-width: 66px; }
+  .image-actions button { min-height: 64px; }
+}
 
 html[data-theme="light"] { color-scheme: light; --bg: #eef2f6; --surface: rgba(255,255,255,.82); --surface-2: rgba(226,232,239,.82); --ink: #171a1f; --muted: rgba(44,52,62,.62); --line: rgba(32,42,54,.14); --line-strong: rgba(179,135,42,.42); --gold: #b98a2e; --gold-soft: rgba(185,138,46,.12); --danger: #b9473e; --success: #2f865b; --glass: rgba(255,255,255,.68); --glass-strong: rgba(255,255,255,.9); --glass-soft: rgba(255,255,255,.56); --glass-border: rgba(70,84,101,.16); --glass-shadow: 0 18px 48px rgba(72,88,105,.15), inset 0 1px 0 rgba(255,255,255,.88); }
 html[data-theme="light"], html[data-theme="light"] body { background: #eef2f6; }
@@ -371,6 +1349,67 @@ html[data-theme="light"] .canvas-toolbar button.active, html[data-theme="light"]
   .workspace-composer { grid-template-columns: 42px minmax(0,1fr) 42px auto; padding-right: 9px; padding-left: 9px; }
   .composer-add, .composer-settings { width: 42px; }
   .composer-generate { min-width: 58px; padding: 0 11px; }
+}
+
+/* 2026-08-12 独立手机基础编辑器 */
+.basic-editor-overlay { position: fixed; z-index: 102; inset: 0; color: #f7f4ec; background: #151613; }
+.basic-editor { width: 100%; height: 100dvh; display: grid; grid-template-rows: calc(58px + env(safe-area-inset-top)) minmax(0,1fr) auto calc(64px + env(safe-area-inset-bottom)); overflow: hidden; background: #191a17; }
+.basic-editor-head { min-width: 0; display: grid; grid-template-columns: 44px minmax(0,1fr) 44px 44px 58px; align-items: end; gap: 5px; padding: env(safe-area-inset-top) 8px 6px; border-bottom: 1px solid rgba(255,255,255,.1); background: rgba(19,20,18,.98); }
+.basic-editor-head button { min-width: 44px; min-height: 44px; display: grid; place-items: center; padding: 0; color: #f5f1e8; border: 0; border-radius: 7px; background: rgba(255,255,255,.055); }
+.basic-editor-head button:disabled { opacity: .32; }
+.basic-editor-head svg { width: 19px; height: 19px; }
+.basic-editor-head > div { min-width: 0; display: grid; align-self: center; }
+.basic-editor-head > div span { color: #d4aa47; font-size: 11px; font-weight: 750; }
+.basic-editor-head > div strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.basic-editor-head .basic-save { color: #19150c; background: #d9ae49; font-size: 12px; font-weight: 800; }
+.basic-editor-stage { position: relative; min-height: 0; overflow: hidden; background-color: #252622; background-image: linear-gradient(45deg,#2d2e2a 25%,transparent 25%),linear-gradient(-45deg,#2d2e2a 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#2d2e2a 75%),linear-gradient(-45deg,transparent 75%,#2d2e2a 75%); background-position: 0 0,0 14px,14px -14px,-14px 0; background-size: 28px 28px; touch-action: none; }
+.basic-editor-stage canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+.basic-zoom { position: absolute; top: 9px; right: 9px; min-width: 48px; padding: 5px 8px; color: rgba(255,255,255,.82); border-radius: 6px; background: rgba(0,0,0,.52); text-align: center; font-size: 10px; pointer-events: none; }
+.basic-editor-busy { position: absolute; z-index: 8; inset: 0; display: grid; place-content: center; gap: 8px; background: rgba(12,13,11,.52); text-align: center; }
+.basic-editor-busy span { width: 22px; height: 22px; margin: auto; border: 2px solid rgba(255,255,255,.3); border-top-color: #e2b753; border-radius: 50%; animation: spin 1s linear infinite; }
+.basic-control-panel { min-height: 94px; max-height: 31dvh; overflow-y: auto; padding: 8px 10px; border-top: 1px solid rgba(255,255,255,.09); background: #1d1e1b; scrollbar-width: none; }
+.basic-panel { display: grid; gap: 8px; }
+.basic-ratio-row, .basic-adjust-tools, .basic-filter-row, .basic-markup-tools { display: flex; gap: 7px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
+.basic-panel button { min-height: 44px; flex: 0 0 auto; padding: 0 12px; color: rgba(255,255,255,.74); border: 1px solid rgba(255,255,255,.09); border-radius: 7px; background: rgba(255,255,255,.045); font-size: 11px; }
+.basic-panel button[aria-pressed="true"], .basic-panel button.primary, .basic-apply-button { color: #19150c; border-color: #d9ae49; background: #d9ae49 !important; font-weight: 750; }
+.basic-action-row { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 6px; }
+.basic-action-row button { min-width: 0; display: grid; place-items: center; gap: 2px; padding: 5px 2px; }
+.basic-action-row button svg { width: 17px; height: 17px; }
+.basic-action-row .primary { grid-column: 1/-1; }
+.basic-geometry-sliders { display: grid; gap: 7px; }
+.basic-geometry-sliders label, .basic-main-slider { display: grid; grid-template-columns: 72px minmax(0,1fr) 38px; align-items: center; gap: 7px; min-height: 44px; color: rgba(255,255,255,.72); font-size: 11px; }
+.basic-geometry-sliders input, .basic-main-slider input { grid-column: 2; grid-row: 1; min-height: 32px; padding: 0; border: 0; background: transparent; }
+.basic-geometry-sliders output, .basic-main-slider output { grid-column: 3; text-align: right; color: #e2b753; }
+.basic-geometry-sliders button, .basic-apply-button { width: 100%; }
+.basic-adjust-tools button { min-width: 66px; }
+.basic-filter-row button { width: 66px; display: grid; place-items: center; gap: 4px; padding: 5px; }
+.basic-filter-row button i { width: 42px; height: 30px; border-radius: 5px; background-color: #343532; background-position: center; background-size: cover; }
+.basic-filter-row button:nth-child(2) i { filter: saturate(.9) brightness(1.08); }
+.basic-filter-row button:nth-child(3) i { filter: contrast(1.2) brightness(1.1); }
+.basic-filter-row button:nth-child(4) i { filter: sepia(.45) saturate(1.3); }
+.basic-filter-row button:nth-child(5) i { filter: hue-rotate(165deg) saturate(.65); }
+.basic-filter-row button:nth-child(6) i { filter: contrast(1.35) saturate(.7); }
+.basic-filter-row button:nth-child(7) i { filter: grayscale(1); }
+.basic-markup-settings { display: grid; grid-template-columns: 48px minmax(0,1fr); gap: 8px; }
+.basic-markup-settings input { min-height: 44px; padding: 7px; color: #f8f5ec; border-color: rgba(255,255,255,.1); background: rgba(255,255,255,.05); }
+.basic-markup-settings [data-basic-text] { grid-column: 1/-1; }
+.basic-resize-controls { display: grid; grid-template-columns: minmax(0,1fr) 14px minmax(0,1fr); align-items: end; gap: 7px; }
+.basic-resize-controls label, .basic-export-controls label { display: grid; gap: 5px; color: rgba(255,255,255,.7); font-size: 11px; }
+.basic-resize-controls input, .basic-export-controls select { min-height: 44px; color: #f8f5ec; border-color: rgba(255,255,255,.12); background: rgba(255,255,255,.055); }
+.basic-resize-controls button { grid-column: 1/-1; width: 100%; }
+.basic-export-controls { display: grid; grid-template-columns: 100px minmax(0,1fr); gap: 10px; }
+.basic-export-controls label:last-child { grid-template-columns: 46px minmax(0,1fr) 42px; align-items: center; }
+.basic-export-controls input { min-height: 36px; padding: 0; border: 0; background: transparent; }
+.basic-export-controls output { color: #e2b753; text-align: right; }
+.basic-panel > p { margin: 0; color: rgba(255,255,255,.52); font-size: 10px; }
+.basic-category-bar { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 5px; padding: 5px 8px calc(5px + env(safe-area-inset-bottom)); border-top: 1px solid rgba(255,255,255,.1); background: #171815; }
+.basic-category-bar button { min-width: 0; min-height: 52px; display: grid; place-items: center; gap: 2px; padding: 3px; color: rgba(255,255,255,.62); border: 0; border-radius: 7px; background: transparent; font-size: 10px; }
+.basic-category-bar button svg { width: 19px; height: 19px; }
+.basic-category-bar button[aria-pressed="true"] { color: #19150c; background: #d5a947; }
+@media (max-width: 390px) {
+  .basic-editor-head { grid-template-columns: 44px minmax(0,1fr) 44px 44px 54px; }
+  .basic-control-panel { max-height: 34dvh; }
+  .basic-panel button { padding-right: 9px; padding-left: 9px; }
 }
 
 /* 最终品牌约束：主操作统一暖金色，不使用霓虹渐变 */
@@ -3429,6 +4468,339 @@ html[data-theme="light"] .deep-stage-hint {
   border-color: rgba(255,255,255,.16);
   background: rgba(30,29,26,.76);
 }
+
+/* 2026-08-12 手机创作工作台 */
+.canvas-workspace {
+  width: min(100%, 720px);
+  height: auto;
+  min-height: calc(100dvh - 64px);
+  margin: 0 auto;
+  padding: 12px 12px calc(112px + env(safe-area-inset-bottom));
+  overflow: visible;
+}
+.creation-workbench {
+  position: relative;
+  z-index: 4;
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid rgba(255,255,255,.1);
+  border-radius: 8px;
+  background: rgba(18,20,24,.82);
+  box-shadow: 0 10px 30px rgba(0,0,0,.18);
+  backdrop-filter: blur(20px) saturate(1.08);
+  -webkit-backdrop-filter: blur(20px) saturate(1.08);
+}
+.workbench-heading { display: flex; align-items: end; justify-content: space-between; gap: 12px; }
+.workbench-heading small, .workbench-section-title span { color: #caa34b; font-size: 11px; }
+.workbench-heading h2 { margin: 3px 0 0; color: #fff; font-size: 20px; line-height: 1.25; letter-spacing: 0; }
+.workbench-heading > span { color: rgba(255,255,255,.5); font-size: 11px; white-space: nowrap; }
+.workbench-collapse-button { min-width: 68px; min-height: 44px; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 0 10px; color: rgba(255,255,255,.72); border: 1px solid rgba(255,255,255,.1); border-radius: 7px; background: rgba(255,255,255,.045); }
+.workbench-collapse-button svg { width: 16px; height: 16px; transform: rotate(90deg); transition: transform .18s ease; }
+.creation-workbench.collapsed { gap: 9px; padding-block: 10px; }
+.creation-workbench.collapsed .workbench-heading { align-items: center; }
+.creation-workbench.collapsed .workbench-heading h2 { margin: 0; font-size: 15px; }
+.creation-workbench.collapsed .workbench-heading small { display: none; }
+.creation-workbench.collapsed .workbench-collapse-button svg { transform: rotate(-90deg); }
+.workbench-details { display: grid; gap: 14px; }
+.workbench-details[hidden], .workbench-collapsed-summary[hidden] { display: none; }
+.workbench-input-hint { margin: -5px 0 -3px; color: rgba(255,255,255,.5); font-size: 11px; }
+.workbench-collapsed-summary { min-width: 0; display: flex; align-items: center; gap: 7px; overflow: hidden; color: rgba(255,255,255,.52); font-size: 10px; white-space: nowrap; }
+.workbench-collapsed-summary span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.workbench-collapsed-summary span:first-child { flex: 0 1 auto; color: #d8b45b; font-weight: 700; }
+.workbench-collapsed-summary span:last-child { flex: 1 1 auto; text-align: right; }
+.workbench-collapsed-summary i { flex: 0 0 3px; width: 3px; height: 3px; border-radius: 50%; background: rgba(255,255,255,.24); }
+.workbench-prompt-field { position: relative; display: block; }
+.workbench-prompt-field textarea {
+  display: block;
+  width: 100%;
+  min-height: 118px;
+  resize: vertical;
+  padding: 14px 14px 30px;
+  color: #f7f5ef;
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 8px;
+  outline: none;
+  background: rgba(255,255,255,.055);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.55;
+  letter-spacing: 0;
+}
+.workbench-prompt-field textarea:focus { border-color: rgba(211,169,69,.72); box-shadow: 0 0 0 3px rgba(211,169,69,.12); }
+.workbench-prompt-field textarea::placeholder { color: rgba(255,255,255,.38); }
+.workbench-prompt-field > small { position: absolute; right: 12px; bottom: 9px; color: rgba(255,255,255,.38); font-size: 10px; }
+.workbench-media-section { display: grid; gap: 10px; }
+.workbench-section-title { display: flex; align-items: center; gap: 7px; }
+.workbench-section-title strong { color: #fff; font-size: 13px; }
+.workbench-media-list { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
+.workbench-media-list[hidden] { display: none; }
+.workbench-media-thumb { position: relative; flex: 0 0 76px; height: 76px; overflow: hidden; border: 1px solid rgba(255,255,255,.12); border-radius: 7px; background: #242629; }
+.workbench-media-thumb.primary { border-color: rgba(211,169,69,.62); }
+.workbench-media-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.workbench-media-thumb > span { position: absolute; left: 5px; bottom: 5px; max-width: 60px; padding: 3px 5px; overflow: hidden; color: #fff; border-radius: 4px; background: rgba(0,0,0,.68); font-size: 9px; white-space: nowrap; text-overflow: ellipsis; }
+.workbench-media-thumb > button { position: absolute; top: 4px; right: 4px; width: 28px; height: 28px; padding: 6px; color: #fff; border: 0; border-radius: 50%; background: rgba(0,0,0,.7); }
+.workbench-media-thumb > button svg { width: 100%; height: 100%; }
+.workbench-upload-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.workbench-upload-actions button { min-width: 0; min-height: 56px; display: flex; align-items: center; gap: 10px; padding: 8px 11px; color: #f4f1e9; text-align: left; border: 1px dashed rgba(255,255,255,.17); border-radius: 7px; background: rgba(255,255,255,.035); }
+.workbench-upload-actions svg { flex: 0 0 21px; width: 21px; height: 21px; color: #d1a746; }
+.workbench-upload-actions span { min-width: 0; display: grid; gap: 2px; }
+.workbench-upload-actions strong { overflow: hidden; font-size: 12px; white-space: nowrap; text-overflow: ellipsis; }
+.workbench-upload-actions small { color: rgba(255,255,255,.44); font-size: 10px; }
+.workbench-setting-list { display: grid; border-top: 1px solid rgba(255,255,255,.09); }
+.workbench-setting-button { width: 100%; min-height: 56px; display: grid; grid-template-columns: 34px minmax(0,1fr) 18px; align-items: center; gap: 10px; padding: 7px 2px; color: #fff; text-align: left; border: 0; border-bottom: 1px solid rgba(255,255,255,.09); background: transparent; }
+.workbench-setting-button:last-child { border-bottom: 0; }
+.workbench-setting-button .setting-icon { width: 34px; height: 34px; display: grid; place-items: center; color: #d1a746; border: 1px solid rgba(211,169,69,.24); border-radius: 7px; background: rgba(211,169,69,.08); }
+.workbench-setting-button .setting-icon svg { width: 18px; height: 18px; }
+.workbench-setting-button > span:nth-child(2) { min-width: 0; display: grid; gap: 3px; }
+.workbench-setting-button small { color: rgba(255,255,255,.43); font-size: 10px; }
+.workbench-setting-button strong { overflow: hidden; font-size: 13px; white-space: nowrap; text-overflow: ellipsis; }
+.workbench-setting-button .setting-arrow { width: 17px; height: 17px; color: rgba(255,255,255,.38); transform: rotate(180deg); }
+.infinite-canvas { position: relative; inset: auto; width: 100%; height: min(52dvh, 540px); min-height: 380px; margin-top: 12px; overflow: hidden; border: 1px solid rgba(255,255,255,.08); border-radius: 8px; }
+.creation-workbench.collapsed + .infinite-canvas { height: calc(100dvh - 236px); min-height: 500px; max-height: 780px; }
+.workspace-composer {
+  position: fixed;
+  z-index: 120;
+  left: max(12px, calc((100vw - 696px) / 2));
+  right: max(12px, calc((100vw - 696px) / 2));
+  bottom: calc(10px + env(safe-area-inset-bottom));
+  width: auto;
+  min-height: 64px;
+  display: block;
+  padding: 7px;
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 8px;
+  background: rgba(13,14,16,.9);
+  box-shadow: 0 12px 36px rgba(0,0,0,.38);
+  backdrop-filter: blur(22px) saturate(1.15);
+  -webkit-backdrop-filter: blur(22px) saturate(1.15);
+}
+.workspace-composer .composer-generate { width: 100%; height: 50px; display: flex; align-items: center; justify-content: center; gap: 9px; padding: 0 18px; color: #19150d; border: 1px solid #e4bd5e; border-radius: 7px; background: #d8ad48; box-shadow: inset 0 1px 0 rgba(255,255,255,.5); font-size: 15px; font-weight: 750; }
+.workspace-composer .composer-generate svg { width: 20px; height: 20px; }
+.workspace-composer .composer-generate:disabled { color: rgba(255,255,255,.7); border-color: rgba(255,255,255,.1); background: #454545; }
+.tool-popover { position: fixed; z-index: 150; left: 12px; right: 12px; bottom: calc(84px + env(safe-area-inset-bottom)); width: auto; max-width: 696px; margin: 0 auto; }
+.quick-parameter-panel.parameter-bottom-sheet { position: fixed; z-index: 160; left: 0; right: 0; bottom: 0; width: min(100%, 720px); max-height: min(72dvh, 600px); margin: auto; display: grid; gap: 18px; padding: 10px 16px calc(16px + env(safe-area-inset-bottom)); overflow-y: auto; border-radius: 8px 8px 0 0; background: rgba(19,20,22,.98); }
+.quick-parameter-panel.parameter-bottom-sheet[hidden] { display: none; }
+.parameter-bottom-sheet::before { content: ""; width: 42px; height: 4px; justify-self: center; border-radius: 2px; background: rgba(255,255,255,.2); }
+.parameter-bottom-sheet > header { display: flex; align-items: center; justify-content: space-between; }
+.parameter-bottom-sheet > header > div { display: grid; gap: 3px; }
+.parameter-bottom-sheet > header small { color: #caa34b; font-size: 10px; }
+.parameter-bottom-sheet > header strong { color: #fff; font-size: 18px; }
+.parameter-bottom-sheet > header button { width: 44px; height: 44px; padding: 11px; color: #fff; border: 1px solid rgba(255,255,255,.1); border-radius: 7px; background: rgba(255,255,255,.06); }
+.parameter-bottom-sheet > header svg { width: 100%; height: 100%; }
+.parameter-bottom-sheet > div { display: grid; gap: 8px; }
+.parameter-bottom-sheet .quick-choice-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; overflow: visible; }
+.parameter-bottom-sheet .quick-choice-row button { min-width: 0; min-height: 44px; border-radius: 7px; }
+.quick-optimize-toggle > span { display: grid; gap: 2px; }
+.quick-optimize-toggle > span strong { color: #fff; font-size: 13px; }
+.quick-optimize-toggle > span small { color: rgba(255,255,255,.44); font-size: 10px; }
+.parameter-sheet-done { min-height: 48px; color: #1a160d; border: 1px solid #e4bd5e; border-radius: 7px; background: #d8ad48; font-weight: 700; }
+.generation-confirm-dialog { width: min(100%,720px); max-width: none; height: auto; max-height: 92dvh; margin: auto 0 0; padding: 0; color: #fff; border: 0; border-radius: 8px 8px 0 0; background: transparent; }
+.generation-confirm-dialog::backdrop { background: rgba(0,0,0,.58); backdrop-filter: blur(4px); }
+.confirm-sheet { display: grid; gap: 16px; max-height: 92dvh; padding: 10px 16px calc(16px + env(safe-area-inset-bottom)); overflow-y: auto; border: 1px solid rgba(255,255,255,.12); border-bottom: 0; border-radius: 8px 8px 0 0; background: #151618; }
+.confirm-sheet > .sheet-grabber { width: 42px; height: 4px; justify-self: center; border-radius: 2px; background: rgba(255,255,255,.2); }
+.confirm-sheet > header { display: flex; align-items: center; justify-content: space-between; }
+.confirm-sheet > header small, .generation-confirm-content section > small { color: #caa34b; font-size: 10px; }
+.confirm-sheet h2 { margin: 3px 0 0; font-size: 20px; letter-spacing: 0; }
+.generation-confirm-content { display: grid; gap: 12px; }
+.generation-confirm-content > section { padding: 12px; border: 1px solid rgba(255,255,255,.09); border-radius: 7px; background: rgba(255,255,255,.035); }
+.generation-confirm-content p { margin: 7px 0 0; color: rgba(255,255,255,.86); font-size: 13px; line-height: 1.55; overflow-wrap: anywhere; }
+.confirm-media-row { display: flex; gap: 8px; margin-top: 9px; overflow-x: auto; }
+.confirm-media-row figure { flex: 0 0 76px; margin: 0; }
+.confirm-media-row img { width: 76px; height: 76px; object-fit: cover; border-radius: 6px; }
+.confirm-media-row figcaption { margin-top: 4px; color: rgba(255,255,255,.46); font-size: 9px; text-align: center; }
+.confirm-summary-grid { display: grid; gap: 11px; }
+.confirm-summary-grid > div { display: flex; justify-content: space-between; gap: 12px; }
+.confirm-summary-grid strong { max-width: 68%; font-size: 12px; text-align: right; overflow-wrap: anywhere; }
+.browser-generation-notice { margin: 0; padding: 11px; color: #f0ca70; border: 1px solid rgba(216,173,72,.32); border-radius: 7px; background: rgba(216,173,72,.08); font-size: 12px; line-height: 1.5; }
+.confirm-sheet > footer { display: grid; grid-template-columns: 1fr 1.45fr; gap: 8px; }
+.confirm-sheet > footer button { min-height: 50px; }
+
+html[data-theme="light"] .creation-workbench { color: #1b1a17; border-color: rgba(82,73,57,.13); background: rgba(250,249,246,.88); box-shadow: 0 10px 30px rgba(64,52,30,.09); }
+html[data-theme="light"] .workbench-heading h2, html[data-theme="light"] .workbench-section-title strong, html[data-theme="light"] .workbench-setting-button, html[data-theme="light"] .quick-optimize-toggle > span strong { color: #1b1a17; }
+html[data-theme="light"] .workbench-heading > span, html[data-theme="light"] .workbench-upload-actions small, html[data-theme="light"] .workbench-setting-button small { color: #787168; }
+html[data-theme="light"] .workbench-collapse-button { color: #514c43; border-color: rgba(82,73,57,.13); background: rgba(255,255,255,.52); }
+html[data-theme="light"] .workbench-input-hint { color: #787168; }
+html[data-theme="light"] .workbench-collapsed-summary { color: #787168; }
+html[data-theme="light"] .workbench-collapsed-summary span:first-child { color: #8f681c; }
+html[data-theme="light"] .workbench-collapsed-summary i { background: rgba(82,73,57,.28); }
+html[data-theme="light"] .workbench-prompt-field textarea { color: #211f1b; border-color: rgba(82,73,57,.16); background: rgba(255,255,255,.68); }
+html[data-theme="light"] .workbench-prompt-field textarea::placeholder { color: #8b857b; }
+html[data-theme="light"] .workbench-upload-actions button { color: #2b2822; border-color: rgba(82,73,57,.18); background: rgba(255,255,255,.48); }
+html[data-theme="light"] .workbench-setting-list, html[data-theme="light"] .workbench-setting-button { border-color: rgba(82,73,57,.11); }
+
+@media (max-width: 390px) {
+  .canvas-workspace { padding-inline: 10px; }
+  .creation-workbench { padding: 14px; }
+  .workbench-heading h2 { font-size: 18px; }
+  .workbench-upload-actions button { padding-inline: 9px; }
+  .workbench-upload-actions small { display: none; }
+  .workspace-composer { left: 10px; right: 10px; }
+}
+
+/* 2026-08-12 手机深度编辑器：大画布、横向工具栏、底部属性区 */
+@media (max-width: 720px) {
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-workspace {
+    grid-template-rows: calc(58px + env(safe-area-inset-top)) minmax(0, 1fr) 26px;
+    gap: 0;
+    padding: 0;
+    background: #20211f;
+  }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-workspace-head {
+    min-width: 0;
+    gap: 7px;
+    padding: env(safe-area-inset-top) 8px 0;
+    border-bottom: 1px solid rgba(255,255,255,.1);
+    background: rgba(20,21,19,.96);
+  }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-workspace-head > .icon-only {
+    flex: 0 0 44px;
+    width: 44px;
+    min-height: 44px;
+    border-radius: 7px;
+  }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-workspace-title {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-workspace-title span { font-size: 9px; }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-workspace-title strong {
+    max-width: min(24vw, 100px);
+    font-size: 12px;
+  }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-head-actions {
+    flex: 0 0 auto;
+    gap: 4px;
+    overflow: visible;
+  }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-head-actions button {
+    width: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0;
+    border-radius: 7px;
+  }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-head-actions button > span { display: none; }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-head-actions [data-deep-command="zoom-out"],
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-head-actions [data-deep-command="zoom-in"],
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-head-actions [data-deep-command="fit"] { display: none; }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-head-actions [data-deep-command="save"] {
+    width: auto;
+    min-width: 62px;
+    padding: 0 12px;
+  }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-head-actions [data-deep-command="save"] > span { display: inline; }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-workspace-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(250px, 52dvh) 64px minmax(0, 1fr);
+    overflow: hidden;
+  }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-stage {
+    grid-column: 1;
+    grid-row: 1;
+    border: 0;
+    background-color: #2a2b28;
+  }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-stage-hint {
+    bottom: 10px;
+    max-width: calc(100% - 24px);
+    padding: 6px 10px;
+    font-size: 10px;
+  }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-tool-rail {
+    grid-column: 1;
+    grid-row: 2;
+    min-width: 0;
+    min-height: 64px;
+    display: flex;
+    flex-direction: row;
+    gap: 6px;
+    padding: 6px 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border: 0;
+    border-top: 1px solid rgba(255,255,255,.1);
+    border-bottom: 1px solid rgba(255,255,255,.1);
+    background: #171816;
+    scrollbar-width: none;
+    scroll-snap-type: x proximity;
+  }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-tool-rail::-webkit-scrollbar { display: none; }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-tool-rail button {
+    flex: 0 0 58px;
+    min-width: 58px;
+    min-height: 50px;
+    gap: 2px;
+    padding: 4px 2px;
+    border-radius: 7px;
+    font-size: 9px;
+    scroll-snap-align: start;
+  }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-tool-rail button[aria-pressed="true"] {
+    box-shadow: inset 0 -3px #d6ae55;
+  }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-tool-rail svg { width: 18px; height: 18px; }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-inspector {
+    grid-column: 1;
+    grid-row: 3;
+    min-width: 0;
+    min-height: 0;
+    border: 0;
+    background: #1b1c19;
+    overscroll-behavior: contain;
+  }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-inspector-tabs {
+    top: 0;
+    grid-template-columns: repeat(4, minmax(72px,1fr));
+    gap: 6px;
+    padding: 7px 8px;
+    overflow-x: auto;
+    background: #1b1c19;
+    scrollbar-width: none;
+  }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-inspector-tabs button {
+    min-height: 44px;
+    border: 1px solid rgba(255,255,255,.08);
+    border-radius: 7px;
+    background: rgba(255,255,255,.035);
+  }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-inspector-tabs button[aria-selected="true"] {
+    border-color: rgba(214,174,85,.52);
+    background: rgba(196,154,60,.17);
+  }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-tool-options { padding: 10px 12px; }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-inspector-panel {
+    padding: 14px 12px calc(28px + env(safe-area-inset-bottom));
+  }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-inspector-panel h3 { margin-bottom: 12px; font-size: 14px; }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-segmented button,
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-action-grid button,
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-inspector-panel > .primary-button,
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-resize-row input { min-height: 44px; }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-action-grid { margin-top: 12px; gap: 8px; }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-statusbar {
+    gap: 8px;
+    padding: 0 8px;
+    font-size: 9px;
+  }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-statusbar span:nth-child(1),
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-statusbar span:nth-child(3) { display: none; }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-brush-flyout {
+    position: absolute;
+    z-index: 8;
+    top: auto;
+    right: 10px;
+    bottom: calc(64px + min(34dvh, 300px));
+    left: 10px;
+    width: auto;
+    max-width: none;
+  }
+}
+
+@media (max-width: 390px) {
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-workspace-title { display: none; }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-head-actions [data-deep-command="redo"] { display: none; }
+}
 html[data-theme="light"] .ai-selection-mode,
 html[data-theme="light"] .ai-region-summary div,
 html[data-theme="light"] .ai-edit-panel textarea,
@@ -3442,3 +4814,558 @@ html[data-theme="light"] .ai-execution-summary {
   border-color: rgba(196,154,60,.24);
   background: rgba(218,180,92,.12);
 }
+
+/* 2026-08-12 沉浸式手机精修：单指编辑、双指缩放移动 */
+.mobile-canvas-zoom {
+  position: absolute;
+  z-index: 7;
+  top: 10px;
+  left: 10px;
+  min-width: 48px;
+  padding: 6px 9px;
+  color: #fff;
+  border: 1px solid rgba(255,255,255,.14);
+  border-radius: 7px;
+  background: rgba(12,12,11,.72);
+  font-size: 11px;
+  text-align: center;
+  pointer-events: none;
+}
+.mobile-canvas-navigator {
+  position: absolute;
+  z-index: 7;
+  top: 10px;
+  right: 10px;
+  width: 106px;
+  height: 70px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,.72);
+  border-radius: 6px;
+  background: #171716;
+  box-shadow: 0 5px 16px rgba(0,0,0,.28);
+  pointer-events: none;
+}
+.mobile-canvas-navigator[hidden] { display: none; }
+.mobile-canvas-navigator canvas { width: 100%; height: 100%; display: block; }
+.mobile-ai-edit-controls, .deep-mobile-toolbar, .deep-mobile-crop-controls { display: none; }
+
+@media (max-width: 720px) {
+  .deep-workspace-overlay .deep-workspace {
+    grid-template-rows: calc(58px + env(safe-area-inset-top)) minmax(0, 1fr);
+    background: rgba(244, 245, 242, .94);
+  }
+  .deep-workspace-overlay .deep-statusbar { display: none; }
+  .deep-workspace-overlay .deep-workspace-head {
+    min-width: 0;
+    padding: env(safe-area-inset-top) 8px 0;
+    background: rgba(17,18,16,.97);
+  }
+  .deep-workspace-overlay .deep-workspace-title { min-width: 0; flex: 1; }
+  .deep-workspace-overlay .deep-workspace-title span { color: #fff; font-size: 13px; font-weight: 750; }
+  .deep-workspace-overlay .deep-workspace-title strong { display: none; }
+  .deep-workspace-overlay .deep-head-actions { flex: 0 0 auto; gap: 4px; }
+  .deep-workspace-overlay .deep-head-actions button { width: 44px; min-width: 44px; min-height: 44px; padding: 0; }
+  .deep-workspace-overlay .deep-head-actions button span { display: none; }
+  .deep-workspace-overlay .deep-head-actions [data-ai-command="zoom-out"],
+  .deep-workspace-overlay .deep-head-actions [data-ai-command="zoom-in"],
+  .deep-workspace-overlay .deep-head-actions [data-ai-command="fit"],
+  .deep-workspace-overlay .deep-head-actions [data-deep-command="zoom-out"],
+  .deep-workspace-overlay .deep-head-actions [data-deep-command="zoom-in"],
+  .deep-workspace-overlay .deep-head-actions [data-deep-command="fit"],
+  .deep-workspace-overlay .deep-head-actions [data-deep-command="compare"] { display: none; }
+  .deep-workspace-overlay .deep-head-actions [data-ai-command="submit"],
+  .deep-workspace-overlay .deep-head-actions [data-deep-command="save"] { width: 58px; min-width: 58px; color: #18140b; background: #d8ad48; }
+  .deep-workspace-overlay .deep-head-actions [data-deep-command="save"] span { display: inline; }
+
+  .ai-edit-overlay .deep-workspace-body {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) auto;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .ai-edit-overlay .ai-edit-stage {
+    grid-column: 1;
+    grid-row: 1;
+    min-height: 0;
+    border: 0;
+    background-color: #eef0ec;
+    background-image: linear-gradient(45deg, rgba(83,89,82,.08) 25%, transparent 25%, transparent 75%, rgba(83,89,82,.08) 75%), linear-gradient(45deg, rgba(83,89,82,.08) 25%, transparent 25%, transparent 75%, rgba(83,89,82,.08) 75%);
+    background-position: 0 0, 14px 14px;
+    background-size: 28px 28px;
+    touch-action: none;
+  }
+  .ai-edit-overlay .deep-tool-rail, .ai-edit-overlay .deep-inspector { display: none; }
+  .mobile-ai-edit-controls {
+    position: relative;
+    z-index: 12;
+    grid-row: 2;
+    display: grid;
+    gap: 7px;
+    padding: 7px 10px calc(8px + env(safe-area-inset-bottom));
+    border-top: 1px solid rgba(255,255,255,.1);
+    background: rgba(18,19,17,.98);
+  }
+  .mobile-ai-tool-row { display: grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap: 6px; }
+  .mobile-ai-tool-row button {
+    min-width: 0;
+    min-height: 52px;
+    display: grid;
+    place-items: center;
+    gap: 3px;
+    padding: 4px;
+    color: rgba(255,255,255,.72);
+    border: 1px solid rgba(255,255,255,.08);
+    border-radius: 7px;
+    background: rgba(255,255,255,.035);
+    font-size: 10px;
+  }
+  .mobile-ai-tool-row button svg { width: 19px; height: 19px; }
+  .mobile-ai-tool-row button[aria-pressed="true"] { color: #1a150c; border-color: #e3bb59; background: #d2a643; }
+  .mobile-ai-prompt-row { display: grid; grid-template-columns: minmax(0,1fr) 48px; gap: 8px; }
+  .mobile-ai-prompt-row textarea {
+    width: 100%;
+    min-height: 48px;
+    max-height: 96px;
+    padding: 13px 14px;
+    color: #f5f2e9;
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: 7px;
+    outline: 0;
+    background: rgba(255,255,255,.055);
+    resize: none;
+    font: inherit;
+    font-size: 13px;
+  }
+  .mobile-ai-submit { min-width: 48px; min-height: 48px; display: grid; place-items: center; color: #17130b; border-radius: 7px; background: #d8ad48; }
+  .mobile-ai-submit svg { width: 21px; height: 21px; }
+  .ai-edit-overlay .ai-brush-flyout {
+    position: absolute;
+    z-index: 16;
+    top: auto;
+    right: 10px;
+    bottom: calc(122px + env(safe-area-inset-bottom));
+    left: 10px;
+    width: auto;
+  }
+  .ai-edit-overlay .deep-stage-hint { bottom: 12px; }
+
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-workspace-body {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) 68px;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-stage {
+    grid-column: 1;
+    grid-row: 1;
+    min-height: 0;
+    border: 0;
+    touch-action: none;
+    background-color: #eef0ec;
+    background-image: linear-gradient(45deg, rgba(83,89,82,.08) 25%, transparent 25%, transparent 75%, rgba(83,89,82,.08) 75%), linear-gradient(45deg, rgba(83,89,82,.08) 25%, transparent 25%, transparent 75%, rgba(83,89,82,.08) 75%);
+    background-position: 0 0, 14px 14px;
+    background-size: 28px 28px;
+  }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-tool-rail { display: none; }
+  .deep-mobile-toolbar {
+    position: relative;
+    z-index: 12;
+    grid-row: 2;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0,1fr));
+    gap: 8px;
+    padding: 7px 10px calc(7px + env(safe-area-inset-bottom));
+    border-top: 1px solid rgba(255,255,255,.1);
+    background: rgba(18,19,17,.98);
+  }
+  .deep-mobile-toolbar button { min-width: 0; min-height: 52px; display: grid; place-items: center; gap: 3px; padding: 4px; color: rgba(255,255,255,.7); border-radius: 7px; font-size: 10px; }
+  .deep-mobile-toolbar button svg { width: 20px; height: 20px; }
+  .deep-mobile-toolbar button[aria-pressed="true"] { color: #1b160c; background: #d0a344; }
+  .deep-mobile-crop-controls {
+    position: absolute;
+    z-index: 14;
+    right: 8px;
+    bottom: calc(76px + env(safe-area-inset-bottom));
+    left: 8px;
+    display: grid;
+    grid-template-columns: minmax(0,1fr);
+    gap: 8px;
+    padding: 8px;
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: 8px;
+    background: rgba(22,23,20,.94);
+    backdrop-filter: blur(16px);
+  }
+  .deep-mobile-crop-ratios {
+    min-width: 0;
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    scroll-snap-type: x proximity;
+  }
+  .deep-mobile-crop-ratios::-webkit-scrollbar { display: none; }
+  .deep-mobile-crop-ratios button { flex: 0 0 58px; scroll-snap-align: start; }
+  .deep-mobile-crop-controls button { min-width: 0; min-height: 44px; color: rgba(255,255,255,.72); border-radius: 6px; font-size: 12px; }
+  .deep-mobile-crop-controls button[aria-pressed="true"] { color: #19140a; background: #d3a746; }
+  .deep-mobile-apply-crop { color: #19140a !important; background: #d8ad48 !important; font-weight: 750; }
+  .deep-workspace-overlay:not(.ai-edit-overlay):not([data-mobile-mode="crop"]) .deep-mobile-crop-controls { display: none; }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-inspector {
+    position: absolute;
+    z-index: 15;
+    right: 8px;
+    bottom: calc(70px + env(safe-area-inset-bottom));
+    left: 8px;
+    width: auto;
+    max-height: min(42dvh, 360px);
+    overflow-y: auto;
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: 8px;
+    background: rgba(25,26,23,.98);
+    box-shadow: 0 12px 38px rgba(0,0,0,.42);
+  }
+  .deep-workspace-overlay:not(.ai-edit-overlay)[data-mobile-mode="crop"] .deep-inspector,
+  .deep-workspace-overlay:not(.ai-edit-overlay)[data-mobile-mode="lasso"] .deep-inspector,
+  .deep-workspace-overlay:not(.ai-edit-overlay)[data-mobile-mode="paint"] .deep-inspector { display: none; }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-inspector-tabs { display: none; }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-inspector-panel { padding: 12px; }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-tool-options { padding: 10px 12px; }
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-brush-flyout {
+    position: absolute;
+    z-index: 16;
+    top: auto;
+    right: 10px;
+    bottom: calc(76px + env(safe-area-inset-bottom));
+    left: 10px;
+    width: auto;
+  }
+}
+
+@media (max-width: 390px) {
+  .mobile-canvas-navigator { width: 88px; height: 58px; }
+  .deep-workspace-overlay .deep-workspace-title { display: block; }
+  .deep-workspace-overlay .deep-head-actions [data-ai-command="redo"],
+  .deep-workspace-overlay .deep-head-actions [data-deep-command="redo"] { display: none; }
+}
+
+/* 2026-08-12 AI / 深度编辑：与主页一致的暖白磨砂玻璃 */
+@media (max-width: 720px) {
+  .deep-workspace-overlay {
+    --editor-glass: rgba(246, 247, 244, .82);
+    --editor-glass-strong: rgba(250, 250, 247, .92);
+    --editor-glass-soft: rgba(255, 255, 255, .58);
+    --editor-line: rgba(55, 59, 55, .16);
+    --editor-ink: #20221f;
+    --editor-muted: rgba(39, 43, 39, .62);
+    --editor-gold: #d5aa45;
+    color: var(--editor-ink);
+    background: rgba(226, 230, 226, .72);
+  }
+  .deep-workspace-overlay .deep-workspace {
+    color: var(--editor-ink);
+    background: rgba(231, 234, 230, .84);
+  }
+  .deep-workspace-overlay .deep-workspace-head {
+    color: var(--editor-ink);
+    border-color: var(--editor-line);
+    background: linear-gradient(145deg, rgba(255,255,255,.86), rgba(239,241,237,.72)), var(--editor-glass);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.92), 0 8px 24px rgba(53,58,52,.1);
+    backdrop-filter: blur(22px) saturate(1.16);
+    -webkit-backdrop-filter: blur(22px) saturate(1.16);
+  }
+  .deep-workspace-overlay .deep-workspace-title span { color: #9b7224; }
+  .deep-workspace-overlay .deep-workspace-title strong { color: var(--editor-ink); }
+  .deep-workspace-overlay .deep-workspace-head button,
+  .deep-workspace-overlay .deep-head-actions button {
+    color: var(--editor-ink);
+    border-color: var(--editor-line);
+    background: var(--editor-glass-soft);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.88);
+  }
+  .deep-workspace-overlay .deep-head-actions [data-ai-command="submit"],
+  .deep-workspace-overlay .deep-head-actions [data-deep-command="save"] {
+    color: #1d180c;
+    border-color: rgba(166,122,29,.4);
+    background: linear-gradient(145deg, #e5c367, #c99b38);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.48), 0 8px 20px rgba(157,114,28,.18);
+  }
+  .mobile-ai-edit-controls,
+  .deep-mobile-toolbar {
+    color: var(--editor-ink);
+    border-color: var(--editor-line);
+    background: linear-gradient(145deg, rgba(255,255,255,.82), rgba(238,240,236,.74)), var(--editor-glass);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.94), 0 -8px 28px rgba(55,61,54,.1);
+    backdrop-filter: blur(24px) saturate(1.18);
+    -webkit-backdrop-filter: blur(24px) saturate(1.18);
+  }
+  .mobile-ai-tool-row button,
+  .deep-mobile-toolbar button {
+    color: var(--editor-muted);
+    border: 1px solid rgba(59,64,58,.13);
+    background: rgba(255,255,255,.52);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.9);
+  }
+  .mobile-ai-tool-row button[aria-pressed="true"],
+  .deep-mobile-toolbar button[aria-pressed="true"] {
+    color: #211a0c;
+    border-color: rgba(174,129,32,.45);
+    background: linear-gradient(145deg, #e4c064, #cfa13e);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.42), 0 5px 14px rgba(159,116,29,.14);
+  }
+  .mobile-ai-prompt-row textarea {
+    color: var(--editor-ink);
+    border-color: var(--editor-line);
+    background: rgba(255,255,255,.66);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.88);
+  }
+  .mobile-ai-prompt-row textarea::placeholder { color: rgba(42,47,42,.44); }
+  .mobile-ai-submit {
+    color: #20190b;
+    border: 1px solid rgba(166,122,29,.4);
+    background: linear-gradient(145deg, #e5c367, #ca9c39);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.44), 0 7px 18px rgba(157,114,28,.17);
+  }
+  .deep-mobile-crop-controls,
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-inspector,
+  .deep-workspace-overlay .ai-brush-flyout {
+    color: var(--editor-ink);
+    border-color: rgba(62,67,61,.16);
+    background: linear-gradient(145deg, rgba(255,255,255,.88), rgba(238,240,236,.76)), var(--editor-glass-strong);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.94), 0 14px 38px rgba(52,58,51,.16);
+    backdrop-filter: blur(24px) saturate(1.16);
+    -webkit-backdrop-filter: blur(24px) saturate(1.16);
+  }
+  .deep-mobile-crop-controls button,
+  .deep-workspace-overlay:not(.ai-edit-overlay) .deep-inspector button,
+  .deep-workspace-overlay .ai-brush-flyout button {
+    color: var(--editor-muted);
+    border-color: rgba(59,64,58,.13);
+    background: rgba(255,255,255,.54);
+  }
+  .deep-mobile-crop-controls button[aria-pressed="true"],
+  .deep-workspace-overlay .ai-brush-flyout button[aria-pressed="true"] {
+    color: #211a0c;
+    border-color: rgba(174,129,32,.42);
+    background: linear-gradient(145deg, #e4c064, #cfa13e);
+  }
+  .deep-workspace-overlay .ai-brush-heading,
+  .deep-workspace-overlay .ai-slider-label,
+  .deep-workspace-overlay .deep-inspector-panel,
+  .deep-workspace-overlay .deep-tool-options { color: var(--editor-ink); }
+  .deep-workspace-overlay .deep-inspector-panel p { color: var(--editor-muted); }
+  .deep-workspace-overlay .deep-inspector input,
+  .deep-workspace-overlay .deep-inspector textarea,
+  .deep-workspace-overlay .deep-inspector select {
+    color: var(--editor-ink);
+    border-color: var(--editor-line);
+    background: rgba(255,255,255,.68);
+  }
+  .mobile-canvas-zoom {
+    color: var(--editor-ink);
+    border-color: rgba(63,68,62,.16);
+    background: rgba(249,250,247,.76);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.92), 0 7px 18px rgba(45,50,45,.12);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+  }
+  .mobile-canvas-navigator {
+    border-color: rgba(255,255,255,.86);
+    box-shadow: 0 7px 22px rgba(40,45,40,.2), 0 0 0 1px rgba(52,57,52,.12);
+  }
+  .deep-workspace-overlay .deep-stage-hint {
+    color: var(--editor-muted);
+    border-color: var(--editor-line);
+    background: rgba(250, 250, 247, .78);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.9), 0 8px 22px rgba(45,50,45,.12);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+  }
+}
+
+/* 2026-08-12 全局玻璃最终生效层 */
+html[data-theme] .topbar,
+html[data-theme] .bottom-nav,
+html[data-theme] .workspace-bottom,
+html[data-theme] .sheet-head,
+html[data-theme] .parameter-footer,
+html[data-theme] .editor-head,
+html[data-theme] .basic-editor-head,
+html[data-theme] .basic-control-panel,
+html[data-theme] .basic-category-bar,
+html[data-theme] .mobile-ai-edit-controls,
+html[data-theme] .deep-mobile-toolbar,
+html[data-theme] .deep-mobile-crop-controls,
+html[data-theme] .deep-workspace-overlay:not(.ai-edit-overlay) .deep-inspector,
+html[data-theme] .deep-workspace-overlay .ai-brush-flyout,
+html[data-theme] .deep-workspace-overlay .deep-workspace-head {
+  color: var(--mobile-ink);
+  border-color: var(--mobile-border);
+  background: var(--mobile-glass-strong);
+  box-shadow: var(--mobile-shadow-soft);
+  backdrop-filter: blur(22px) saturate(1.12);
+  -webkit-backdrop-filter: blur(22px) saturate(1.12);
+}
+
+html[data-theme] .glass-panel,
+html[data-theme] .creation-workbench,
+html[data-theme] .canvas-menu,
+html[data-theme] .workspace-menu,
+html[data-theme] .task-status-panel,
+html[data-theme] .tool-popover,
+html[data-theme] .add-image-menu,
+html[data-theme] .quick-parameter-panel,
+html[data-theme] .settings-card,
+html[data-theme] .api-profile,
+html[data-theme] .project-card,
+html[data-theme] .task-card,
+html[data-theme] .generation-confirm-dialog .confirm-sheet,
+html[data-theme] .object-more-drawer,
+html[data-theme] .parameter-dialog {
+  color: var(--mobile-ink);
+  border-color: var(--mobile-border);
+  background: var(--mobile-glass);
+  box-shadow: var(--mobile-shadow);
+  backdrop-filter: blur(24px) saturate(1.12);
+  -webkit-backdrop-filter: blur(24px) saturate(1.12);
+}
+
+html[data-theme] .page:not([data-page="home"]).active {
+  color: var(--mobile-ink);
+  background: color-mix(in srgb, var(--mobile-bg) 92%, transparent);
+}
+
+html[data-theme] .workbench-heading h2,
+html[data-theme] .section-heading h1,
+html[data-theme] .section-heading h2,
+html[data-theme] .canvas-menu-head strong,
+html[data-theme] .settings-card strong,
+html[data-theme] .project-card strong,
+html[data-theme] .task-card strong,
+html[data-theme] .object-more-drawer .sheet-head h2,
+html[data-theme] .editor-head strong { color: var(--mobile-ink); }
+
+html[data-theme] input,
+html[data-theme] textarea,
+html[data-theme] select,
+html[data-theme] .workbench-prompt-field textarea,
+html[data-theme] .mobile-ai-prompt-row textarea,
+html[data-theme] .basic-markup-settings input,
+html[data-theme] .basic-resize-controls input,
+html[data-theme] .basic-export-controls select {
+  color: var(--mobile-ink);
+  border-color: var(--mobile-border);
+  background: var(--mobile-glass-soft);
+}
+
+html[data-theme] .icon-button,
+html[data-theme] .secondary-button,
+html[data-theme] .workbench-collapse-button,
+html[data-theme] .workbench-setting-button,
+html[data-theme] .workbench-upload-actions button,
+html[data-theme] .theme-choice-row button,
+html[data-theme] .quick-choice-row button,
+html[data-theme] .object-action-grid button,
+html[data-theme] .basic-panel button,
+html[data-theme] .basic-category-bar button,
+html[data-theme] .editor-zoom button,
+html[data-theme] .image-actions button,
+html[data-theme] .mobile-ai-tool-row button,
+html[data-theme] .deep-mobile-toolbar button,
+html[data-theme] .deep-mobile-crop-controls button,
+html[data-theme] .deep-inspector button,
+html[data-theme] .ai-brush-flyout button {
+  color: var(--mobile-muted);
+  border-color: var(--mobile-border);
+  background: var(--mobile-glass-soft);
+}
+
+html[data-theme] .primary-button,
+html[data-theme] .composer-generate,
+html[data-theme] .generate-button,
+html[data-theme] .parameter-sheet-done,
+html[data-theme] .mobile-ai-submit,
+html[data-theme] .basic-save,
+html[data-theme] .basic-panel button.primary,
+html[data-theme] .basic-apply-button,
+html[data-theme] .deep-mobile-apply-crop {
+  color: #1b160b;
+  border-color: rgba(158,115,27,.45);
+  background: linear-gradient(145deg,#e6c66c,#c39331) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.45),0 9px 24px rgba(147,105,25,.2);
+}
+
+html[data-theme] .theme-choice-row button.active,
+html[data-theme] .quick-choice-row button.active,
+html[data-theme] .basic-panel button[aria-pressed="true"],
+html[data-theme] .basic-category-bar button[aria-pressed="true"],
+html[data-theme] .mobile-ai-tool-row button[aria-pressed="true"],
+html[data-theme] .deep-mobile-toolbar button[aria-pressed="true"],
+html[data-theme] .deep-mobile-crop-controls button[aria-pressed="true"] {
+  color: #231b0a;
+  border-color: rgba(174,129,32,.5);
+  background: linear-gradient(145deg,#e4c064,#cfa13e);
+}
+
+html[data-theme] .infinite-canvas,
+html[data-theme] .basic-editor-stage,
+html[data-theme] .ai-edit-stage,
+html[data-theme] .deep-stage {
+  background-color: var(--mobile-canvas);
+  background-image: linear-gradient(45deg,rgba(104,108,101,.09) 25%,transparent 25%,transparent 75%,rgba(104,108,101,.09) 75%),linear-gradient(45deg,rgba(104,108,101,.09) 25%,transparent 25%,transparent 75%,rgba(104,108,101,.09) 75%);
+  background-position: 0 0,14px 14px;
+  background-size: 28px 28px;
+}
+
+html[data-theme] .image-dialog,
+html[data-theme] .compare-dialog,
+html[data-theme] .basic-editor-overlay,
+html[data-theme] .basic-editor,
+html[data-theme] .deep-workspace-overlay,
+html[data-theme] .deep-workspace {
+  color: var(--mobile-ink);
+  background: var(--mobile-bg);
+}
+
+html[data-theme] .basic-zoom,
+html[data-theme] .mobile-canvas-zoom,
+html[data-theme] .deep-stage-hint,
+html[data-theme] .viewer-gesture-hint,
+html[data-theme] .editor-zoom {
+  color: var(--mobile-ink);
+  border-color: var(--mobile-border);
+  background: var(--mobile-glass);
+  box-shadow: var(--mobile-shadow-soft);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+html[data-theme] .workbench-heading small,
+html[data-theme] .workbench-section-title span,
+html[data-theme] .eyebrow,
+html[data-theme] .basic-editor-head > div span,
+html[data-theme] .basic-geometry-sliders output,
+html[data-theme] .basic-main-slider output,
+html[data-theme] .basic-export-controls output,
+html[data-theme] .deep-workspace-title span { color: var(--mobile-gold-strong); }
+
+html[data-theme] .workbench-input-hint,
+html[data-theme] .workbench-collapsed-summary,
+html[data-theme] .project-card p,
+html[data-theme] .project-card small,
+html[data-theme] .task-card p,
+html[data-theme] .task-card small,
+html[data-theme] .editor-head small,
+html[data-theme] .basic-panel > p,
+html[data-theme] .basic-geometry-sliders label,
+html[data-theme] .basic-main-slider,
+html[data-theme] .basic-resize-controls label,
+html[data-theme] .basic-export-controls label { color: var(--mobile-muted); }
+
+html[data-theme] .danger,
+html[data-theme] button.danger,
+html[data-theme] [data-object-action="delete"] { color: var(--mobile-danger) !important; }

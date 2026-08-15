@@ -1,6 +1,6 @@
 {
   "name": "laogui-ai",
-  "version": "2.3.14",
+  "version": "2.3.16",
   "description": "面向建筑、室内、民宿和商业空间设计师的本地 AI 创意工作台",
   "private": true,
   "license": "MIT",
@@ -40,9 +40,9 @@
     "pack:mac:x64": "electron-builder --mac --x64",
     "pack:win": "electron-builder --win --x64",
     "pack:win:arm64": "electron-builder --win --arm64",
-    "publish:win": "npm run check && npm run engine:image-studio:win && electron-builder --win --x64 --publish always",
-    "pack:all": "electron-builder --mac --arm64 --x64 --win --x64",
-    "check": "node --check server.mjs && node --check public/app.js && node --check public/ai-edit/editor.js && node --check public/ai-edit/region-engine.js && node --check public/deep-edit/editor.js && node --check public/deep-edit/image-ops.worker.js && node --check public/deep-edit/mask-engine.js && node --check public/deep-edit/layer-engine.js && node --check public/deep-edit/project-store.js && node --check electron/main.cjs && node --check electron/preload.cjs && node --check scripts/doctor.mjs && node --check scripts/sync-vendor.mjs && npm run check:vendor",
+    "publish:win": "npm run check && npm run engine:image-studio:win && electron-builder --win --x64 --publish never && electron-builder --win --arm64 --publish never",
+    "pack:all": "electron-builder --mac --arm64 --x64 && electron-builder --win --x64 --publish never && electron-builder --win --arm64 --publish never",
+    "check": "node --check server.mjs && node --check public/app.js && node --check public/ai-edit/editor.js && node --check public/ai-edit/region-engine.js && node --check public/deep-edit/editor.js && node --check public/deep-edit/image-ops.worker.js && node --check public/deep-edit/mask-engine.js && node --check public/deep-edit/layer-engine.js && node --check public/deep-edit/project-store.js && node --check electron/main.cjs && node --check electron/preload.cjs && node --check scripts/doctor.mjs && node --check scripts/sync-vendor.mjs && node --check scripts/verify-installed-ai-edit.mjs && npm run check:vendor",
     "test": "node --test test/*.test.mjs",
     "doctor": "node scripts/doctor.mjs",
     "mobile:config": "node scripts/sync-mobile-shared.mjs",
@@ -54,10 +54,19 @@
     "node": ">=18"
   },
   "overrides": {
-    "adm-zip": "0.6.0"
+    "adm-zip": "0.6.0",
+    "js-yaml": "4.3.1"
   },
   "devDependencies": {
+    "@capacitor/android": "^8.4.2",
+    "@capacitor/app": "^8.1.1",
+    "@capacitor/camera": "^8.2.1",
     "@capacitor/cli": "^8.4.2",
+    "@capacitor/core": "^8.4.2",
+    "@capacitor/filesystem": "^8.1.2",
+    "@capacitor/network": "^8.0.1",
+    "@capacitor/preferences": "^8.0.1",
+    "@capacitor/share": "^8.0.1",
     "electron": "^39.8.5",
     "electron-builder": "^26.15.3"
   },
@@ -131,14 +140,6 @@
     }
   },
   "dependencies": {
-    "@capacitor/android": "^8.4.2",
-    "@capacitor/app": "^8.1.1",
-    "@capacitor/camera": "^8.2.1",
-    "@capacitor/core": "^8.4.2",
-    "@capacitor/filesystem": "^8.1.2",
-    "@capacitor/network": "^8.0.1",
-    "@capacitor/preferences": "^8.0.1",
-    "@capacitor/share": "^8.0.1",
     "electron-updater": "^6.8.9",
     "pannellum": "^2.5.7",
     "three": "^0.160.0"

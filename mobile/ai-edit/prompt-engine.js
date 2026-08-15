@@ -55,7 +55,7 @@ export function fallbackAiEditInstruction(operation, userPrompt = "") {
   ].join(" ");
 }
 
-export function buildAiEditOptimizerInput({ operation, userPrompt = "", regionNumber = 1, selectionMode = "precise" } = {}) {
+export function buildAiEditOptimizerInput({ operation, userPrompt = "", selectionMode = "precise" } = {}) {
   const operationLabel = AI_EDIT_OPERATION_LABELS[operation] || "局部编辑";
   const normalizedSelectionMode = normalizeAiEditSelectionMode(selectionMode);
   const selectionRule = normalizedSelectionMode === "semantic"
@@ -64,7 +64,6 @@ export function buildAiEditOptimizerInput({ operation, userPrompt = "", regionNu
   return [
     "你是专业图片局部编辑提示词优化师。",
     `任务类型：${operationLabel}。`,
-    `框选编号：${regionNumber}。`,
     selectionRule,
     `用户原始要求：${String(userPrompt || "").trim() || "未补充要求，请按任务类型完成。"}`,
     "请把用户要求优化为一段简洁、可直接交给 GPT-Image-2 的专业局部编辑指令。",
@@ -86,7 +85,7 @@ export function normalizeAiEditInstruction(value, fallback = "") {
   return text.slice(0, 1600);
 }
 
-export function buildAiEditFinalPrompt({ operation, optimizedInstruction, userPrompt = "", regionNumber = 1, selectionMode = "precise" } = {}) {
+export function buildAiEditFinalPrompt({ operation, optimizedInstruction, userPrompt = "", selectionMode = "precise" } = {}) {
   const intentKind = aiEditIntentKind(operation, userPrompt);
   const normalizedSelectionMode = normalizeAiEditSelectionMode(selectionMode);
   const operationRules = {
@@ -108,7 +107,6 @@ export function buildAiEditFinalPrompt({ operation, optimizedInstruction, userPr
       ];
   return [
     ...selectionRules,
-    `This request edits numbered selection region ${regionNumber}.`,
     operationRules[intentKind] || operationRules.replace,
     "The transparent area of the PNG mask is the only editable area. Opaque mask pixels are protected.",
     "Use the supplied source image as the mandatory visual base. Preserve image dimensions, camera, composition, geometry, perspective and every pixel outside the editable region. Preserve lighting, shadows, materials and structure unless the user's instruction explicitly asks to change them.",

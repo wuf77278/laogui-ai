@@ -56,10 +56,18 @@ test("电脑端提供七天诊断包和三层日志", () => {
   assert.match(server, /desktop-events\.jsonl/);
 });
 
-test("Windows 缺少聚合生图脚本或 Python 时使用内置图片引擎", () => {
-  assert.match(server, /const script = configuredScript \? path\.resolve\(configuredScript\) : ""/);
-  assert.match(server, /existsSync\(script\) && statSync\(script\)\.isFile\(\)/);
-  assert.match(server, /spawn\\s\+python3\\s\+ENOENT/);
-  assert.match(server, /fallbackReason: "python3-unavailable"/);
-  assert.match(server, /runImageStudioEngine\(\{ prompt, inputImages, maskImage, size, quality, signal \}\)/);
+test("画布大图落盘去重且图片内核日志自动清理", () => {
+  assert.match(server, /async function persistCanvasOutputImage/);
+  assert.match(server, /canvas-edit-\$\{digest\}/);
+  assert.match(server, /pruneLogDirectory\(path\.join\(logsDir, "image-studio-engine"\)/);
+  assert.match(server, /pruneLogDirectory\(path\.join\(logsDir, "image-studio-fhl"\)/);
+});
+
+test("Mac 和 Windows 的 AI 编辑只使用软件内置图片引擎", () => {
+  assert.match(server, /const generated = await runImageStudioEngine\(\{/);
+  assert.match(server, /for \(const filePath of references\) args\.push\("--reference-image", filePath\)/);
+  assert.match(server, /if \(maskPath\) args\.push\("--mask", maskPath\)/);
+  assert.doesNotMatch(server, /aggregate-image-generation/);
+  assert.doesNotMatch(server, /runImageStudioFhlSkill/);
+  assert.doesNotMatch(server, /runCommand\("python3"/);
 });

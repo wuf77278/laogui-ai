@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { lookup } from "node:dns/promises";
 import { promises as fs } from "node:fs";
-import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isIP } from "node:net";
@@ -337,16 +337,6 @@ const config = {
     imageEditPath: process.env.IMAGE_EDITS_PATH || process.env.IMAGE_EDIT_PATH || "",
     providerManifest: null
   },
-  imageStudioFhlSkill: {
-    enabled: process.env.IMAGE_STUDIO_FHL_ENABLED || process.env.FHL_IMAGE_STUDIO_ENABLED || "auto",
-    // The optional desktop skill is available on the development Mac only. Packaged
-    // builds use the bundled Image Studio engine when this path does not exist.
-    script: process.env.IMAGE_STUDIO_FHL_SCRIPT
-      || (process.platform === "darwin" ? "/Users/Apple_501/.codex/skills/aggregate-image-generation/scripts/yingfang_image.py" : ""),
-    provider: process.env.IMAGE_STUDIO_FHL_PROVIDER || "auto",
-    outputDir: process.env.IMAGE_STUDIO_FHL_OUTPUT_DIR || path.join(logsDir, "image-studio-fhl"),
-    timeoutSeconds: boundedIntegerEnv("IMAGE_STUDIO_FHL_TIMEOUT_SECONDS", 300, 30, 900)
-  },
   imageStudioEngine: {
     mode: process.env.IMAGE_STUDIO_ENGINE || process.env.IMAGE_ENGINE || "required",
     cliPath: process.env.IMAGE_STUDIO_CLI_PATH || process.env.GPTCODEX_IMAGE_CLI || "",
@@ -409,15 +399,6 @@ const TASK_RESULT_TTL_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const AUTH_SESSION_TTL_MS = 30 * DAY_MS;
 const AUTH_OAUTH_STATE_TTL_SECONDS = 10 * 60;
-const imageStudioCompatStatePath = path.join(
-  process.env.HOME || "",
-  "Library",
-  "Application Support",
-  "image-studio",
-  "compat",
-  "state.json"
-);
-
 const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store"
@@ -5277,18 +5258,6 @@ function runCommand(command, args = [], options = {}) {
   });
 }
 
-function normalizeImageStudioFhlEnabled(value) {
-  const normalized = String(value || "auto").trim().toLowerCase();
-  if (["0", "false", "no", "off", "disabled", "disable"].includes(normalized)) return "disabled";
-  if (["1", "true", "yes", "on", "enabled", "enable"].includes(normalized)) return "enabled";
-  return "auto";
-}
-
-function normalizeImageStudioFhlProvider(value) {
-  const normalized = String(value || "auto").trim().toLowerCase();
-  return ["auto", "fhl", "yybb"].includes(normalized) ? normalized : "auto";
-}
-
 function normalizeImageStudioEngineMode(value) {
   const normalized = String(value || "required").trim().toLowerCase();
   if (["0", "false", "no", "off", "disabled", "disable"].includes(normalized)) return "disabled";
@@ -5327,7 +5296,6 @@ function imageStudioEngineStatus() {
   const mode = normalizeImageStudioEngineMode(config.imageStudioEngine.mode);
   const cliPath = resolveImageStudioCliPath();
   const available = Boolean(cliPath && existsSync(cliPath));
-  const desktop = imageStudioDesktopState();
   return {
     mode,
     enabled: mode !== "disabled" && (mode === "required" || available),
@@ -5337,15 +5305,14 @@ function imageStudioEngineStatus() {
     platform: imageStudioRuntimePlatformId(),
     outputDir: path.resolve(config.imageStudioEngine.outputDir),
     timeoutSeconds: config.imageStudioEngine.timeoutSeconds,
-    responsesTransport: normalizeResponsesTransport(config.imageStudioEngine.responsesTransport || desktop.responsesTransport || "sse"),
-    requestPolicy: normalizeImageStudioRequestPolicy(config.imageStudioEngine.requestPolicy || desktop.requestPolicy || "openai"),
+    responsesTransport: normalizeResponsesTransport(config.imageStudioEngine.responsesTransport || "sse"),
+    requestPolicy: normalizeImageStudioRequestPolicy(config.imageStudioEngine.requestPolicy || "openai"),
     imagesNewApiCompat: parseBooleanEnv(config.imageStudioEngine.imagesNewApiCompat, false),
-    reasoningEffort: normalizeImageStudioReasoningEffort(config.imageStudioEngine.reasoningEffort || desktop.reasoningEffort || "xhigh"),
+    reasoningEffort: normalizeImageStudioReasoningEffort(config.imageStudioEngine.reasoningEffort || "xhigh"),
     fastReasoningEffort: normalizeImageStudioReasoningEffort(config.imageStudioEngine.fastReasoningEffort || "low"),
-    partialImages: clampNumber(Number(config.imageStudioEngine.partialImages ?? desktop.partialImages ?? 0), 0, 3),
-    autoRetryCount: clampNumber(Number(config.imageStudioEngine.autoRetryCount ?? desktop.autoRetryCount ?? 0), 0, 8),
-    allowNativeFallback: Boolean(config.imageStudioEngine.allowNativeFallback),
-    desktop: publicImageStudioDesktopState(desktop)
+    partialImages: clampNumber(Number(config.imageStudioEngine.partialImages ?? 0), 0, 3),
+    autoRetryCount: clampNumber(Number(config.imageStudioEngine.autoRetryCount ?? 0), 0, 8),
+    allowNativeFallback: Boolean(config.imageStudioEngine.allowNativeFallback)
   };
 }
 
@@ -5362,97 +5329,11 @@ function normalizeImageStudioReasoningEffort(value) {
   return ["low", "medium", "high", "xhigh"].includes(normalized) ? normalized : "xhigh";
 }
 
-function imageStudioFhlSkillStatus() {
-  const mode = normalizeImageStudioFhlEnabled(config.imageStudioFhlSkill.enabled);
-  const configuredScript = String(config.imageStudioFhlSkill.script || "").trim();
-  const script = configuredScript ? path.resolve(configuredScript) : "";
-  const available = Boolean(script && existsSync(script) && statSync(script).isFile());
-  const cliPath = resolveImageStudioCliPath();
-  const desktop = imageStudioDesktopState();
-  return {
-    mode,
-    enabled: mode === "enabled" || (mode === "auto" && available),
-    available,
-    script,
-    cliPath,
-    cliAvailable: existsSync(cliPath),
-    provider: normalizeImageStudioFhlProvider(config.imageStudioFhlSkill.provider),
-    outputDir: path.resolve(config.imageStudioFhlSkill.outputDir),
-    timeoutSeconds: config.imageStudioFhlSkill.timeoutSeconds,
-    desktop: publicImageStudioDesktopState(desktop)
-  };
-}
-
-function publicImageStudioDesktopState(desktop = {}) {
-  return {
-    installed: Boolean(desktop.installed),
-    statePath: desktop.statePath || "",
-    profileCount: Number(desktop.profileCount || 0),
-    lastReadAt: desktop.lastReadAt || ""
-  };
-}
-
-function imageStudioDesktopState() {
-  const statePath = imageStudioCompatStatePath;
-  const base = {
-    installed: existsSync(statePath),
-    statePath,
-    activeProfileId: "",
-    activeProfileLabel: "",
-    baseUrl: "",
-    apiMode: "",
-    responsesTransport: "",
-    imageModel: "",
-    textModel: "",
-    requestPolicy: "",
-    reasoningEffort: "",
-    partialImages: null,
-    autoRetryCount: null,
-    profileCount: 0,
-    lastReadAt: new Date().toISOString()
-  };
-  if (!base.installed) return base;
-  try {
-    const parsed = JSON.parse(readFileSync(statePath, "utf8"));
-    const settings = parsed.settings && typeof parsed.settings === "object" ? parsed.settings : {};
-    const profiles = Array.isArray(parsed.profiles) ? parsed.profiles : [];
-    const activeProfileId = String(parsed.activeProfileId || "");
-    const activeProfile = profiles.find((profile) => profile?.id === activeProfileId)
-      || profiles.find((profile) => profile?.baseURL === config.imageProvider.baseUrl)
-      || profiles[0]
-      || {};
-    return {
-      ...base,
-      activeProfileId,
-      activeProfileLabel: String(activeProfile.label || activeProfile.name || activeProfileId || ""),
-      baseUrl: normalizeBaseUrl(activeProfile.baseURL || activeProfile.baseUrl || ""),
-      apiMode: String(activeProfile.apiMode || ""),
-      responsesTransport: String(activeProfile.responsesTransport || ""),
-      imageModel: String(activeProfile.imageModelID || activeProfile.imageModel || ""),
-      textModel: String(activeProfile.textModelID || activeProfile.textModel || ""),
-      requestPolicy: String(activeProfile.requestPolicy || ""),
-      reasoningEffort: String(activeProfile.reasoningEffort || ""),
-      partialImages: settings.partialImages ?? null,
-      autoRetryCount: settings.autoRetryCount ?? null,
-      profileCount: profiles.length
-    };
-  } catch (error) {
-    return {
-      ...base,
-      error: String(error.message || error)
-    };
-  }
-}
-
-function imageStudioFhlEndpointLabel(status = imageStudioFhlSkillStatus()) {
-  return `image-studio-fhl:${status.provider}`;
-}
-
 function imageStudioEngineEndpointLabel(source) {
   return `image-studio-cli:${shortRuntimeEndpointLabel(source?.baseUrl || "")}`;
 }
 
-function imageStudioFhlResultLine(output, key) {
+function imageStudioResultLine(output, key) {
   const prefix = `${key}=`;
   return String(output || "")
     .split(/\r?\n/)
@@ -5462,17 +5343,7 @@ function imageStudioFhlResultLine(output, key) {
     .trim() || "";
 }
 
-function imageStudioFhlResultLines(output, key) {
-  const prefix = `${key}=`;
-  return String(output || "")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith(prefix))
-    .map((line) => line.slice(prefix.length).trim())
-    .filter(Boolean);
-}
-
-function imageStudioFhlTaggedLines(output, tag) {
+function imageStudioTaggedLines(output, tag) {
   const pattern = new RegExp(`^${tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\[[^\\]]+\\]=(.*)$`);
   return String(output || "")
     .split(/\r?\n/)
@@ -5538,17 +5409,17 @@ function imageStudioCliSize(size) {
 function imageStudioCliDiagnostics(output, rawPath = "") {
   const text = String(output || "");
   const lower = text.toLowerCase();
-  const diagnoses = imageStudioFhlTaggedLines(text, "DIAGNOSIS");
+  const diagnoses = imageStudioTaggedLines(text, "DIAGNOSIS");
   if (/invalid_api_key|401/.test(lower)) diagnoses.push("Provider rejected the API key; update the saved Image Studio engine key.");
   if (/524/.test(lower)) diagnoses.push("Cloudflare 524 timeout; retry or reduce reference image size.");
   if (/sync_wait_expired|running|queued/.test(lower)) diagnoses.push("Image task was still running or queued when the sync wait expired; retry is usually safe.");
   return {
-    rawResponses: [...new Set([rawPath, ...imageStudioFhlTaggedLines(text, "RAW_RESPONSE")].filter(Boolean))],
+    rawResponses: [...new Set([rawPath, ...imageStudioTaggedLines(text, "RAW_RESPONSE")].filter(Boolean))],
     diagnoses: [...new Set(diagnoses)]
   };
 }
 
-async function writeImageStudioFhlReferences(inputImages = [], outputDir) {
+async function writeImageStudioReferences(inputImages = [], outputDir) {
   const validImages = inputImages.filter((image) => image?.dataUrl);
   return Promise.all(validImages.map(async (image, index) => {
     const blob = imageDataUrlToBlob(image.dataUrl);
@@ -5559,7 +5430,7 @@ async function writeImageStudioFhlReferences(inputImages = [], outputDir) {
   }));
 }
 
-async function writeImageStudioFhlMask(maskImage, outputDir) {
+async function writeImageStudioMask(maskImage, outputDir) {
   if (!maskImage?.dataUrl) return "";
   const { mime, buffer } = decodedImageDataUrl(maskImage.dataUrl);
   if (mime !== "image/png") {
@@ -5593,8 +5464,8 @@ async function runImageStudioEngine({ prompt, inputImages = [], maskImage = null
 
   const outputDir = path.join(status.outputDir, `${Date.now()}-${randomUUID().slice(0, 8)}`);
   await fs.mkdir(outputDir, { recursive: true });
-  const references = await writeImageStudioFhlReferences(inputImages, outputDir);
-  const maskPath = await writeImageStudioFhlMask(maskImage, outputDir);
+  const references = await writeImageStudioReferences(inputImages, outputDir);
+  const maskPath = await writeImageStudioMask(maskImage, outputDir);
   const apiMode = normalizeImageApiMode(source.apiMode || config.imageApiMode);
   const responsesTransport = normalizeResponsesTransport(source.responsesTransport || status.responsesTransport);
   const requestPolicy = normalizeImageStudioRequestPolicy(source.requestPolicy || status.requestPolicy);
@@ -5634,9 +5505,9 @@ async function runImageStudioEngine({ prompt, inputImages = [], maskImage = null
   if (result.canceled) throw canceledTaskError();
   const combinedOutput = [result.stdout, result.stderr].filter(Boolean).join("\n");
   const parsedImagePath = imageStudioCliOutputLine(combinedOutput, "图片已保存")
-    || imageStudioFhlResultLine(combinedOutput, "RESULT_IMAGE");
+    || imageStudioResultLine(combinedOutput, "RESULT_IMAGE");
   const rawPath = imageStudioCliOutputLine(combinedOutput, "原始返回已保存")
-    || imageStudioFhlTaggedLines(combinedOutput, "RAW_RESPONSE").at(-1)
+    || imageStudioTaggedLines(combinedOutput, "RAW_RESPONSE").at(-1)
     || await newestRawResponseFile(outputDir);
   const resultImage = parsedImagePath || await newestImageFile(outputDir);
   const diagnostics = imageStudioCliDiagnostics(combinedOutput, rawPath);
@@ -5687,7 +5558,6 @@ async function runImageStudioEngine({ prompt, inputImages = [], maskImage = null
     },
     diagnostics: {
       ...diagnostics,
-      desktopProfile: status.desktop,
       cliPath: status.cliPath
     },
     skill: {
@@ -5703,141 +5573,6 @@ async function runImageStudioEngine({ prompt, inputImages = [], maskImage = null
 
 function redactImageStudioCommand(command = "") {
   return String(command || "").replace(/(--api-key\s+)(?:"[^"]+"|\S+)/g, "$1<redacted>");
-}
-
-async function runImageStudioFhlSkill({ prompt, inputImages = [], maskImage = null, size = "auto", quality = "medium", providerOverride = "", signal = null } = {}) {
-  const status = imageStudioFhlSkillStatus();
-  if (!status.enabled) {
-    // Installed Windows builds do not contain the developer's Python skill path.
-    // Fall back to the bundled cross-platform engine, which supports masked edits.
-    const engineStatus = imageStudioEngineStatus();
-    if (engineStatus.enabled && engineStatus.available) {
-      const result = await runImageStudioEngine({ prompt, inputImages, maskImage, size, quality, signal });
-      return {
-        ...result,
-        diagnostics: {
-          ...(result.diagnostics || {}),
-          fallback: "bundled-image-studio-engine",
-          fhlSkillScript: status.script || "未安装"
-        }
-      };
-    }
-    const error = new Error(status.available
-      ? "Image Studio FHL skill is disabled，且内置图片引擎不可用"
-      : `Image Studio FHL skill 未安装，内置图片引擎也不可用: ${engineStatus.cliPath}`);
-    error.status = 503;
-    error.details = { fhlSkill: status, engine: engineStatus };
-    throw error;
-  }
-
-  const outputDir = path.join(status.outputDir, `${Date.now()}-${randomUUID().slice(0, 8)}`);
-  await fs.mkdir(outputDir, { recursive: true });
-  const references = await writeImageStudioFhlReferences(inputImages, outputDir);
-  const maskPath = await writeImageStudioFhlMask(maskImage, outputDir);
-  const provider = providerOverride ? normalizeImageStudioFhlProvider(providerOverride) : status.provider;
-  const args = [
-    status.script,
-    "--provider",
-    provider,
-    "--prompt",
-    String(prompt || ""),
-    "--output-dir",
-    outputDir,
-    "--size",
-    String(size || "auto"),
-    "--quality",
-    normalizeImageToolQuality(quality),
-    "--output-format",
-    "png",
-    "--no-auto-retry",
-    "--provider-timeout-seconds",
-    String(status.timeoutSeconds)
-  ];
-  for (const filePath of references) args.push("--reference-image", filePath);
-  if (maskPath) args.push("--mask-image", maskPath);
-
-  const result = await runCommand("python3", args, {
-    cwd: outputDir,
-    timeoutMs: (status.timeoutSeconds + 30) * 1000,
-    signal
-  });
-  if (result.canceled) throw canceledTaskError();
-  if (!result.ok && result.error && /spawn\s+python3\s+ENOENT/i.test(result.error)) {
-    const engineStatus = imageStudioEngineStatus();
-    if (engineStatus.enabled && engineStatus.available) {
-      const fallback = await runImageStudioEngine({ prompt, inputImages, maskImage, size, quality, signal });
-      return {
-        ...fallback,
-        diagnostics: {
-          ...(fallback.diagnostics || {}),
-          fallback: "bundled-image-studio-engine",
-          fallbackReason: "python3-unavailable",
-          fhlSkillScript: status.script
-        }
-      };
-    }
-  }
-  const combinedOutput = [result.stdout, result.stderr].filter(Boolean).join("\n");
-  const resultImage = imageStudioFhlResultLine(combinedOutput, "RESULT_IMAGE");
-  const resultProvider = imageStudioFhlResultLine(combinedOutput, "RESULT_PROVIDER") || provider;
-  const rawResponses = imageStudioFhlTaggedLines(combinedOutput, "RAW_RESPONSE");
-  const diagnoses = imageStudioFhlTaggedLines(combinedOutput, "DIAGNOSIS");
-
-  if (!result.ok || !resultImage) {
-    const error = new Error([
-      "Image Studio FHL skill failed",
-      result.error || "",
-      combinedOutput.slice(-2000)
-    ].filter(Boolean).join(": "));
-    error.status = result.timedOut ? 504 : 502;
-    error.details = {
-      command: result.command,
-      outputDir,
-      provider,
-      rawResponses,
-      diagnoses: [...new Set(diagnoses)],
-      desktopProfile: status.desktop,
-      stdout: result.stdout,
-      stderr: result.stderr
-    };
-    throw error;
-  }
-
-  const imagePath = path.resolve(resultImage);
-  if (!existsSync(imagePath)) {
-    const error = new Error(`Image Studio FHL skill reported a missing image: ${imagePath}`);
-    error.status = 502;
-    error.details = { outputDir, provider: resultProvider };
-    throw error;
-  }
-
-  return {
-    buffer: await fs.readFile(imagePath),
-    thinking: `Image Studio FHL skill completed through provider ${resultProvider}.`,
-    imageApi: "image-studio-fhl",
-    endpoint: imageStudioFhlEndpointLabel({ provider: resultProvider }),
-    actualParams: {
-      size: String(size || "auto"),
-      quality: normalizeImageToolQuality(quality),
-      output_format: "png",
-      provider,
-      masked_edit: Boolean(maskPath),
-      no_auto_retry: true
-    },
-    diagnostics: {
-      rawResponses,
-      diagnoses: [...new Set(diagnoses)],
-      desktopProfile: status.desktop,
-      cliPath: status.cliPath
-    },
-    skill: {
-      name: "image-studio-fhl",
-      provider: resultProvider,
-      script: status.script,
-      outputDir,
-      resultImage: imagePath
-    }
-  };
 }
 
 const AI_EDIT_OPERATIONS = new Set(["remove", "replace", "material", "detail", "custom"]);
@@ -5986,13 +5721,12 @@ async function runAiEdit(body = {}, { signal = null } = {}) {
     regionNumber,
     selectionMode
   });
-  const generated = await runImageStudioFhlSkill({
+  const generated = await runImageStudioEngine({
     prompt,
     inputImages: [body.image],
     maskImage: body.mask,
     size: imageStudioCliSize(body.outputSize || "auto"),
     quality: body.quality || "high",
-    providerOverride: "auto",
     signal
   });
   const title = {
@@ -9306,25 +9040,7 @@ async function generateImageWithImageProvider({ prompt, inputImages, size, quali
     return nativeEndpointRefreshPromise;
   };
   const engineStatus = imageStudioEngineStatus();
-  const fhlSkillStatus = imageStudioFhlSkillStatus();
-  const preferFhlSkill = isFhlBaseUrl(source?.baseUrl)
-    && fhlSkillStatus.enabled
-    && fhlSkillStatus.available
-    && fhlSkillStatus.cliAvailable;
-  if (preferFhlSkill) {
-    attempts.push({
-      name: `FHL 生图 CLI ${size}`,
-      endpoint: imageStudioFhlEndpointLabel(fhlSkillStatus),
-      run: () => runImageStudioFhlSkill({
-        prompt,
-        inputImages,
-        size,
-        quality,
-        signal
-      })
-    });
-  }
-  if (engineStatus.enabled && !useNativeAdapter && !preferFhlSkill) {
+  if (engineStatus.enabled && !useNativeAdapter) {
     attempts.push({
       name: `Image Studio CLI engine ${size}`,
       endpoint: engineStatus.available ? `image-studio-cli:${path.basename(engineStatus.cliPath)}` : "image-studio-cli:missing",
@@ -9363,19 +9079,6 @@ async function generateImageWithImageProvider({ prompt, inputImages, size, quali
         quality,
         useProviderPool: false,
         source,
-        signal
-      })
-    });
-  }
-  if (!preferFhlSkill && fhlSkillStatus.enabled && (!engineStatus.required || !engineStatus.available)) {
-    attempts.push({
-      name: `Image Studio FHL skill ${size}`,
-      endpoint: imageStudioFhlEndpointLabel(fhlSkillStatus),
-      run: () => runImageStudioFhlSkill({
-        prompt,
-        inputImages,
-        size,
-        quality,
         signal
       })
     });
@@ -11885,22 +11588,40 @@ function sanitizeClientId(value) {
 
 function compactStoredImage(image) {
   if (!image || typeof image !== "object") return image || null;
-  const dataUrl = String(image.dataUrl || "");
-  return {
+  const next = {
     ...image,
-    dataUrlBytes: dataUrl ? Math.round(dataUrl.length * 0.75) : Number(image.dataUrlBytes || 0)
+    dataUrlBytes: image.dataUrl ? Math.round(String(image.dataUrl).length * 0.75) : Number(image.dataUrlBytes || 0)
   };
+  if (next.dataUrl && next.url && !String(next.url).startsWith("data:image")) delete next.dataUrl;
+  return next;
 }
 
-function compactCanvasSnapshot(snapshot = {}) {
+async function persistCanvasOutputImage(image) {
+  if (!image || typeof image !== "object" || !String(image.url || "").startsWith("data:image")) return image;
+  const { mime, buffer } = decodedImageDataUrl(image.url);
+  if (!["image/png", "image/jpeg", "image/webp"].includes(mime)) return image;
+  const digest = createHash("sha256").update(buffer).digest("hex").slice(0, 24);
+  const extension = imageExtensionFromMime(mime);
+  const fileName = `canvas-edit-${digest}.${extension}`;
+  const filePath = path.join(generatedDirectory(), fileName);
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  if (!existsSync(filePath)) await fs.writeFile(filePath, buffer);
+  return { ...image, url: `/generated/${fileName}`, bytes: buffer.length };
+}
+
+async function compactCanvasSnapshot(snapshot = {}) {
   const next = { ...snapshot };
   next.primaryImage = compactStoredImage(next.primaryImage);
   next.referenceImages = Array.isArray(next.referenceImages)
     ? next.referenceImages.slice(0, 8).map(compactStoredImage)
     : [];
-  next.renders = Array.isArray(next.renders) ? next.renders.slice(-24) : [];
-  next.designSeriesResults = Array.isArray(next.designSeriesResults) ? next.designSeriesResults.slice(-24) : [];
-  next.imageToolResults = Array.isArray(next.imageToolResults) ? next.imageToolResults.slice(-24) : [];
+  next.render = await persistCanvasOutputImage(next.render);
+  next.renders = await Promise.all((Array.isArray(next.renders) ? next.renders.slice(-24) : []).map(persistCanvasOutputImage));
+  next.designSeriesResults = await Promise.all((Array.isArray(next.designSeriesResults) ? next.designSeriesResults.slice(-24) : []).map(persistCanvasOutputImage));
+  next.imageToolResults = await Promise.all((Array.isArray(next.imageToolResults) ? next.imageToolResults.slice(-24) : []).map(persistCanvasOutputImage));
+  if (next.canvas?.selectedImage) {
+    next.canvas = { ...next.canvas, selectedImage: await persistCanvasOutputImage(next.canvas.selectedImage) };
+  }
   return next;
 }
 
@@ -11940,12 +11661,12 @@ async function writeCanvasState(body = {}, clientId = "local") {
     clientId: safeClientId,
     activeCanvasId: String(body.activeCanvasId || ""),
     nextCanvasIndex: Number(body.nextCanvasIndex || 1),
-    canvases: canvases.map((record, index) => ({
+    canvases: await Promise.all(canvases.map(async (record, index) => ({
       ...record,
       id: String(record?.id || `canvas-${Date.now()}-${index}`),
       index: Number(record?.index || index + 1),
-      snapshot: compactCanvasSnapshot(record?.snapshot || {})
-    })),
+      snapshot: await compactCanvasSnapshot(record?.snapshot || {})
+    }))),
     savedAt: new Date().toISOString()
   };
   const statePath = canvasStatePathForClient(safeClientId);
@@ -12489,7 +12210,6 @@ function exportRuntimeImageEndpoints() {
 
 function runtimeSettingsBody(req = null) {
   const owner = req ? isOwnerRequest(req) : true;
-  const fhlSkillStatus = imageStudioFhlSkillStatus();
   return {
     ok: true,
     settings: {
@@ -12505,8 +12225,7 @@ function runtimeSettingsBody(req = null) {
       },
       activeImageBaseUrl: config.imageProvider.baseUrl,
       imageStudioEngine: imageStudioEngineStatus(),
-      imageStudioFhlSkill: fhlSkillStatus,
-      imageBackend: fhlSkillStatus.enabled ? "image-studio-fhl" : "image-studio-cli-engine",
+      imageBackend: "image-studio-cli-engine",
       imageGenContract: "Standard OpenAI-compatible paths use the bundled Image Studio go-cli engine. Providers with custom paths or a Provider Manifest use the native HTTP adapter. Other native fallbacks remain disabled unless IMAGE_STUDIO_ALLOW_NATIVE_FALLBACK=1.",
       canManageSettings: owner,
       publicApiTokenConfigured: Boolean(config.publicApi.token),
@@ -12821,13 +12540,47 @@ async function pruneTaskLogs({ keepDays = 7 } = {}) {
   for (const filePath of files) {
     results.push(await pruneLogFile(filePath, keepDays));
   }
+  const engineLogs = await Promise.all([
+    pruneLogDirectory(path.join(logsDir, "image-studio-engine"), keepDays),
+    pruneLogDirectory(path.join(logsDir, "image-studio-fhl"), keepDays)
+  ]);
   return {
     ok: true,
     action: "prune-task-logs",
     keepDays,
     files: results,
-    removed: results.reduce((sum, item) => sum + item.removed, 0)
+    engineLogs,
+    removed: results.reduce((sum, item) => sum + item.removed, 0) + engineLogs.reduce((sum, item) => sum + item.removed, 0),
+    removedBytes: engineLogs.reduce((sum, item) => sum + item.removedBytes, 0)
   };
+}
+
+async function removeEmptyDirectories(dirPath) {
+  let entries = [];
+  try {
+    entries = await fs.readdir(dirPath, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === "ENOENT") return;
+    throw error;
+  }
+  for (const entry of entries) {
+    if (entry.isDirectory()) await removeEmptyDirectories(path.join(dirPath, entry.name));
+  }
+  const remaining = await fs.readdir(dirPath).catch(() => []);
+  if (!remaining.length) await fs.rmdir(dirPath).catch(() => {});
+}
+
+async function pruneLogDirectory(dirPath, keepDays = 7) {
+  const cutoff = Date.now() - Math.max(1, Number(keepDays) || 7) * DAY_MS;
+  const files = await listFilesRecursive(dirPath);
+  const expired = files.filter((file) => file.stat.mtimeMs < cutoff);
+  let removedBytes = 0;
+  for (const file of expired) {
+    removedBytes += file.stat.size;
+    await fs.unlink(file.path);
+  }
+  await removeEmptyDirectories(dirPath);
+  return { directory: path.relative(appDataDir, dirPath), before: files.length, removed: expired.length, removedBytes };
 }
 
 async function pruneSevenDayDiagnostics() {
@@ -13044,7 +12797,6 @@ async function handleRuntimeImageEndpointSettingsRoute(req, res, routePath) {
 }
 
 function healthBody() {
-  const fhlSkillStatus = imageStudioFhlSkillStatus();
   const engineStatus = imageStudioEngineStatus();
   const imageConfigured = imageProviderSources().some((source) => source.baseUrl && source.apiKey)
     && (engineStatus.available || !engineStatus.required);
@@ -13055,11 +12807,10 @@ function healthBody() {
     imageBaseUrl: config.imageProvider.baseUrl,
     imageBaseUrls: config.imageProvider.baseUrls,
     imageStudioEngine: engineStatus,
-    imageStudioFhlSkill: fhlSkillStatus,
     imageQueue: imageGenerationQueueState(),
     imageToolRunnerModel: config.imageToolRunnerModel,
     imageModel: config.imageModel,
-    imageBackend: fhlSkillStatus.enabled ? "image-studio-fhl" : "image-studio-cli-engine",
+    imageBackend: "image-studio-cli-engine",
     dataDir: appDataDir,
     externalDataDir: externalDataDirEnabled,
     storage: publicStorageSettings(),

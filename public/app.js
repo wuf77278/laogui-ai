@@ -82,7 +82,6 @@ const state = {
   imageApiProfileFormDirty: false,
   storageSettings: null,
   imageStudioEngine: null,
-  imageStudioFhlSkill: null,
   providerProbes: { image: null },
   providerProbeBusy: { image: false },
   imageApiProfileProbeBusy: {},
@@ -3773,7 +3772,6 @@ async function refreshHealth() {
     state.runtimeProviders = { image: data.runtimeProviders?.image || state.runtimeProviders?.image || null };
     state.storageSettings = data.storage || state.storageSettings;
     state.imageStudioEngine = data.imageStudioEngine || state.imageStudioEngine;
-    state.imageStudioFhlSkill = data.imageStudioFhlSkill || state.imageStudioFhlSkill;
     const imageReady = data.imageConfigured ?? data.keyConfigured;
     const apiDisplayLabel = data.imageBaseUrl ? `生图 ${shortEndpoint(data.imageBaseUrl)}` : "生图 API";
     const imageBackendLabel = data.imageBackend === "responses-image-generation-tool"
@@ -3809,7 +3807,6 @@ async function refreshApiSettings({ silent = false } = {}) {
     state.providerProbes = { image: settings.providerProbes?.image || state.providerProbes?.image || null };
     state.activeImageBaseUrl = settings.activeImageBaseUrl || state.activeImageBaseUrl;
     state.imageStudioEngine = settings.imageStudioEngine || state.imageStudioEngine;
-    state.imageStudioFhlSkill = settings.imageStudioFhlSkill || state.imageStudioFhlSkill;
     state.canManageApiSettings = settings.canManageSettings !== false;
     renderLocalApiSettings(settings);
     renderApiSettings();
@@ -3976,7 +3973,7 @@ function imageStudioKernelStatusInfo(skill = null) {
 
 function renderImageStudioKernel() {
   if (!els.imageStudioKernelSummary && !els.imageStudioKernelStatus) return;
-  const engine = state.imageStudioEngine || state.imageStudioFhlSkill || null;
+  const engine = state.imageStudioEngine || null;
   const imageProvider = state.runtimeProviders?.image || {};
   const statusInfo = imageStudioKernelStatusInfo(engine);
   const modeLabel = engine?.mode === "required" ? "软件内核必经" : engine?.mode === "optional" ? "可选引擎" : engine?.mode || "--";
@@ -4287,7 +4284,6 @@ function renderLocalApiSettings(settings = {}) {
   syncImageApiProfiles(settings);
   if (settings.storage) state.storageSettings = settings.storage;
   if (settings.imageStudioEngine) state.imageStudioEngine = settings.imageStudioEngine;
-  if (settings.imageStudioFhlSkill) state.imageStudioFhlSkill = settings.imageStudioFhlSkill;
   state.providerProbes = { image: settings.providerProbes?.image || state.providerProbes?.image || null };
   const image = providers.image || {};
   const editingProfile = currentEditingImageApiProfile();
@@ -4390,7 +4386,6 @@ function applyProbeSettings(data = {}) {
   if (settings.providers) state.runtimeProviders = { image: settings.providers.image || state.runtimeProviders?.image || null };
   syncImageApiProfiles(settings);
   if (settings.imageStudioEngine) state.imageStudioEngine = settings.imageStudioEngine;
-  if (settings.imageStudioFhlSkill) state.imageStudioFhlSkill = settings.imageStudioFhlSkill;
   if (settings.providerProbes) state.providerProbes = { image: settings.providerProbes.image || state.providerProbes?.image || null };
   state.activeImageBaseUrl = settings.activeImageBaseUrl || data.imageBaseUrl || state.activeImageBaseUrl;
   if ("canManageSettings" in settings) state.canManageApiSettings = settings.canManageSettings !== false;
@@ -19217,7 +19212,7 @@ async function handleDesktopUpdateButtonClick() {
     ...desktopUpdateState,
     status: "checking",
     progress: null,
-    message: "正在连接 GitHub 检查新版本…"
+    message: "正在连接 Gitee 检查新版本…"
   });
   try {
     renderDesktopUpdateState(await window.laoguiDesktop.checkForUpdates());
@@ -19226,7 +19221,7 @@ async function handleDesktopUpdateButtonClick() {
       ...desktopUpdateState,
       status: "error",
       progress: null,
-      message: "检查更新失败，请确认电脑能正常访问 GitHub 后再试。"
+      message: "检查更新失败，请确认电脑能正常访问 Gitee 后再试。"
     });
     toast(error.message || "检查更新失败");
   }

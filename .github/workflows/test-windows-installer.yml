@@ -6,7 +6,7 @@ on:
       version:
         description: 要测试的版本号
         required: true
-        default: "2.3.14"
+        default: "2.3.16"
 
 permissions:
   contents: read
@@ -15,6 +15,14 @@ jobs:
   test-installer:
     runs-on: windows-latest
     steps:
+      - name: 读取项目
+        uses: actions/checkout@v4
+
+      - name: 准备 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: 下载 Windows 安装包
         shell: pwsh
         env:
@@ -75,6 +83,9 @@ jobs:
           if (-not $version.StartsWith($env:TEST_VERSION)) {
             throw "安装版本不正确：期望 $env:TEST_VERSION，实际 $version"
           }
+
+      - name: 真实执行一次 AI 编辑
+        run: node scripts/verify-installed-ai-edit.mjs
 
       - name: 上传健康检查结果
         if: always()

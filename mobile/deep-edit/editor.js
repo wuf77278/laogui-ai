@@ -28,13 +28,13 @@ import {
 import { loadLayerProject, saveLayerProject } from "./project-store.js";
 
 const TOOL_META = [
-  ["move", "icon-focus", "抓手"],
-  ["select-shape", "icon-box-select", "形状选区"],
-  ["lasso", "icon-vector", "套索"],
-  ["wand", "icon-spark", "颜色选择"],
-  ["brush-add", "icon-brush", "修边画笔"],
+  ["move", "icon-focus", "移动"],
+  ["select-shape", "icon-box-select", "框选"],
+  ["brush-add", "icon-brush", "选区画笔"],
   ["paint", "icon-brush", "画笔"],
   ["fill", "icon-material", "填充"],
+  ["wand", "icon-spark", "同色选区"],
+  ["lasso", "icon-vector", "套索"],
   ["eyedropper", "icon-focus", "吸管"],
   ["text", "icon-rename", "文字"]
 ];
@@ -59,6 +59,7 @@ const ADJUSTMENT_GROUPS = [
 const adjustmentLabels = Object.fromEntries(ADJUSTMENTS);
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+const pathLength = (points = []) => points.slice(1).reduce((total, point, index) => total + Math.hypot(point.x - points[index].x, point.y - points[index].y), 0);
 const mobileIconAliases = { "icon-close": "i-close", "icon-history": "i-back", "icon-refresh": "i-back", "icon-compare": "i-compare", "icon-check": "i-check", "icon-plus": "i-plus", "icon-copy": "i-plus", "icon-upload": "i-upload", "icon-export": "i-share", "icon-trash": "i-trash", "icon-focus": "i-image", "icon-box-select": "i-crop", "icon-vector": "i-crop", "icon-spark": "i-spark", "icon-brush": "i-edit", "icon-eraser": "i-edit", "icon-material": "i-image", "icon-rename": "i-edit" };
 const icon = (id) => `<svg aria-hidden="true"><use href="#${mobileIconAliases[id] || id}"></use></svg>`;
 
@@ -125,6 +126,9 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
     panY: 0,
     view: null,
     gesture: null,
+    pointers: new Map(),
+    mobileMode: "crop",
+    cropRatio: "free",
     cursorPoint: null,
     polygonPoints: [],
     history: [],
@@ -349,7 +353,7 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
             <button class="text-button deep-zoom-readout" type="button" data-deep-command="fit">100%</button>
             <button class="text-button" type="button" data-deep-command="zoom-in" title="放大">＋</button>
             <button class="text-button" type="button" data-deep-command="compare" aria-pressed="false">${icon("icon-compare")}<span>原图</span></button>
-            <button class="primary-button" type="button" data-deep-command="save">${icon("icon-check")}完成并生成结果</button>
+            <button class="primary-button" type="button" data-deep-command="save">${icon("icon-check")}<span>完成</span></button>
           </div>
         </header>
         <div class="deep-workspace-body">
@@ -365,9 +369,29 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
           </div>
           <main class="deep-stage" data-deep-stage>
             <canvas data-deep-canvas tabindex="0" aria-label="图片编辑画布"></canvas>
+            <output class="mobile-canvas-zoom deep-mobile-zoom">100%</output>
+            <div class="mobile-canvas-navigator" data-deep-navigator hidden><canvas data-deep-navigator-canvas aria-hidden="true"></canvas></div>
             <div class="deep-stage-hint" data-deep-hint>拖动创建选区</div>
             <div class="deep-busy" data-deep-busy hidden><span class="icon-busy-dot"></span><strong data-deep-busy-text>处理中</strong></div>
           </main>
+          <nav class="deep-mobile-toolbar" aria-label="深度编辑工具">
+            <button type="button" data-mobile-deep-mode="crop" aria-pressed="true">${icon("icon-box-select")}<span>裁剪</span></button>
+            <button type="button" data-mobile-deep-mode="lasso" aria-pressed="false">${icon("icon-vector")}<span>套索</span></button>
+            <button type="button" data-mobile-deep-mode="adjust" aria-pressed="false">${icon("icon-material")}<span>调整</span></button>
+            <button type="button" data-mobile-deep-mode="paint" aria-pressed="false">${icon("icon-brush")}<span>画笔</span></button>
+            <button type="button" data-mobile-deep-mode="more" aria-pressed="false">${icon("icon-vector")}<span>更多</span></button>
+          </nav>
+          <div class="deep-mobile-crop-controls" aria-label="裁剪设置">
+            <div class="deep-mobile-crop-ratios" role="group" aria-label="裁剪比例">
+              <button type="button" data-mobile-crop-ratio="free" aria-pressed="true">自由</button>
+              <button type="button" data-mobile-crop-ratio="1:1" aria-pressed="false">1:1</button>
+              <button type="button" data-mobile-crop-ratio="4:3" aria-pressed="false">4:3</button>
+              <button type="button" data-mobile-crop-ratio="3:4" aria-pressed="false">3:4</button>
+              <button type="button" data-mobile-crop-ratio="16:9" aria-pressed="false">16:9</button>
+              <button type="button" data-mobile-crop-ratio="9:16" aria-pressed="false">9:16</button>
+            </div>
+            <button class="deep-mobile-apply-crop" type="button" data-local-action="crop">完成裁剪</button>
+          </div>
           <aside class="deep-inspector">
             <section class="deep-tool-options" data-tool-options aria-label="当前工具选项" hidden></section>
             <div class="deep-inspector-tabs" role="tablist" aria-label="编辑分类">
@@ -612,6 +636,30 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
     ctx.restore();
   }
 
+  function renderMobileCanvasAids() {
+    const zoom = overlay.querySelector(".deep-mobile-zoom");
+    if (zoom) zoom.textContent = `${Math.round(state.zoom * 100)}%`;
+    const navigator = overlay.querySelector("[data-deep-navigator]");
+    const navigatorCanvas = overlay.querySelector("[data-deep-navigator-canvas]");
+    if (navigator && navigatorCanvas) {
+      navigator.hidden = state.zoom <= 1.05;
+      if (!navigator.hidden) {
+        const width = 104; const height = 68;
+        navigatorCanvas.width = width; navigatorCanvas.height = height;
+        const ctx = navigatorCanvas.getContext("2d");
+        ctx.clearRect(0, 0, width, height);
+        ctx.drawImage(state.previewCanvas || state.sourceCanvas, 0, 0, width, height);
+        const viewportWidth = Math.min(width, width / state.zoom);
+        const viewportHeight = Math.min(height, height / state.zoom);
+        const maxPanX = Math.max(1, state.sourceCanvas.width * state.view.scale - state.view.width);
+        const maxPanY = Math.max(1, state.sourceCanvas.height * state.view.scale - state.view.height);
+        const x = clamp(width / 2 - viewportWidth / 2 - state.panX * (width - viewportWidth) / maxPanX, 0, width - viewportWidth);
+        const y = clamp(height / 2 - viewportHeight / 2 - state.panY * (height - viewportHeight) / maxPanY, 0, height - viewportHeight);
+        ctx.strokeStyle = "#fff"; ctx.lineWidth = 2; ctx.strokeRect(x + 1, y + 1, Math.max(2, viewportWidth - 2), Math.max(2, viewportHeight - 2));
+      }
+    }
+  }
+
   function render() {
     if (!overlay || overlay.hidden || !state.sourceCanvas) return;
     const canvas = overlay.querySelector("[data-deep-canvas]");
@@ -644,6 +692,7 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
     drawGesture(ctx);
     drawBrushCursor(ctx);
     updateUi();
+    renderMobileCanvasAids();
   }
 
   function updateUi() {
@@ -661,6 +710,9 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
     overlay.querySelector("[data-deep-command='undo']").disabled = state.busy || !state.history.length;
     overlay.querySelector("[data-deep-command='redo']").disabled = state.busy || !state.future.length;
     overlay.querySelector("[data-deep-command='compare']").setAttribute("aria-pressed", String(state.compare));
+    overlay.dataset.mobileMode = state.mobileMode;
+    overlay.querySelectorAll("[data-mobile-deep-mode]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.mobileDeepMode === state.mobileMode)));
+    overlay.querySelectorAll("[data-mobile-crop-ratio]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.mobileCropRatio === state.cropRatio)));
     const brushActive = ["brush-add", "paint"].includes(state.tool);
     const canvas = overlay.querySelector("[data-deep-canvas]");
     if (canvas) canvas.style.cursor = brushActive ? "none" : "crosshair";
@@ -681,7 +733,7 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
     updateLayerList();
     updateToolOptions();
     const hint = overlay.querySelector("[data-deep-hint]");
-    hint.textContent = state.tool === "lasso" && state.lassoMode === "polygon" ? "逐点单击，双击闭合" : state.tool === "wand" ? (state.wandContiguous ? "单击选择相连的相近颜色" : "单击选择全图相近颜色") : state.tool === "paint" ? (state.paintMode === "erase" ? "在当前图层上拖动擦除" : "在当前图层上拖动绘画") : state.tool === "fill" && state.fillMode === "gradient" ? "拖动确定渐变方向" : state.tool === "eyedropper" ? "单击图片吸取颜色" : state.tool === "text" ? "单击图片放置文字" : "在图上拖动创建或修整选区";
+    hint.textContent = state.tool === "lasso" && state.lassoMode === "free" ? "按住沿目标边缘画一圈，松手自动闭合" : state.tool === "lasso" && state.lassoMode === "polygon" ? "逐点单击，双击闭合" : state.tool === "wand" ? (state.wandContiguous ? "单击选择相连的相近颜色" : "单击选择全图相近颜色") : state.tool === "paint" ? (state.paintMode === "erase" ? "在当前图层上拖动擦除" : "在当前图层上拖动绘画") : state.tool === "fill" && state.fillMode === "gradient" ? "拖动确定渐变方向" : state.tool === "eyedropper" ? "单击图片吸取颜色" : state.tool === "text" ? "单击图片放置文字" : "在图上拖动创建或修整选区";
   }
 
   function ensureEditablePixelLayer(name = "绘画图层") {
@@ -810,13 +862,30 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
     render();
   }
 
+  function beginPinchGesture() {
+    const points = [...state.pointers.values()];
+    if (points.length < 2) return;
+    state.gesture = {
+      type: "pinch",
+      distance: Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y),
+      centerX: (points[0].x + points[1].x) / 2,
+      centerY: (points[0].y + points[1].y) / 2,
+      zoom: state.zoom,
+      panX: state.panX,
+      panY: state.panY
+    };
+    state.cursorPoint = null;
+  }
+
   function handlePointerDown(event) {
     if (state.busy || !state.sourceCanvas) return;
+    state.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    if (state.pointers.size >= 2) { event.preventDefault(); beginPinchGesture(); render(); return; }
     const point = sourcePointFromEvent(event);
     if (!point && state.tool !== "move") return;
     state.cursorPoint = point;
     event.preventDefault();
-    event.currentTarget.setPointerCapture?.(event.pointerId);
     if (state.tool === "move") {
       state.gesture = { type: "move", startX: event.clientX, startY: event.clientY, panX: state.panX, panY: state.panY };
       return;
@@ -843,13 +912,25 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
       return;
     }
     const type = state.tool === "select-shape" ? state.shapeMode : state.tool === "lasso" ? "lasso" : state.tool === "paint" ? "layer-stroke" : state.tool === "fill" && state.fillMode === "gradient" ? "gradient" : "brush";
-    state.gesture = { type, points: [{ x: point.x, y: point.y }] };
+    state.gesture = { type, pointerId: event.pointerId, points: [{ x: point.x, y: point.y }] };
   }
 
   function handlePointerMove(event) {
+    if (state.pointers.has(event.pointerId)) state.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (state.gesture?.type === "pinch") {
+      const points = [...state.pointers.values()];
+      if (points.length < 2) return;
+      const distance = Math.max(1, Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y));
+      const centerX = (points[0].x + points[1].x) / 2;
+      const centerY = (points[0].y + points[1].y) / 2;
+      state.zoom = clamp(state.gesture.zoom * distance / Math.max(1, state.gesture.distance), 1, 8);
+      state.panX = state.gesture.panX + centerX - state.gesture.centerX;
+      state.panY = state.gesture.panY + centerY - state.gesture.centerY;
+      event.preventDefault(); render(); return;
+    }
     const gesture = state.gesture;
     if (state.busy) return;
-    const point = sourcePointFromEvent(event);
+    let point = sourcePointFromEvent(event);
     state.cursorPoint = point;
     if (!gesture) { render(); return; }
     if (gesture.type === "move") {
@@ -861,21 +942,43 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
     if (!point) return;
     const points = gesture.points;
     const last = points.at(-1);
+    if (gesture.type === "rect" && state.mobileMode === "crop") point = constrainedCropPoint(points[0], point);
     if (["rect", "ellipse", "gradient"].includes(gesture.type)) points[1] = { x: point.x, y: point.y };
     else if (!last || Math.hypot(point.x - last.x, point.y - last.y) > Math.max(1, state.sourceCanvas.width / 800)) points.push({ x: point.x, y: point.y });
     render();
   }
 
+  function constrainedCropPoint(first, point) {
+    if (!first || !point || state.cropRatio === "free") return point;
+    const [rw, rh] = state.cropRatio.split(":").map(Number);
+    if (!rw || !rh) return point;
+    const dx = point.x - first.x;
+    const dy = point.y - first.y;
+    const width = Math.max(Math.abs(dx), Math.abs(dy) * rw / rh);
+    const height = width * rh / rw;
+    return {
+      x: clamp(first.x + Math.sign(dx || 1) * width, 0, state.sourceCanvas.width - 1),
+      y: clamp(first.y + Math.sign(dy || 1) * height, 0, state.sourceCanvas.height - 1),
+    };
+  }
+
   function handlePointerUp(event) {
     const gesture = state.gesture;
+    state.pointers.delete(event.pointerId);
+    if (gesture?.type === "pinch") {
+      if (state.pointers.size < 2) state.gesture = null;
+      render(); return;
+    }
+    if (gesture?.pointerId !== event.pointerId) return;
     if (!gesture || state.busy) return;
     if (gesture.type === "move") { state.gesture = null; return; }
-    const point = sourcePointFromEvent(event);
+    let point = sourcePointFromEvent(event);
+    if (point && gesture.type === "rect" && state.mobileMode === "crop") point = constrainedCropPoint(gesture.points[0], point);
     if (point && ["rect", "ellipse", "gradient"].includes(gesture.type)) gesture.points[1] = { x: point.x, y: point.y };
     let incoming = null;
     if (gesture.type === "rect" && gesture.points.length > 1) incoming = rectangleMask(state.sourceCanvas.width, state.sourceCanvas.height, gesture.points[0], gesture.points[1]);
     else if (gesture.type === "ellipse" && gesture.points.length > 1) incoming = ellipseMask(state.sourceCanvas.width, state.sourceCanvas.height, gesture.points[0], gesture.points[1]);
-    else if (gesture.type === "lasso" && gesture.points.length > 2) incoming = polygonMask(state.sourceCanvas.width, state.sourceCanvas.height, gesture.points);
+    else if (gesture.type === "lasso" && gesture.points.length > 2 && pathLength(gesture.points) >= 18 / Math.max(.01, state.view?.scale || 1)) incoming = polygonMask(state.sourceCanvas.width, state.sourceCanvas.height, gesture.points);
     else if (gesture.type === "brush") incoming = strokeMask(state.sourceCanvas.width, state.sourceCanvas.height, gesture.points, state.brushSize / 2);
     else if (gesture.type === "layer-stroke") paintLayerStroke(gesture.points, state.paintMode === "erase");
     else if (gesture.type === "gradient" && gesture.points.length > 1) applyGradient(gesture.points[0], gesture.points[1]);
@@ -1073,7 +1176,10 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
     canvas.addEventListener("pointerup", handlePointerUp);
     canvas.addEventListener("pointercancel", handlePointerUp);
     canvas.addEventListener("pointerleave", () => { state.cursorPoint = null; if (!state.gesture) render(); });
-    canvas.addEventListener("dblclick", () => state.tool === "lasso" && state.lassoMode === "polygon" && finishPolygon());
+    canvas.addEventListener("dblclick", () => {
+      if (state.tool === "lasso" && state.lassoMode === "polygon" && state.polygonPoints.length) return finishPolygon();
+      state.zoom = 1; state.panX = 0; state.panY = 0; state.gesture = null; state.pointers.clear(); render();
+    });
     canvas.addEventListener("wheel", (event) => { event.preventDefault(); state.zoom = clamp(state.zoom * (event.deltaY > 0 ? 0.9 : 1.1), 0.1, 8); render(); }, { passive: false });
     overlay.addEventListener("pointerdown", (event) => {
       if (event.target.matches("[data-layer-opacity], [data-layer-blend]")) pushHistory("document");
@@ -1082,6 +1188,20 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
       if (event.target.matches("[data-layer-x], [data-layer-y]")) pushHistory("document");
     });
     overlay.addEventListener("click", (event) => {
+      const mobileMode = event.target.closest("[data-mobile-deep-mode]")?.dataset.mobileDeepMode;
+      if (mobileMode) {
+        state.mobileMode = mobileMode;
+        const tab = mobileMode === "adjust" ? "adjust" : mobileMode === "more" ? "layers" : mobileMode === "paint" ? "layers" : "basic";
+        if (mobileMode === "crop") { state.tool = "select-shape"; state.shapeMode = "rect"; }
+        if (mobileMode === "lasso") { state.tool = "lasso"; state.lassoMode = "free"; state.combine = "replace"; }
+        if (mobileMode === "adjust") state.tool = "move";
+        if (mobileMode === "paint") { state.tool = "paint"; state.paintMode = "paint"; }
+        overlay.querySelectorAll("[data-deep-tab]").forEach((button) => button.setAttribute("aria-selected", String(button.dataset.deepTab === tab)));
+        overlay.querySelectorAll("[data-deep-panel]").forEach((panel) => panel.hidden = panel.dataset.deepPanel !== tab);
+        render(); return;
+      }
+      const cropRatio = event.target.closest("[data-mobile-crop-ratio]")?.dataset.mobileCropRatio;
+      if (cropRatio) { state.cropRatio = cropRatio; render(); return; }
       const brushPreset = event.target.closest("[data-deep-brush-preset]")?.dataset.deepBrushPreset;
       if (brushPreset) {
         state.brushSize = Number(brushPreset);
@@ -1229,9 +1349,13 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
     if (initialTool === "eraser") state.paintMode = "erase";
     if (initialTool === "gradient") state.fillMode = "gradient";
     state.combine = "replace";
+    state.mobileMode = initialTab === "adjust" ? "adjust" : initialTool === "paint" ? "paint" : "crop";
+    state.cropRatio = "free";
+    if (state.mobileMode === "crop" && initialTool === "move") { state.tool = "select-shape"; state.shapeMode = "rect"; }
     state.zoom = 1;
     state.panX = 0;
     state.panY = 0;
+    state.pointers.clear();
     state.history = [];
     state.future = [];
     state.historyBytes = 0;
@@ -1291,6 +1415,7 @@ export function createDeepEditor({ onCommit, notify = () => {} } = {}) {
     clearTimeout(previewTimer);
     state.previewRevision += 1;
     state.gesture = null;
+    state.pointers.clear();
     state.cursorPoint = null;
     state.polygonPoints = [];
   }

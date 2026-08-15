@@ -32,10 +32,20 @@ jobs:
         run: npm ci
 
       - name: 检查项目
-        run: npm run check
+        run: npm run check && npm test
 
       - name: 构建 Windows 生图内核
         run: npm run engine:image-studio:win
+
+      - name: 检查 Windows 正式签名证书
+        shell: pwsh
+        env:
+          WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+        run: |
+          if (-not $env:WINDOWS_CSC_LINK -or -not $env:WINDOWS_CSC_KEY_PASSWORD) {
+            throw "缺少 Windows 正式签名证书，停止发布，避免朋友安装时出现未知发布者警告。"
+          }
 
       - name: 准备 GitHub 发布页
         shell: bash
@@ -49,10 +59,21 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 生成并发布 Windows 安装包
-        run: npx electron-builder --win --x64 --publish always
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          npx electron-builder --win --x64 --publish never
+          npx electron-builder --win --arm64 --publish never
+          gh release upload "v${VERSION}" \
+            "release/LaoguiAI-v${VERSION}-windows-x64-setup.exe" \
+            "release/LaoguiAI-v${VERSION}-windows-x64-setup.exe.blockmap" \
+            "release/LaoguiAI-v${VERSION}-windows-arm64-setup.exe" \
+            "release/LaoguiAI-v${VERSION}-windows-arm64-setup.exe.blockmap" \
+            --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
 
   build-and-publish-mac:
     needs: build-and-publish
@@ -77,13 +98,42 @@ jobs:
         run: npm ci
 
       - name: 检查项目
-        run: npm run check
+        run: npm run check && npm test
 
       - name: 构建 Mac 生图内核
         run: npm run engine:image-studio:mac
 
+      - name: 检查 Mac 正式签名和公证凭据
+        shell: bash
+        env:
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          test -n "$MAC_CSC_LINK" && test -n "$MAC_CSC_KEY_PASSWORD" && test -n "$APPLE_ID" && test -n "$APPLE_APP_SPECIFIC_PASSWORD" && test -n "$APPLE_TEAM_ID" || {
+            echo "缺少 Mac Developer ID 或苹果公证凭据，停止发布。" >&2
+            exit 1
+          }
+
       - name: 生成并发布 Mac 安装包
-        run: npx electron-builder --mac --arm64 --x64 --publish always
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          npx electron-builder --mac --arm64 --x64 --publish never -c.mac.notarize=true
+          gh release upload "v${VERSION}" \
+            "release/LaoguiAI-v${VERSION}-mac-x64.zip" \
+            "release/LaoguiAI-v${VERSION}-mac-x64.zip.blockmap" \
+            "release/LaoguiAI-v${VERSION}-mac-x64.dmg" \
+            "release/LaoguiAI-v${VERSION}-mac-arm64.zip" \
+            "release/LaoguiAI-v${VERSION}-mac-arm64.zip.blockmap" \
+            "release/LaoguiAI-v${VERSION}-mac-arm64.dmg" \
+            --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
